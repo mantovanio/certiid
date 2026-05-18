@@ -55,10 +55,16 @@ const TEMPLATE_VARS = [
   { key: '{{link_nova_emissao}}',label: 'Link Nova Emissão'},
 ]
 
+function parseBrDate(s: string): string {
+  const parts = s.trim().split('/')
+  if (parts.length === 3) return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`
+  return s
+}
+
 const CSV_FIELDS: { key: keyof RenovacaoV2 | 'produto'; label: string }[] = [
   { key: 'pedido',           label: 'Pedido'                       },
   { key: 'protocolo',        label: 'Protocolo'                    },
-  { key: 'data_vencimento',  label: 'Data Vencimento (YYYY-MM-DD)' },
+  { key: 'data_vencimento',  label: 'Data Vencimento'              },
   { key: 'cliente',          label: 'Cliente'                      },
   { key: 'email',            label: 'E-mail'                       },
   { key: 'telefone',         label: 'Telefone'                     },
@@ -817,7 +823,7 @@ export default function Renovacoes() {
     setImporting(true)
     const records = validos.map(r => ({
       pedido: r.pedido || null, protocolo: r.protocolo || null,
-      data_vencimento: r.data_vencimento, cliente: r.cliente,
+      data_vencimento: parseBrDate(r.data_vencimento), cliente: r.cliente,
       email: r.email || null, telefone: r.telefone || null,
       tipo_certificado: r.produto || r.tipo_certificado || 'Não especificado',
       valor: r.valor ? parseFloat(r.valor.replace(',', '.')) : null,

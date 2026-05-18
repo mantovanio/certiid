@@ -61,6 +61,18 @@ function parseBrDate(s: string): string {
   return s
 }
 
+function normalizePhoneBR(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const digits = raw.replace(/\D/g, '')
+  if (!digits) return null
+  // já tem DDI 55 e tamanho correto (12 = fixo, 13 = celular)
+  if (digits.startsWith('55') && digits.length >= 12) return `+${digits}`
+  // só DDD + número (10 = fixo, 11 = celular)
+  if (digits.length === 10 || digits.length === 11) return `+55${digits}`
+  // qualquer outro: apenas adiciona +
+  return `+${digits}`
+}
+
 const CSV_FIELDS: { key: keyof RenovacaoV2 | 'produto'; label: string }[] = [
   { key: 'pedido',           label: 'Pedido'                       },
   { key: 'protocolo',        label: 'Protocolo'                    },
@@ -837,7 +849,7 @@ export default function Renovacoes() {
     setSavingContato(true)
     const payload = {
       email: contatoForm.email.trim() || null,
-      telefone: contatoForm.telefone.trim() || null,
+      telefone: normalizePhoneBR(contatoForm.telefone),
     }
     const { error } = await supabase.from('renovacoes').update(payload).eq('id', editingContato.id)
     setSavingContato(false)
@@ -855,7 +867,7 @@ export default function Renovacoes() {
     const records = validos.map(r => ({
       pedido: r.pedido || null, protocolo: r.protocolo || null,
       data_vencimento: parseBrDate(r.data_vencimento), cliente: r.cliente,
-      email: r.email || null, telefone: r.telefone || null,
+      email: r.email || null, telefone: normalizePhoneBR(r.telefone),
       tipo_certificado: r.produto || r.tipo_certificado || 'Não especificado',
       valor: r.valor ? parseFloat(r.valor.replace(',', '.')) : null,
       cpf: r.cpf || null, cnpj: r.cnpj || null, razao_social: r.razao_social || null,

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -lah \"c:\\\\projetos\\\\CertiID_1.0.0\" 2>/dev/null || ls -lah \"/mnt/c/projetos/CertiID_1.0.0\" 2>/dev/null || find \"c:/projetos/CertiID_1.0.0\" -maxdepth 1 -type f -o -maxdepth 1 -type d)",
+      "Read(//mnt/c/projetos/**)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git -C \"c:\\\\projetos\\\\CertiID_1.0.0\" commit --allow-empty -m \"ci: test ssh connection\")",
+      "Bash(git -C \"c:\\\\projetos\\\\CertiID_1.0.0\" push origin main)",
+      "Bash(git -C \"c:\\\\projetos\\\\CertiID_1.0.0\" pull origin main)",
+      "Bash(git -C \"c:\\\\projetos\\\\CertiID_1.0.0\" stash)",
+      "Bash(git -C \"c:\\\\projetos\\\\CertiID_1.0.0\" stash drop)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\projetos\\\\CertiID_1.0.0\" -Recurse -Depth 3 | Where-Object { $_.PSIsContainer } | Select-Object FullName)",
+      "Bash(npx tsc *)"
+    ]
+  }
+}

@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   AlertTriangle, Bell, Check, CheckCircle, Clock,
-  Download, Eye, EyeOff, ExternalLink, Link2, Loader2, MessageSquare, Plus,
+  Download, Edit3, Eye, EyeOff, ExternalLink, Link2, Loader2, Mail, MessageSquare, Plus,
   RefreshCw, Save, Send, Trash2, Upload, Users, X, Zap,
   ChevronDown, ChevronUp,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
 import { queueEmailMessage, queueWhatsAppMessage, renderTemplate } from '@/lib/communication'
+import { useAuth } from '@/contexts/AuthContext'
+import * as XLSX from 'xlsx'
 import type {
   AutomationRule, CommunicationTemplate, LinkProduto,
   PrioridadeRenovacao, RenovacaoV2, StatusRenovacao,
@@ -72,23 +74,56 @@ const CSV_FIELDS: { key: keyof RenovacaoV2 | 'produto'; label: string }[] = [
 
 type TplForm  = { name: string; channel: 'whatsapp' | 'email'; subject: string; body: string; template_key: string }
 type LinkForm = { tipo_certificado: string; link_renovacao: string; link_nova_emissao: string; descricao: string }
+type ContatoForm = {
+  cliente: string
+  email: string
+  telefone: string
+  cpf: string
+  cnpj: string
+  razao_social: string
+  agr: string
+  vendedor: string
+  contador: string
+  observacoes: string
+}
 
 const EMPTY_TPL:  TplForm  = { name: '', channel: 'whatsapp', subject: '', body: '', template_key: '' }
 const EMPTY_LINK: LinkForm = { tipo_certificado: '', link_renovacao: '', link_nova_emissao: '', descricao: '' }
+const EMPTY_CONTATO: ContatoForm = {
+  cliente: '',
+  email: '',
+  telefone: '',
+  cpf: '',
+  cnpj: '',
+  razao_social: '',
+  agr: '',
+  vendedor: '',
+  contador: '',
+  observacoes: '',
+}
 
 // ── helpers ───────────────────────────────────────────────────
+
+function normalizeRowKeys(rows: Record<string, string>[]): Record<string, string>[] {
+  if (rows.length === 0) return []
+  const rawHeaders = Object.keys(rows[0] ?? {})
+  const fieldKeys = CSV_FIELDS.map(f => f.key as string)
+  const headerMap = rawHeaders.map(h => {
+    const clean = h.trim().replace(/"/g, '')
+    const byKey   = fieldKeys.find(k => k.toLowerCase() === clean.toLowerCase())
+    const byLabel = CSV_FIELDS.find(f => f.label.toLowerCase().replace(/\s*\(.*\)/, '') === clean.toLowerCase())?.key as string | undefined
+    return byKey ?? byLabel ?? clean.toLowerCase().replace(/\s+/g, '_')
+  })
+  return rows.map(row => Object.fromEntries(
+    rawHeaders.map((header, index) => [headerMap[index], String(row[header] ?? '').trim()]),
+  ))
+}
 
 function parseCSV(raw: string): Record<string, string>[] {
   const lines = raw.replace(/^﻿/, '').trim().split(/\r?\n/)
   if (lines.length < 2) return []
   const rawHeaders = lines[0].split(',').map(h => h.trim().replace(/"/g, ''))
-  const fieldKeys = CSV_FIELDS.map(f => f.key as string)
-  const headerMap = rawHeaders.map(h => {
-    const byKey   = fieldKeys.find(k => k.toLowerCase() === h.toLowerCase())
-    const byLabel = CSV_FIELDS.find(f => f.label.toLowerCase().replace(/\s*\(.*\)/, '') === h.toLowerCase())?.key as string | undefined
-    return byKey ?? byLabel ?? h.toLowerCase().replace(/\s+/g, '_')
-  })
-  return lines.slice(1).filter(l => l.trim()).map(line => {
+  const rows = lines.slice(1).filter(l => l.trim()).map(line => {
     const values: string[] = []
     let cur = ''; let inQ = false
     for (const ch of line) {
@@ -97,17 +132,37 @@ function parseCSV(raw: string): Record<string, string>[] {
       else { cur += ch }
     }
     values.push(cur.trim())
-    return Object.fromEntries(headerMap.map((h, i) => [h, (values[i] ?? '').replace(/"/g, '').trim()]))
+    return Object.fromEntries(rawHeaders.map((h, i) => [h, (values[i] ?? '').replace(/"/g, '').trim()]))
   })
+  return normalizeRowKeys(rows)
 }
 
-function downloadCSVTemplate() {
-  const header  = CSV_FIELDS.map(f => f.label.replace(' (YYYY-MM-DD)', '')).join(',')
-  const example = ['001','PROT-2024-001','2026-06-15','João Silva','joao@email.com','11999999999','e-CPF A3','219.90','12345678900','','','AR001','Maria Vendedora','Carlos Contador'].join(',')
-  const blob = new Blob(['﻿' + header + '\n' + example], { type: 'text/csv;charset=utf-8;' })
-  const url  = URL.createObjectURL(blob)
-  Object.assign(document.createElement('a'), { href: url, download: 'modelo_renovacoes.csv' }).click()
-  URL.revokeObjectURL(url)
+function parseSpreadsheet(buffer: ArrayBuffer, fileName: string): Record<string, string>[] {
+  if (fileName.toLowerCase().endsWith('.csv')) {
+    return parseCSV(new TextDecoder('utf-8').decode(buffer))
+  }
+  const workbook = XLSX.read(buffer, { type: 'array' })
+  const firstSheetName = workbook.SheetNames[0]
+  if (!firstSheetName) return []
+  const sheet = workbook.Sheets[firstSheetName]
+  const rows = XLSX.utils.sheet_to_json<Record<string, string | number | null>>(sheet, {
+    defval: '',
+    raw: false,
+  })
+  return normalizeRowKeys(rows.map(row =>
+    Object.fromEntries(Object.entries(row).map(([key, value]) => [key, String(value ?? '').trim()])),
+  ))
+}
+
+function downloadSpreadsheetTemplate() {
+  const data = [
+    CSV_FIELDS.map(f => f.label.replace(' (YYYY-MM-DD)', '')),
+    ['001', 'PROT-2024-001', '2026-06-15', 'João Silva', 'joao@email.com', '11999999999', 'e-CPF A3', '219.90', '12345678900', '', '', 'AR001', 'Maria Vendedora', 'Carlos Contador'],
+  ]
+  const sheet = XLSX.utils.aoa_to_sheet(data)
+  const workbook = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Renovacoes')
+  XLSX.writeFile(workbook, 'modelo_renovacoes.xlsx')
 }
 
 function fmtCurrency(v: number | null) {
@@ -117,6 +172,9 @@ function fmtCurrency(v: number | null) {
 // ── component ─────────────────────────────────────────────────
 
 export default function Renovacoes() {
+  const { profile } = useAuth()
+  const isAdmin = profile?.perfil === 'admin'
+  const canEditCadastro = profile?.perfil === 'admin' || profile?.perfil === 'agente_registro'
 
   // ── list state ──────────────────────────────────────────────
   const [lista, setLista]           = useState<RenovacaoV2[]>([])
@@ -137,6 +195,9 @@ export default function Renovacoes() {
   const [csvRows, setCsvRows]       = useState<Record<string, string>[]>([])
   const [showImport, setShowImport] = useState(false)
   const [importing, setImporting]   = useState(false)
+  const [editingContato, setEditingContato] = useState<RenovacaoV2 | null>(null)
+  const [contatoForm, setContatoForm] = useState<ContatoForm>(EMPTY_CONTATO)
+  const [savingContato, setSavingContato] = useState(false)
 
   // ── automation panel ─────────────────────────────────────────
   const [showAutomation, setShowAutomation] = useState(false)
@@ -152,6 +213,8 @@ export default function Renovacoes() {
   const [savingTpl, setSavingTpl]           = useState(false)
   const [showPreview, setShowPreview]       = useState(true)
   const [previewId, setPreviewId]           = useState<string>('')
+  const [selectedWaTplId, setSelectedWaTplId] = useState<string>('')
+  const [selectedEmailTplId, setSelectedEmailTplId] = useState<string>('')
   const tplTextareaRef                      = useRef<HTMLTextAreaElement>(null)
 
   // ── links de produtos ─────────────────────────────────────────
@@ -239,11 +302,27 @@ export default function Renovacoes() {
   const fetchTemplates = useCallback(async () => {
     setLoadingTpls(true)
     const { data } = await supabase.from('communication_templates').select('*').order('created_at')
-    setTemplates((data ?? []) as CommunicationTemplate[])
+    const nextTemplates = (data ?? []) as CommunicationTemplate[]
+    setTemplates(nextTemplates)
+    setSelectedWaTplId(prev => {
+      const stillExists = nextTemplates.some(t => t.id === prev && t.channel === 'whatsapp')
+      if (stillExists) return prev
+      return nextTemplates.find(t => t.channel === 'whatsapp' && t.ativo)?.id
+        ?? nextTemplates.find(t => t.channel === 'whatsapp')?.id
+        ?? ''
+    })
+    setSelectedEmailTplId(prev => {
+      const stillExists = nextTemplates.some(t => t.id === prev && t.channel === 'email')
+      if (stillExists) return prev
+      return nextTemplates.find(t => t.channel === 'email' && t.ativo)?.id
+        ?? nextTemplates.find(t => t.channel === 'email')?.id
+        ?? ''
+    })
     setLoadingTpls(false)
   }, [])
 
   useEffect(() => { void fetchRenovacoes() }, [fetchRenovacoes])
+  useEffect(() => { void fetchTemplates() }, [fetchTemplates])
 
   // mantém ref atualizada para uso no realtime sem stale closure
   useEffect(() => { listaRef.current = lista }, [lista])
@@ -327,8 +406,11 @@ export default function Renovacoes() {
 
   // ── active templates ─────────────────────────────────────────
 
-  function getActiveTpl(channel: 'whatsapp' | 'email') {
-    return templates.find(t => t.channel === channel && t.ativo)
+  function getSelectedTpl(channel: 'whatsapp' | 'email') {
+    const selectedId = channel === 'whatsapp' ? selectedWaTplId : selectedEmailTplId
+    return templates.find(t => t.id === selectedId && t.channel === channel)
+      ?? templates.find(t => t.channel === channel && t.ativo)
+      ?? templates.find(t => t.channel === channel)
   }
 
   // ── individual send ──────────────────────────────────────────
@@ -381,7 +463,7 @@ export default function Renovacoes() {
   async function enviarWhatsApp(r: RenovacaoV2) {
     if (!r.telefone) { showMsg('Cliente sem telefone.', 'err'); return }
     setSendingId(r.id)
-    const tpl = getActiveTpl('whatsapp')
+    const tpl = getSelectedTpl('whatsapp')
     const body = renderTemplate(tpl?.body ?? WHATSAPP_TPL_DEFAULT, tplValues(r))
     const { error } = await queueWhatsAppMessage({ to: r.telefone, body, payload: { renovacao_id: r.id, tipo: 'renovacao' } })
     if (error) { setSendingId(null); showMsg('Erro WhatsApp: ' + error, 'err'); return }
@@ -395,7 +477,7 @@ export default function Renovacoes() {
   async function enviarEmail(r: RenovacaoV2) {
     if (!r.email) { showMsg('Cliente sem e-mail.', 'err'); return }
     setSendingId(r.id)
-    const tpl     = getActiveTpl('email')
+    const tpl     = getSelectedTpl('email')
     const body    = renderTemplate(tpl?.body ?? EMAIL_TPL_DEFAULT, tplValues(r))
     const subject = renderTemplate(tpl?.subject ?? 'Renovação do seu certificado digital', tplValues(r))
     const { error } = await queueEmailMessage({ to: r.email, subject, body, payload: { renovacao_id: r.id, tipo: 'renovacao' } })
@@ -430,7 +512,7 @@ export default function Renovacoes() {
   async function bulkEnviarWhatsApp() {
     const alvos = listagem.filter(r => selectedIds.has(r.id) && r.telefone)
     if (!alvos.length) { showMsg('Nenhum selecionado com telefone.', 'err'); return }
-    const tpl = getActiveTpl('whatsapp')
+    const tpl = getSelectedTpl('whatsapp')
     setBulkSending(true)
     await Promise.all(alvos.map(r => queueWhatsAppMessage({
       to: r.telefone!,
@@ -444,7 +526,7 @@ export default function Renovacoes() {
   async function bulkEnviarEmail() {
     const alvos = listagem.filter(r => selectedIds.has(r.id) && r.email)
     if (!alvos.length) { showMsg('Nenhum selecionado com e-mail.', 'err'); return }
-    const tpl  = getActiveTpl('email')
+    const tpl  = getSelectedTpl('email')
     setBulkSending(true)
     await Promise.all(alvos.map(r => queueEmailMessage({
       to: r.email!,
@@ -488,7 +570,7 @@ export default function Renovacoes() {
   async function enviarMassa() {
     const alvos = listagem.filter(r => r.telefone && r.status !== 'convertido' && r.status !== 'perdido')
     if (!alvos.length) { showMsg('Nenhum cliente elegível com telefone.', 'err'); return }
-    const tpl = getActiveTpl('whatsapp')
+    const tpl = getSelectedTpl('whatsapp')
     setSendingId('massa')
     const results = await Promise.all(alvos.map(r => queueWhatsAppMessage({
       to: r.telefone!, body: renderTemplate(tpl?.body ?? WHATSAPP_TPL_DEFAULT, tplValues(r)),
@@ -600,6 +682,25 @@ export default function Renovacoes() {
     showMsg('Template excluído.')
   }
 
+  async function definirTemplatePadrao(tpl: CommunicationTemplate, ativo: boolean) {
+    if (!ativo) {
+      showMsg('Sempre deixe pelo menos um template padrão por canal.', 'err')
+      return
+    }
+    const sameChannelIds = templates.filter(t => t.channel === tpl.channel).map(t => t.id)
+    if (sameChannelIds.length === 0) return
+    const { error: clearError } = await supabase.from('communication_templates')
+      .update({ ativo: false })
+      .in('id', sameChannelIds)
+    if (clearError) { showMsg('Erro ao atualizar templates: ' + clearError.message, 'err'); return }
+    const { error } = await supabase.from('communication_templates').update({ ativo: true }).eq('id', tpl.id)
+    if (error) { showMsg('Erro ao marcar template padrão: ' + error.message, 'err'); return }
+    if (tpl.channel === 'whatsapp') setSelectedWaTplId(tpl.id)
+    else setSelectedEmailTplId(tpl.id)
+    await fetchTemplates()
+    showMsg(`Template padrão de ${tpl.channel === 'whatsapp' ? 'WhatsApp' : 'e-mail'} atualizado.`)
+  }
+
   // insere variável na posição do cursor no textarea
   function insertVar(varKey: string) {
     const el = tplTextareaRef.current
@@ -619,9 +720,95 @@ export default function Renovacoes() {
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return
     const reader = new FileReader()
-    reader.onload = ev => { setCsvRows(parseCSV(ev.target?.result as string)); setShowImport(true) }
-    reader.readAsText(file, 'utf-8')
+    reader.onload = ev => {
+      const result = ev.target?.result
+      if (!(result instanceof ArrayBuffer)) return
+      setCsvRows(parseSpreadsheet(result, file.name))
+      setShowImport(true)
+    }
+    reader.readAsArrayBuffer(file)
     e.target.value = ''
+  }
+
+  async function excluirRenovacao(r: RenovacaoV2) {
+    if (!isAdmin) { showMsg('Somente administradores podem excluir registros.', 'err'); return }
+    if (!confirm(`Excluir "${r.razao_social ?? r.cliente}" da lista de renovações?`)) return
+    const { data } = await supabase.auth.getUser()
+    const { error } = await supabase
+      .from('renovacoes')
+      .update({
+        deleted_at: new Date().toISOString(),
+        deleted_by: data.user?.id ?? null,
+        motivo_exclusao: 'Excluído manualmente pela tela de renovações',
+      })
+      .eq('id', r.id)
+    if (error) { showMsg('Erro ao excluir renovação: ' + error.message, 'err'); return }
+    setLista(prev => prev.filter(item => item.id !== r.id))
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      next.delete(r.id)
+      return next
+    })
+    showMsg('Renovação excluída da lista.')
+  }
+
+  async function bulkExcluirRenovacoes() {
+    if (!isAdmin) { showMsg('Somente administradores podem excluir registros.', 'err'); return }
+    const ids = [...selectedIds]
+    if (!ids.length) return
+    if (!confirm(`Excluir ${ids.length} renovação(ões) selecionada(s)?`)) return
+    setBulkSending(true)
+    const { data } = await supabase.auth.getUser()
+    const { error } = await supabase
+      .from('renovacoes')
+      .update({
+        deleted_at: new Date().toISOString(),
+        deleted_by: data.user?.id ?? null,
+        motivo_exclusao: 'Excluído manualmente em lote pela tela de renovações',
+      })
+      .in('id', ids)
+    setBulkSending(false)
+    if (error) { showMsg('Erro ao excluir em lote: ' + error.message, 'err'); return }
+    setLista(prev => prev.filter(r => !ids.includes(r.id)))
+    setSelectedIds(new Set())
+    showMsg(`${ids.length} renovação(ões) excluída(s).`)
+  }
+
+  function abrirEditarContato(r: RenovacaoV2) {
+    if (!canEditCadastro) {
+      showMsg('Seu perfil não pode alterar cadastro por aqui.', 'err')
+      return
+    }
+    setEditingContato(r)
+    setContatoForm({
+      cliente: r.cliente ?? '',
+      email: r.email ?? '',
+      telefone: r.telefone ?? '',
+      cpf: r.cpf ?? '',
+      cnpj: r.cnpj ?? '',
+      razao_social: r.razao_social ?? '',
+      agr: r.agr ?? '',
+      vendedor: r.vendedor ?? '',
+      contador: r.contador ?? '',
+      observacoes: r.observacoes ?? '',
+    })
+  }
+
+  async function salvarContato() {
+    if (!canEditCadastro) { showMsg('Seu perfil não pode alterar cadastro por aqui.', 'err'); return }
+    if (!editingContato) return
+    setSavingContato(true)
+    const payload = {
+      email: contatoForm.email.trim() || null,
+      telefone: contatoForm.telefone.trim() || null,
+    }
+    const { error } = await supabase.from('renovacoes').update(payload).eq('id', editingContato.id)
+    setSavingContato(false)
+    if (error) { showMsg('Erro ao salvar contato: ' + error.message, 'err'); return }
+    setLista(prev => prev.map(item => item.id === editingContato.id ? { ...item, ...payload } : item))
+    setEditingContato(null)
+    setContatoForm({ ...EMPTY_CONTATO })
+    showMsg('Contato atualizado.')
   }
 
   async function confirmarImport() {
@@ -675,7 +862,7 @@ export default function Renovacoes() {
 
   return (
     <div className="flex flex-col h-full">
-      <input ref={fileRef} type="file" accept=".csv" aria-label="Importar planilha CSV" className="hidden" onChange={handleFileChange} />
+      <input ref={fileRef} type="file" accept=".csv,.xls,.xlsx" aria-label="Importar planilha XLS ou XLSX" className="hidden" onChange={handleFileChange} />
 
       {/* Toast */}
       {toast && (
@@ -741,6 +928,50 @@ export default function Renovacoes() {
         </div>
       )}
 
+      {/* Edit Contact Modal */}
+      {editingContato && (
+        <div className="fixed inset-0 z-40 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between p-5 border-b border-gray-200 dark:border-gray-800 shrink-0">
+              <div>
+                <h3 className="font-semibold text-gray-800 dark:text-gray-200">Editar contato da renovação</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Ajuste os dados do cliente sem sair da fila de renovações.</p>
+              </div>
+              <button type="button" title="Fechar" onClick={() => { setEditingContato(null); setContatoForm({ ...EMPTY_CONTATO }) }}>
+                <X size={18} className="text-gray-400" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-5">
+              <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                Aqui você pode ajustar apenas <strong>e-mail</strong> e <strong>telefone</strong>. Nome, CPF, CNPJ e demais dados devem ser alterados no cadastro principal para refletir no sistema todo.
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-gray-500">E-mail</span>
+                  <input type="email" value={contatoForm.email} onChange={e => setContatoForm(p => ({ ...p, email: e.target.value }))}
+                    className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-gray-500">Telefone</span>
+                  <input type="text" value={contatoForm.telefone} onChange={e => setContatoForm(p => ({ ...p, telefone: e.target.value }))}
+                    className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </label>
+              </div>
+            </div>
+            <div className="flex gap-2 p-5 border-t border-gray-200 dark:border-gray-800 shrink-0">
+              <button type="button" onClick={() => void salvarContato()}
+                disabled={savingContato}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                {savingContato ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                {savingContato ? 'Salvando…' : 'Salvar contato'}
+              </button>
+              <button type="button" onClick={() => { setEditingContato(null); setContatoForm({ ...EMPTY_CONTATO }) }}
+                className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 overflow-auto p-6 space-y-5">
 
         {/* KPIs */}
@@ -789,9 +1020,9 @@ export default function Renovacoes() {
             className="p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors">
             <RefreshCw size={15} />
           </button>
-          <button type="button" onClick={downloadCSVTemplate}
+          <button type="button" onClick={downloadSpreadsheetTemplate}
             className="flex items-center gap-1.5 px-3 py-2 border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
-            <Download size={14} /> Modelo CSV
+            <Download size={14} /> Modelo XLSX
           </button>
           <button type="button" onClick={() => fileRef.current?.click()}
             className="flex items-center gap-1.5 px-3 py-2 border border-blue-300 dark:border-blue-600 text-blue-600 dark:text-blue-400 text-sm font-medium rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
@@ -829,6 +1060,39 @@ export default function Renovacoes() {
             <Zap size={14} /> Automações
             {showAutomation ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           </button>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-gray-500">Template usado no envio de WhatsApp</span>
+            <select
+              value={selectedWaTplId}
+              onChange={e => setSelectedWaTplId(e.target.value)}
+              className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">Padrão do canal</option>
+              {waTemplates.map(tpl => (
+                <option key={tpl.id} value={tpl.id}>
+                  {tpl.name}{tpl.ativo ? ' (padrão)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-gray-500">Template usado no envio de e-mail</span>
+            <select
+              value={selectedEmailTplId}
+              onChange={e => setSelectedEmailTplId(e.target.value)}
+              className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">Padrão do canal</option>
+              {emailTemplates.map(tpl => (
+                <option key={tpl.id} value={tpl.id}>
+                  {tpl.name}{tpl.ativo ? ' (padrão)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
 
         {/* Automation Panel */}
@@ -1093,8 +1357,20 @@ export default function Renovacoes() {
                                 : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:border-indigo-300')}>
                             <div className="flex-1 min-w-0" onClick={() => abrirEditarTemplate(tpl)}>
                               <p className="text-xs font-medium truncate">{tpl.name}</p>
+                              <p className="text-[11px] text-gray-500">
+                                {selectedWaTplId === tpl.id ? 'Em uso no envio agora' : tpl.ativo ? 'Template padrão' : 'Disponível'}
+                              </p>
                               <p className="text-xs text-gray-400 truncate">{tpl.body.slice(0, 60)}…</p>
                             </div>
+                            <label className="flex items-center gap-1 text-[11px] text-gray-500 shrink-0">
+                              <input
+                                type="checkbox"
+                                checked={tpl.ativo}
+                                onChange={e => void definirTemplatePadrao(tpl, e.target.checked)}
+                                title="Marcar como padrão do canal"
+                              />
+                              Padrão
+                            </label>
                             <button type="button" title="Editar" onClick={() => abrirEditarTemplate(tpl)}
                               className="text-gray-400 hover:text-indigo-600 p-1 shrink-0">
                               <MessageSquare size={13} />
@@ -1125,9 +1401,21 @@ export default function Renovacoes() {
                                 : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:border-indigo-300')}>
                             <div className="flex-1 min-w-0" onClick={() => abrirEditarTemplate(tpl)}>
                               <p className="text-xs font-medium truncate">{tpl.name}</p>
+                              <p className="text-[11px] text-gray-500">
+                                {selectedEmailTplId === tpl.id ? 'Em uso no envio agora' : tpl.ativo ? 'Template padrão' : 'Disponível'}
+                              </p>
                               {tpl.subject && <p className="text-xs text-gray-500 truncate">Assunto: {tpl.subject}</p>}
                               <p className="text-xs text-gray-400 truncate">{tpl.body.slice(0, 50)}…</p>
                             </div>
+                            <label className="flex items-center gap-1 text-[11px] text-gray-500 shrink-0">
+                              <input
+                                type="checkbox"
+                                checked={tpl.ativo}
+                                onChange={e => void definirTemplatePadrao(tpl, e.target.checked)}
+                                title="Marcar como padrão do canal"
+                              />
+                              Padrão
+                            </label>
                             <button type="button" title="Editar" onClick={() => abrirEditarTemplate(tpl)}
                               className="text-gray-400 hover:text-indigo-600 p-1 shrink-0">
                               <MessageSquare size={13} />
@@ -1274,6 +1562,10 @@ export default function Renovacoes() {
               className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-500 hover:bg-purple-400 text-white text-xs font-medium rounded-lg disabled:opacity-50 transition-colors">
               <Users size={12} /> → Kanban
             </button>
+            <button type="button" disabled={bulkSending} onClick={() => void bulkExcluirRenovacoes()}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-500 hover:bg-rose-400 text-white text-xs font-medium rounded-lg disabled:opacity-50 transition-colors">
+              <Trash2 size={12} /> Excluir
+            </button>
             <button type="button" onClick={() => setSelectedIds(new Set())}
               className="flex items-center gap-1 px-3 py-1.5 bg-white/20 hover:bg-white/30 text-white text-xs font-medium rounded-lg transition-colors">
               <X size={12} /> Limpar
@@ -1300,7 +1592,7 @@ export default function Renovacoes() {
                       aria-label="Selecionar todos"
                       className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" />
                   </th>
-                  {['Pedido','Protocolo','Vencimento','Dias','Cliente','E-mail','Telefone','Produto','Valor','CPF','CNPJ','Razão Social','AGR','Vendedor','Contador','Status','Ações'].map(h => (
+                  {['Ações','Pedido','Protocolo','Vencimento','Dias','Cliente','E-mail','Telefone','Produto','Valor','CPF','CNPJ','Razão Social','AGR','Vendedor','Contador','Status'].map(h => (
                     <th key={h} className="px-3 py-3 whitespace-nowrap font-semibold">{h}</th>
                   ))}
                 </tr>
@@ -1331,6 +1623,53 @@ export default function Renovacoes() {
                           className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" />
                       </td>
 
+                      <td className="px-3 py-3">
+                        <div className="flex items-center gap-1 flex-wrap">
+                          <button type="button" disabled={busy} onClick={() => void marcarRenovado(r)}
+                            title={r.status === 'convertido' ? 'Desmarcar renovado' : 'Marcar como renovado'}
+                            className={cn('p-1 rounded transition-colors disabled:opacity-40',
+                              r.status === 'convertido'
+                                ? 'text-green-700 bg-green-100 dark:bg-green-900/30 dark:text-green-400'
+                                : 'text-gray-500 hover:text-green-700 hover:bg-green-50 dark:text-gray-400 dark:hover:bg-green-900/20 dark:hover:text-green-400')}>
+                            <Check size={12} />
+                          </button>
+                          <button type="button" disabled={busy} onClick={() => void marcarNaoRenovado(r)}
+                            title={r.status === 'perdido' ? 'Desmarcar não renovado' : 'Marcar como não renovado'}
+                            className={cn('p-1 rounded transition-colors disabled:opacity-40',
+                              r.status === 'perdido'
+                                ? 'text-red-700 bg-red-100 dark:bg-red-900/30 dark:text-red-400'
+                                : 'text-gray-500 hover:text-red-700 hover:bg-red-50 dark:text-gray-400 dark:hover:bg-red-900/20 dark:hover:text-red-400')}>
+                            <X size={12} />
+                          </button>
+                          <button type="button" disabled={busy || !r.telefone} onClick={() => void enviarWhatsApp(r)}
+                            title={r.telefone ? 'Enviar WhatsApp' : 'Cliente sem telefone'}
+                            className="p-1 rounded text-green-600 hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20 disabled:opacity-30">
+                            {sendingId === r.id ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                          </button>
+                          <button type="button" disabled={busy} onClick={() => abrirEditarContato(r)}
+                            title="Editar contato"
+                            className="p-1 rounded text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-900/20 disabled:opacity-30"
+                            hidden={!canEditCadastro}>
+                            <Edit3 size={12} />
+                          </button>
+                          <button type="button" disabled={busy || !r.email} onClick={() => void enviarEmail(r)}
+                            title={r.email ? 'Enviar e-mail' : 'Cliente sem e-mail'}
+                            className="p-1 rounded text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20 disabled:opacity-30">
+                            <Mail size={12} />
+                          </button>
+                          <button type="button" disabled={busy} onClick={() => void criarLeadKanban(r)}
+                            title="Criar lead no Kanban"
+                            className="p-1 rounded text-purple-600 hover:bg-purple-50 dark:text-purple-400 dark:hover:bg-purple-900/20 disabled:opacity-30">
+                            <Users size={12} />
+                          </button>
+                          <button type="button" disabled={busy} onClick={() => void excluirRenovacao(r)}
+                            title="Excluir da lista de renovações"
+                            className="p-1 rounded text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/20 disabled:opacity-30"
+                            hidden={!isAdmin}>
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      </td>
                       <td className="px-3 py-3 text-xs text-gray-500 whitespace-nowrap">{r.pedido ?? '—'}</td>
                       <td className="px-3 py-3 text-xs text-gray-500 whitespace-nowrap">{r.protocolo ?? '—'}</td>
                       <td className="px-3 py-3 text-xs text-gray-500 whitespace-nowrap">
@@ -1358,42 +1697,6 @@ export default function Renovacoes() {
                         <span className={cn('px-2 py-0.5 rounded-full text-xs font-medium', sCfg.cls)}>{sCfg.label}</span>
                       </td>
 
-                      {/* Row actions */}
-                      <td className="px-3 py-3">
-                        <div className="flex items-center gap-1 flex-wrap">
-                          <button type="button" disabled={busy} onClick={() => void marcarRenovado(r)}
-                            title={r.status === 'convertido' ? 'Desmarcar Renovado' : 'Marcar como Renovado'}
-                            className={cn('flex items-center gap-0.5 px-2 py-1 rounded text-xs font-medium transition-colors disabled:opacity-40',
-                              r.status === 'convertido'
-                                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                                : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400 hover:bg-green-50 hover:text-green-700 dark:hover:bg-green-900/20 dark:hover:text-green-400')}>
-                            <Check size={10} /> Renovado
-                          </button>
-                          <button type="button" disabled={busy} onClick={() => void marcarNaoRenovado(r)}
-                            title={r.status === 'perdido' ? 'Desmarcar Não Renovado' : 'Não Renovado'}
-                            className={cn('flex items-center gap-0.5 px-2 py-1 rounded text-xs font-medium transition-colors disabled:opacity-40',
-                              r.status === 'perdido'
-                                ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-                                : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-900/20 dark:hover:text-red-400')}>
-                            <X size={10} /> Não Renov.
-                          </button>
-                          <button type="button" disabled={busy || !r.telefone} onClick={() => void enviarWhatsApp(r)}
-                            title={r.telefone ? 'WhatsApp + criar Kanban' : 'Sem telefone'}
-                            className="px-2 py-1 text-xs font-medium text-green-600 dark:text-green-400 hover:underline disabled:opacity-30">
-                            {sendingId === r.id ? <Loader2 size={10} className="animate-spin inline" /> : 'WA'}
-                          </button>
-                          <button type="button" disabled={busy || !r.email} onClick={() => void enviarEmail(r)}
-                            title={r.email ? 'Email + criar Kanban' : 'Sem e-mail'}
-                            className="px-2 py-1 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-30">
-                            Email
-                          </button>
-                          <button type="button" disabled={busy} onClick={() => void criarLeadKanban(r)}
-                            title="Criar lead no Kanban"
-                            className="flex items-center gap-0.5 px-2 py-1 text-xs font-medium text-purple-600 dark:text-purple-400 hover:underline disabled:opacity-30">
-                            <Users size={10} /> Kanban
-                          </button>
-                        </div>
-                      </td>
                     </tr>
                   )
                 })}

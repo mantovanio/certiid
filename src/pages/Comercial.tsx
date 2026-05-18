@@ -9,6 +9,7 @@ import {
   Loader2,
   MapPin,
   PlusCircle,
+  Search,
   ShoppingBag,
   Tag,
   ToggleLeft,
@@ -154,6 +155,24 @@ const EMPTY_COMISSAO: NovaFaixaComissao = {
 
 const EMPTY_PAGAMENTO: NovaFormaPagamento = { nome: '', ordem: 1, ativo: true }
 
+type VendaFilters = {
+  dataInicial: string
+  dataFinal: string
+  pedido: string
+  protocolo: string
+  cliente: string
+  status: string
+}
+
+const EMPTY_VENDA_FILTERS: VendaFilters = {
+  dataInicial: '',
+  dataFinal: '',
+  pedido: '',
+  protocolo: '',
+  cliente: '',
+  status: '',
+}
+
 export default function Comercial() {
   const [tab, setTab] = useState<Tab>('vendas')
 
@@ -167,10 +186,12 @@ export default function Comercial() {
   const [formV2, setFormV2]             = useState<LocalFormVenda>(EMPTY_VENDA_V2)
   const [formTitular, setFormTitular]   = useState<LocalFormTitular>(EMPTY_TITULAR)
   const [showClienteForm, setShowClienteForm] = useState(false)
+  const [editingClienteId, setEditingClienteId] = useState<string | null>(null)
   const [clienteSearch, setClienteSearch]     = useState('')
   const [formCliente, setFormCliente]   = useState<NovoCadastroBase>(EMPTY_CLIENTE_BASE)
   const [salvandoV, setSalvandoV]       = useState(false)
   const [salvandoCliente, setSalvandoCliente] = useState(false)
+  const [vendaFilters, setVendaFilters] = useState<VendaFilters>(EMPTY_VENDA_FILTERS)
 
   // ── agenda state ─────────────────────────────────────────────
   const [agenda, setAgenda]             = useState<Agendamento[]>([])
@@ -220,6 +241,33 @@ export default function Comercial() {
       ? clientes.filter(c => [c.nome, c.nome_fantasia, c.cpf_cnpj, c.email, c.telefone].some(v => v?.toLowerCase().includes(term)))
       : clientes
   }, [clientes, clienteSearch])
+
+  const vendasFiltradas = useMemo(() => {
+    return vendasV2.filter(v => {
+      const criado = new Date(v.created_at)
+      const dataInicialOk = !vendaFilters.dataInicial || criado >= new Date(`${vendaFilters.dataInicial}T00:00:00`)
+      const dataFinalOk = !vendaFilters.dataFinal || criado <= new Date(`${vendaFilters.dataFinal}T23:59:59`)
+      const pedido = (v.pedido_numero ?? '').toLowerCase()
+      const protocolo = (v.protocolo_numero ?? '').toLowerCase()
+      const cliente = (
+        (v.cadastros_base as { nome?: string; cpf_cnpj?: string } | null)?.nome
+        ?? v.nome_faturamento
+        ?? ''
+      ).toLowerCase()
+      const documento = (
+        (v.cadastros_base as { nome?: string; cpf_cnpj?: string } | null)?.cpf_cnpj
+        ?? v.documento_faturamento
+        ?? ''
+      ).toLowerCase()
+      const termoCliente = vendaFilters.cliente.trim().toLowerCase()
+      return dataInicialOk
+        && dataFinalOk
+        && (!vendaFilters.pedido || pedido.includes(vendaFilters.pedido.trim().toLowerCase()))
+        && (!vendaFilters.protocolo || protocolo.includes(vendaFilters.protocolo.trim().toLowerCase()))
+        && (!termoCliente || cliente.includes(termoCliente) || documento.includes(termoCliente))
+        && (!vendaFilters.status || v.status_venda === vendaFilters.status)
+    })
+  }, [vendasV2, vendaFilters])
 
   // ── fetch V2 ─────────────────────────────────────────────────
   const fetchVendasV2 = useCallback(async () => {
@@ -402,13 +450,71 @@ export default function Comercial() {
       email:        formCliente.email?.trim() || null,
       telefone:     formCliente.telefone?.trim() || null,
     }
-    const { data, error } = await supabase.from('cadastros_base').insert([payload]).select('id').single()
+    const query = editingClienteId
+      ? supabase.from('cadastros_base').update(payload).eq('id', editingClienteId).select('id').single()
+      : supabase.from('cadastros_base').insert([payload]).select('id').single()
+    const { data, error } = await query
     setSalvandoCliente(false)
     if (error) { alert('Erro: ' + error.message); return }
     setFormCliente({ ...EMPTY_CLIENTE_BASE })
     setShowClienteForm(false)
+    setEditingClienteId(null)
     await fetchClientes()
     if (data?.id) setFormV2(p => ({ ...p, cadastro_base_id: data.id }))
+  }
+
+  function abrirNovoCliente() {
+    setEditingClienteId(null)
+    setFormCliente({ ...EMPTY_CLIENTE_BASE })
+    setShowClienteForm(true)
+  }
+
+  function abrirEditarCliente(cadastroId: string) {
+    const cliente = clientes.find(c => c.id === cadastroId)
+    if (!cliente) return
+    setEditingClienteId(cliente.id)
+    setFormCliente({
+      tipo_cliente: cliente.tipo_cliente,
+      tipo_cadastro: cliente.tipo_cadastro,
+      cpf_cnpj: cliente.cpf_cnpj,
+      nome: cliente.nome,
+      nome_fantasia: cliente.nome_fantasia,
+      email: cliente.email,
+      telefone: cliente.telefone,
+      cidade: cliente.cidade,
+      logradouro: cliente.logradouro,
+      numero: cliente.numero,
+      complemento: cliente.complemento,
+      bairro: cliente.bairro,
+      uf: cliente.uf,
+      cep: cliente.cep,
+      inscricao_municipal: cliente.inscricao_municipal,
+      inscricao_estadual: cliente.inscricao_estadual,
+      iss_retido: cliente.iss_retido,
+      status: cliente.status,
+      metadata: cliente.metadata ?? {},
+    })
+    setShowFormV(true)
+    setShowClienteForm(true)
+  }
+
+  function prepararNovaVendaParaCliente(cadastroId: string) {
+    setFormV2(p => ({ ...p, cadastro_base_id: cadastroId }))
+    setShowFormV(true)
+    setShowClienteForm(false)
+  }
+
+  function prepararAgendamento(venda: VendaRow) {
+    setFormA({
+      cliente: (venda.cadastros_base as { nome?: string } | null)?.nome ?? venda.nome_faturamento ?? '',
+      telefone: venda.telefone_faturamento ?? null,
+      servico: venda.tipo_produto,
+      data_hora: '',
+      status: 'aguardando',
+      observacoes: venda.observacoes ?? null,
+    })
+    setTab('agenda')
+    setShowFormA(true)
   }
 
   async function atualizarStatusVendaV2(id: string, status: StatusVendaCertificado) {
@@ -566,7 +672,15 @@ export default function Comercial() {
               <Panel title="Registrar Venda" onClose={() => setShowFormV(false)}>
                 <div className="flex items-center justify-between gap-3 mb-4">
                   <p className="text-xs text-gray-500 dark:text-gray-400">Escolha um cliente/empresa existente ou cadastre um novo antes de lançar a venda.</p>
-                  <button type="button" onClick={() => setShowClienteForm(v => !v)}
+                  <button type="button" onClick={() => {
+                    if (showClienteForm) {
+                      setShowClienteForm(false)
+                      setEditingClienteId(null)
+                      setFormCliente({ ...EMPTY_CLIENTE_BASE })
+                    } else {
+                      abrirNovoCliente()
+                    }
+                  }}
                     className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-medium hover:bg-gray-200 dark:hover:bg-gray-700">
                     {showClienteForm ? 'Fechar cadastro' : 'Novo cliente/empresa'}
                   </button>
@@ -589,7 +703,7 @@ export default function Comercial() {
                         placeholder="Digite ou selecione um cliente"
                         className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
-                      <button type="button" onClick={() => setShowClienteForm(true)}
+                      <button type="button" onClick={() => abrirNovoCliente()}
                         className="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium">Novo cadastro</button>
                     </div>
                     <datalist id="clientes-base-list">
@@ -617,9 +731,6 @@ export default function Comercial() {
 
                   <NumberInput label="Valor Venda (R$) *" value={formV2.valor_venda}
                     onChange={v => setFormV2(p => ({ ...p, valor_venda: v }))} />
-
-                  <NumberInput label="Valor Custo (R$)" value={formV2.valor_custo}
-                    onChange={v => setFormV2(p => ({ ...p, valor_custo: v }))} />
                 </div>
 
                 <div className="mt-4 rounded-xl border border-gray-200 dark:border-gray-800 p-4 bg-gray-50 dark:bg-gray-900/40">
@@ -641,8 +752,14 @@ export default function Comercial() {
                 {showClienteForm && (
                   <div className="mt-4 rounded-xl border border-gray-200 dark:border-gray-800 p-4 bg-gray-50 dark:bg-gray-900/40">
                     <div className="flex items-center justify-between mb-3">
-                      <h4 className="font-semibold text-sm text-gray-700 dark:text-gray-200">Cadastro de Pessoa / Empresa</h4>
-                      <button type="button" onClick={() => setShowClienteForm(false)} className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Fechar</button>
+                      <h4 className="font-semibold text-sm text-gray-700 dark:text-gray-200">
+                        {editingClienteId ? 'Editar Pessoa / Empresa' : 'Cadastro de Pessoa / Empresa'}
+                      </h4>
+                      <button type="button" onClick={() => {
+                        setShowClienteForm(false)
+                        setEditingClienteId(null)
+                        setFormCliente({ ...EMPTY_CLIENTE_BASE })
+                      }} className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Fechar</button>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                       <SelectInput label="Tipo" value={formCliente.tipo_cliente}
@@ -683,11 +800,15 @@ export default function Comercial() {
                       </label>
                     </div>
                     <div className="mt-4 flex justify-end gap-2">
-                      <button type="button" onClick={() => setShowClienteForm(false)}
+                      <button type="button" onClick={() => {
+                        setShowClienteForm(false)
+                        setEditingClienteId(null)
+                        setFormCliente({ ...EMPTY_CLIENTE_BASE })
+                      }}
                         className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm">Cancelar</button>
                       <button type="button" onClick={() => void salvarCliente()} disabled={salvandoCliente}
                         className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-50">
-                        {salvandoCliente ? 'Salvando...' : 'Salvar cliente'}
+                        {salvandoCliente ? 'Salvando...' : editingClienteId ? 'Salvar alterações' : 'Salvar cliente'}
                       </button>
                     </div>
                   </div>
@@ -702,27 +823,78 @@ export default function Comercial() {
               </Panel>
             )}
 
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
+              <TextInput label="Data inicial" type="date" value={vendaFilters.dataInicial}
+                onChange={v => setVendaFilters(p => ({ ...p, dataInicial: v }))} />
+              <TextInput label="Data final" type="date" value={vendaFilters.dataFinal}
+                onChange={v => setVendaFilters(p => ({ ...p, dataFinal: v }))} />
+              <TextInput label="Pedido" value={vendaFilters.pedido}
+                onChange={v => setVendaFilters(p => ({ ...p, pedido: v }))} />
+              <TextInput label="Protocolo" value={vendaFilters.protocolo}
+                onChange={v => setVendaFilters(p => ({ ...p, protocolo: v }))} />
+              <TextInput label="Cliente / Documento" value={vendaFilters.cliente}
+                onChange={v => setVendaFilters(p => ({ ...p, cliente: v }))} className="xl:col-span-2" />
+              <SelectInput label="Status da venda" value={vendaFilters.status}
+                onChange={v => setVendaFilters(p => ({ ...p, status: v }))}
+                options={[{ value: '', label: 'Todos' }, ...STATUS_VENDA_V2_OPTIONS.map(s => ({ value: s, label: capitalize(s.replace('_', ' ')) }))]} />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => void fetchVendasV2()}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800">
+                <Search size={14} /> Atualizar consulta
+              </button>
+              <button type="button" onClick={() => setVendaFilters(EMPTY_VENDA_FILTERS)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800">
+                <X size={14} /> Limpar filtros
+              </button>
+              <span className="text-xs text-gray-500">Mostrando {vendasFiltradas.length} venda(s) por ordem de compra.</span>
+            </div>
+
             <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[1200px]">
                 <thead>
                   <tr className="bg-gray-50 dark:bg-gray-800/50 text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide text-left">
-                    {['Data', 'Cliente', 'Tipo', 'Ponto', 'Valor', 'Pagamento', 'Status'].map(h => (
+                    {['Ações', 'Data', 'Pedido', 'Protocolo', 'Cliente', 'Documento', 'Produto', 'Emissão', 'Ponto', 'Valor', 'Pagamento', 'Status'].map(h => (
                       <th key={h} className="px-4 py-3">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                   {loadingV ? (
-                    <LoadingRow colSpan={7} />
-                  ) : vendasV2.length === 0 ? (
-                    <EmptyRow colSpan={7} label="Nenhuma venda registrada." />
-                  ) : vendasV2.map(v => (
+                    <LoadingRow colSpan={12} />
+                  ) : vendasFiltradas.length === 0 ? (
+                    <EmptyRow colSpan={12} label="Nenhuma venda encontrada com esses filtros." />
+                  ) : vendasFiltradas.map(v => (
                     <tr key={v.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          <button type="button" title="Editar cliente" onClick={() => abrirEditarCliente(v.cadastro_base_id)}
+                            className="p-1.5 rounded-md text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20">
+                            <Edit3 size={13} />
+                          </button>
+                          <button type="button" title="Nova venda para este cliente" onClick={() => prepararNovaVendaParaCliente(v.cadastro_base_id)}
+                            className="p-1.5 rounded-md text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20">
+                            <PlusCircle size={13} />
+                          </button>
+                          <button type="button" title="Agendar atendimento" onClick={() => prepararAgendamento(v)}
+                            className="p-1.5 rounded-md text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20">
+                            <Calendar size={13} />
+                          </button>
+                        </div>
+                      </td>
                       <td className="px-4 py-3 text-gray-500">{new Date(v.created_at).toLocaleDateString('pt-BR')}</td>
+                      <td className="px-4 py-3 text-gray-500">{v.pedido_numero ?? '—'}</td>
+                      <td className="px-4 py-3 text-gray-500">{v.protocolo_numero ?? '—'}</td>
                       <td className="px-4 py-3 font-medium">
                         {(v.cadastros_base as { nome: string } | null)?.nome ?? v.nome_faturamento ?? '—'}
                       </td>
+                      <td className="px-4 py-3 text-gray-500">
+                        {(v.cadastros_base as { cpf_cnpj?: string } | null)?.cpf_cnpj ?? v.documento_faturamento ?? '—'}
+                      </td>
                       <td className="px-4 py-3 text-gray-500">{v.tipo_produto}</td>
+                      <td className="px-4 py-3 text-gray-500">{v.tipo_emissao ? capitalize(v.tipo_emissao.replace('_', ' ')) : '—'}</td>
                       <td className="px-4 py-3 text-gray-500">
                         <span className="flex items-center gap-1">
                           <MapPin size={12} />
@@ -748,6 +920,7 @@ export default function Comercial() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           </div>
         )}

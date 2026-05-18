@@ -1,180 +1,318 @@
-# Contexto Para Continuar Em Outra IA
+# Contexto Para Continuar Com Outra IA
 
-## Objetivo deste arquivo
+## Objetivo
 
-Este arquivo resume o que foi feito ate agora no projeto `CertiID_1.0.0`
-para que outra IA possa continuar o trabalho sem perder contexto.
+Este arquivo resume o estado real do projeto `CertiID_1.0.0` em `15/05/2026`
+para que outra IA consiga continuar o trabalho sem perder contexto.
 
-## Arquivos criados nesta etapa
+O usuario fala apenas portugues brasileiro, e prefere orientacoes passo a passo
+quando ele precisar executar algo manualmente.
 
-- [ESTRUTURA-V2.md](C:/projetos/CertiID_1.0.0/ESTRUTURA-V2.md)
-- [sql/estrutura_relacional_v2_draft.sql](C:/projetos/CertiID_1.0.0/sql/estrutura_relacional_v2_draft.sql)
+---
 
-## Status atual do git
+## Estado geral
 
-Arquivos novos ainda nao commitados:
+- A base oficial da `V2` ja foi implantada no projeto e salva no GitHub.
+- O commit-base desta fase foi:
+  - `35be2f5` - `feat: adiciona base oficial da estrutura v2`
+- Depois disso, foram feitas varias melhorias locais que **ainda nao foram
+  commitadas/publicadas**.
 
-- `ESTRUTURA-V2.md`
-- `sql/estrutura_relacional_v2_draft.sql`
+---
 
-Arquivos nao relacionados que tambem aparecem no `git status`:
+## O que ja esta salvo no GitHub
+
+### 1. Migration oficial V2
+
+Arquivo:
+
+- `sql/migration_v2_oficial.sql`
+
+Ja aplicada no Supabase anteriormente.
+
+Essa migration criou a base relacional nova, incluindo:
+
+- `cadastros_base`
+- `empresas_cliente`
+- `titulares_certificado`
+- `pontos_atendimento`
+- `pontos_atendimento_agentes`
+- `vendas_certificados`
+- `agendamentos_validacao`
+- `produtos_emitidos`
+- `documentos_financeiros`
+- `bancos`
+- `contas_bancarias_v2`
+- `formas_pagamento_v2`
+- `formas_pagamento_disponibilidade`
+- `plano_contas`
+- `centros_custo`
+- `regras_comissao`
+- `comissoes_lancamentos`
+- `fechamentos_agente_lotes`
+- `fechamentos_agente_itens`
+- `fechamentos_agente_itens_comissoes`
+- `ordens_pagamento`
+- `nfse_configuracoes`
+- `nfse_emitidas`
+
+### 2. Seguranca do Supabase admin
+
+Arquivo:
+
+- `src/lib/supabaseAdmin.ts`
+
+Ja foi removido o uso hardcoded da `service_role key`.
+Agora o arquivo usa `import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY`.
+
+### 3. Tipos V2
+
+Arquivo:
+
+- `src/types/index.ts`
+
+Ja existem os tipos principais da V2 para cadastro, venda, agendamento,
+produto emitido, financeiro, NFS-e, comissoes e renovacoes V2.
+
+### 4. Bases iniciais de telas ja preparadas
+
+Arquivos:
+
+- `src/pages/Comercial.tsx`
+- `src/pages/Renovacoes.tsx`
+- `src/pages/Financeiro.tsx`
+- `src/pages/Configuracoes.tsx`
+
+Ja houve migracao parcial dessas telas para a estrutura nova.
+
+---
+
+## O que foi feito localmente e ainda nao foi publicado
+
+Essas mudancas estao no computador local e **nao estao salvas no GitHub ainda**.
+
+### 1. Renovações
+
+Arquivo:
+
+- `src/pages/Renovacoes.tsx`
+
+Foi ajustado:
+
+- importacao de planilha aceita `.csv`, `.xls` e `.xlsx`
+- download do modelo agora gera `modelo_renovacoes.xlsx`
+- templates carregam automaticamente ao abrir a tela
+- escolha separada de template para `WhatsApp` e `E-mail`
+- cada canal pode ter `template padrao`
+- exclusao individual e em lote com `soft delete`
+- coluna `Acoes` foi movida para o inicio da linha
+- botoes das acoes ficaram em formato de icones com tooltip
+- entrou acao de `Editar contato`
+
+### Regras atuais de Renovacoes
+
+- a edicao rapida nessa tela deve permitir **somente**:
+  - `e-mail`
+  - `telefone`
+- `nome`, `CPF`, `CNPJ`, `razao social` e outros dados mestres
+  **nao podem** ser alterados por essa tela
+- se houver mudanca em dados mestres, isso deve acontecer no cadastro principal
+  e refletir no sistema inteiro
+
+### Permissoes definidas pelo usuario
+
+- `usuario comum`: nunca pode alterar cadastro
+- `agente_registro`: pode alterar dados de cadastro
+- `admin`: pode alterar tudo
+- somente `admin` pode excluir vendas/itens do sistema
+
+Na interface de `Renovacoes`, ficou combinado:
+
+- `admin` pode editar contato e excluir
+- `agente_registro` pode editar contato
+- usuario comum nao pode editar nem excluir
+
+### 2. Comercial > Lançar Vendas
+
+Arquivo:
+
+- `src/pages/Comercial.tsx`
+
+Foi evoluido localmente:
+
+- filtros no topo por:
+  - data inicial
+  - data final
+  - pedido
+  - protocolo
+  - cliente/documento
+  - status
+- tabela mais operacional, inspirada na referencia enviada pelo usuario
+- colunas mais fortes de acompanhamento
+- acoes por linha:
+  - editar cliente
+  - nova venda para esse cliente
+  - agendar atendimento
+- o formulario de cliente passou a permitir reaproveitamento para edicao
+- o campo `Valor Custo` foi removido da interface da tela de venda
+
+### 3. Parceiros
+
+Arquivos:
+
+- `src/pages/Parceiros.tsx`
+- `src/types/index.ts`
+- `sql/parceiros_gestao_v2.sql`
+
+Foi iniciado um bloco novo e mais robusto de gestao de parceiros.
+
+O objetivo dessa tela passou a ser:
+
+- cadastrar parceiro com dados completos
+- editar parceiro existente
+- gerir bloqueios de venda/emissao
+- gerir preferencias de mensageria
+- vincular gestores
+- vincular dados bancarios
+- vincular centro de custo
+- melhorar busca e gestao dos parceiros criados
+
+Campos novos considerados:
+
+- codigo do parceiro
+- documento CPF/CNPJ
+- razao social/nome
+- nome fantasia
+- id local de atendimento
+- senha e email de acesso
+- contatos adicionais
+- endereco completo
+- token
+- inscricoes municipal e estadual
+- tipo do parceiro
+- datas de ativacao/desativacao
+- bloqueio de vendas e emissao de protocolo
+- preferencias de mensageria
+- gestores 1 a 5
+- dados bancarios
+- chave pix
+- centro de custo
+
+Importante:
+
+- o SQL `sql/parceiros_gestao_v2.sql` **ja foi executado no Supabase**
+  durante esta sessao, com retorno do usuario: `feito`
+
+---
+
+## Dependencia nova adicionada localmente
+
+Arquivos:
+
+- `package.json`
+- `package-lock.json`
+
+Foi adicionada a dependencia:
+
+- `xlsx`
+
+Ela foi usada para suportar importacao/exportacao de planilhas na tela
+de `Renovacoes`.
+
+---
+
+## O que ainda falta construir
+
+Mesmo com a base V2 pronta, a operacao ainda nao esta concluida ponta a ponta.
+
+Faltam, entre outros pontos:
+
+- publicar as mudancas locais de `Renovacoes`, `Comercial` e `Parceiros`
+- terminar a tela operacional de `Lançar Vendas`
+- criar uma consulta mais forte de clientes/vendas dentro do fluxo comercial
+- terminar a padronizacao de permissoes nas outras telas
+- concluir a gestao de parceiros com todos os comportamentos esperados
+- ligar totalmente formas de pagamento por parceiro/canal
+- evoluir financeiro V2 na interface
+- concluir NFS-e ponta a ponta
+- concluir pagamentos mensais de agentes por API externa
+
+---
+
+## Estado atual do git no momento deste contexto
+
+Arquivos alterados localmente:
+
+- `PONTO-DE-SALVAMENTO-V2.md`
+- `package.json`
+- `package-lock.json`
+- `src/pages/Comercial.tsx`
+- `src/pages/Parceiros.tsx`
+- `src/pages/Renovacoes.tsx`
+- `src/types/index.ts`
+- `sql/parceiros_gestao_v2.sql`
+
+Arquivos locais que normalmente nao devem entrar no commit:
 
 - `.claude/`
 - `.vscode/`
 
-Esses dois nao fazem parte desta entrega funcional e devem ser ignorados
-ao salvar esta etapa, a menos que o usuario queira inclui-los.
+---
 
-## O que ja foi modelado na fase 1
+## Arquivos que a proxima IA deve ler primeiro
 
-Foi desenhada uma proposta v2 de banco para suportar:
+1. `PONTO-DE-SALVAMENTO-V2.md`
+2. `CONTEXTO-PARA-OUTRA-IA.md`
+3. `src/pages/Renovacoes.tsx`
+4. `src/pages/Comercial.tsx`
+5. `src/pages/Parceiros.tsx`
+6. `src/types/index.ts`
+7. `sql/parceiros_gestao_v2.sql`
+8. `sql/migration_v2_oficial.sql`
 
-- cadastro base de faturamento
-- empresas vinculadas
-- titulares de certificado
-- pontos de atendimento
-- relacao ponto x agente de registro
-- vendas de certificados
-- agendamentos de validacao
-- certificados emitidos
-- renovacoes com referencias por ID e exclusao logica
-- documentos financeiros e sensiveis
-- bancos
-- contas bancarias
-- plano de contas
-- centros de custos
-- formas de pagamento por parceiro/canal
-- regras e lancamentos de comissao
-- fechamento mensal de agentes
-- ordens de pagamento por API externa
-- configuracao de NFS-e
-- notas fiscais de servico emitidas
+---
 
-## Regras de negocio importantes capturadas
+## Regras de negocio muito importantes
 
-### Cliente / empresa / titular
+### Cadastros
 
-- Nem sempre cliente, empresa e titular sao a mesma entidade.
-- Para `e-CNPJ`, normalmente existe empresa + titular.
-- Para `e-CPF`, o titular pode ser a mesma pessoa do cadastro base.
-- O cadastro base deve conter os dados de faturamento para NFS-e.
+- alteracoes de `nome`, `CPF`, `CNPJ`, `razao social` e outros dados mestres
+  devem refletir no sistema inteiro
+- portanto, esses dados precisam ser tratados como cadastro principal
 
-### Fluxo operacional
+### Permissoes
 
-Fluxo correto definido:
+- usuario comum nao altera cadastro
+- agente de registro pode alterar cadastro
+- somente admin pode excluir vendas colocadas no sistema
+- admin pode alterar tudo
 
-1. cadastrar cliente
-2. registrar venda
-3. definir vendedor e ponto na venda
-4. definir agente de registro no agendamento
-5. gerar pedido depois
-6. gerar protocolo depois, em outra tela/API
+### Renovações
 
-### Comissoes
+- nessa tela, ajuste rapido deve ser apenas de contato
+- `email` e `telefone` sao os campos permitidos na edicao rapida
 
-- ha comissao para vendedor/parceiro
-- ha comissao para agente de registro
-- foi modelado extrato parcial/mensal
-- foi modelado fechamento mensal de agentes
-- foi modelado pagamento a agente via API externa
+### Comercial
 
-### Financeiro
+- o usuario quer a tela `Comercial > Lançar Vendas` com carater mais
+  operacional, parecida com a referencia visual enviada
+- ele quer fila de vendas por ordem de compra, filtros fortes e acoes por linha
 
-Foi incorporado:
+### Parceiros
 
-- contas bancarias
-- bancos
-- plano de contas
-- centros de custos
-- anexos financeiros
-- configuracao e emissao de NFS-e
+- o usuario quer fazer gestao completa dos parceiros criados
+- nao e apenas um cadastro simples
+- a tela precisa permitir manutencao operacional real
 
-### Formas de pagamento
+---
 
-- as formas de pagamento nao sao globais apenas
-- devem poder ser habilitadas por tipo de parceiro/canal
-- exemplos considerados:
-  - `ar`
-  - `pa_controle_total`
-  - `pa_emissor`
-  - `contador`
-  - `vendedor`
-  - `gestor`
-  - `ecommerce`
+## Orientacao para a proxima IA
 
-## Fontes de negocio consideradas
+Quando precisar passar tarefas manuais ao usuario:
 
-Durante a conversa foram considerados:
+- passar uma por vez
+- esperar ele concluir
+- so depois enviar a proxima
 
-- telas de venda, cadastro, protocolo, relatorios, financeiro, bancos, plano
-  de contas, centros de custos, formas de pagamento e NFS-e
-- uma amostragem de planilha real com colunas como:
-  - protocolo
-  - nome
-  - documento
-  - nome do titular
-  - documento do titular
-  - produto
-  - validade
-  - numero de serie
-  - nome do AVP
-  - nome do ACI
-  - local de atendimento
-  - NFe
-  - nome do parceiro
-  - contador parceiro
-  - tipo de emissao
-  - protocolo renovacao
-  - catalogo
-  - periodo de uso
-  - videoconferencia
-  - grupo
-
-Essa amostragem foi usada para refinar a modelagem.
-
-## Arquivo de desenho funcional
-
-O arquivo [ESTRUTURA-V2.md](C:/projetos/CertiID_1.0.0/ESTRUTURA-V2.md)
-descreve a proposta de forma funcional e em portugues claro.
-
-Ele deve ser lido primeiro pela outra IA.
-
-## Arquivo SQL draft
-
-O arquivo [sql/estrutura_relacional_v2_draft.sql](C:/projetos/CertiID_1.0.0/sql/estrutura_relacional_v2_draft.sql)
-e apenas um rascunho de migration.
-
-Importante:
-
-- ainda nao foi aplicado no banco
-- precisa de revisao antes de virar migration oficial
-- serve como base para a proxima IA consolidar a fase 1
-
-## Proximo passo recomendado
-
-A proxima IA deve fazer nesta ordem:
-
-1. revisar `ESTRUTURA-V2.md` com o usuario
-2. revisar o `sql/estrutura_relacional_v2_draft.sql`
-3. quebrar a implementacao em etapas pequenas
-4. criar a migration oficial v2
-5. so depois adaptar telas e relatorios
-
-## Observacao importante de seguranca
-
-Durante a conversa foi identificado que existe uma `service_role key`
-exposta em:
-
-- [src/lib/supabaseAdmin.ts](C:/projetos/CertiID_1.0.0/src/lib/supabaseAdmin.ts)
-
-Isso precisa ser corrigido antes da implementacao de documentos sensiveis,
-embora ainda nao tenha sido tratado nesta etapa.
-
-## Comando sugerido para salvar esta etapa
-
-Se o usuario quiser salvar apenas este trabalho no git, usar:
-
-```powershell
-git add ESTRUTURA-V2.md sql/estrutura_relacional_v2_draft.sql CONTEXTO-PARA-OUTRA-IA.md
-git commit -m "Documenta estrutura relacional v2 e contexto de continuidade"
-```
+O usuario esta aprendendo e deve ser tratado como aprendiz, com orientacoes
+claras e sem assumir conhecimento tecnico avancado.

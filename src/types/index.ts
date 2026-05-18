@@ -29,21 +29,69 @@ export interface Lead {
 // ── parceiros ─────────────────────────────────────────────────
 export interface Parceiro {
   id: string
+  codigo_parceiro: string | null
+  cpf_cnpj: string | null
   nome: string
+  razao_social: string | null
+  nome_fantasia: string | null
   responsavel: string | null
+  id_local_atendimento: string | null
+  senha_acesso: string | null
+  email_acesso: string | null
+  ddd: string | null
   telefone: string | null
   email: string | null
+  email_adicional_1: string | null
+  email_adicional_2: string | null
+  email_adicional_3: string | null
+  cep: string | null
+  logradouro: string | null
+  numero: string | null
+  ibge: string | null
+  complemento: string | null
+  bairro: string | null
   cidade: string | null
   estado: string | null
+  observacao: string | null
+  token: string | null
+  inscricao_municipal: string | null
+  inscricao_estadual: string | null
+  tipo_parceiro: TipoParceiro | null
+  data_ativacao: string | null
+  data_desativacao: string | null
+  bloquear_vendas_protocolos: boolean
+  nao_enviar_whatsapp_vendas: boolean
+  nao_enviar_email_vendas: boolean
+  nao_enviar_renovacao_clientes: boolean
+  nao_quero_receber_whatsapp: boolean
+  nao_quero_receber_email: boolean
+  gestor_1_id: string | null
+  gestor_2_id: string | null
+  gestor_3_id: string | null
+  gestor_4_id: string | null
+  gestor_5_id: string | null
+  tipo_conta: TipoContaBancaria | null
+  banco_id: string | null
+  agencia: string | null
+  agencia_digito: string | null
+  conta: string | null
+  conta_digito: string | null
+  operacao: string | null
+  cnpj_cpf_titular: string | null
+  titular_conta: string | null
+  chave_pix: string | null
+  centro_custo_id: string | null
   segmento: 'alto' | 'medio' | 'baixo' | 'inativo'
   status: 'ativo' | 'inativo'
   emissoes_mes: number
   receita_mes: number
   desde: string | null
+  metadata: Record<string, unknown> | null
   created_at: string
+  updated_at: string | null
 }
 
-export type NovoParceiro = Omit<Parceiro, 'id' | 'created_at'>
+export type NovoParceiro = Omit<Parceiro, 'id' | 'created_at' | 'updated_at'>
 
 // ── vendas ────────────────────────────────────────────────────
 export type CanalVenda = 'balcao' | 'ecommerce' | 'prepago' | 'voucher' | 'link_externo'

@@ -1,6 +1,6 @@
 # Ponto de Salvamento — Migração V2 (CertiID 1.0.0)
 
-> Última atualização: 2026-05-14
+> Última atualização: 2026-05-15
 > Para retomar em nova sessão de IA sem perder contexto.
 
 ---
@@ -105,6 +105,34 @@ Abas Agenda, Certificados, Preços, Comissões e Pagamento: **inalteradas** (tab
 - Mapeamento `enriched` inclui todos os 12 campos V2 novos (null/`{}` por padrão)
 - Lógica existente intacta: CSV import, bulk WhatsApp/e-mail, templates, automação, kanban
 
+**Atualizações locais de 2026-05-15 — AINDA NÃO COMMITADAS/PUBLICADAS**
+
+- Importação de planilhas agora aceita `.csv`, `.xls` e `.xlsx`
+- Download do modelo de importação agora gera `modelo_renovacoes.xlsx`
+- Templates:
+  - carregam automaticamente ao abrir a tela
+  - podem ser escolhidos separadamente para envio de `WhatsApp` e `E-mail`
+  - cada canal tem `template padrão`
+  - a interface mostra qual template está em uso no envio
+- Exclusão:
+  - exclusão individual e em lote via `soft delete`
+  - `deleted_at`, `deleted_by` e `motivo_exclusao`
+- Tabela:
+  - coluna `Ações` movida para o início da linha
+  - ações trocadas para ícones com `tooltip`
+- Novo botão `Editar contato`
+  - abre modal direto da fila de renovações
+  - **regra nova**: só permite alterar `e-mail` e `telefone`
+  - nome, CPF, CNPJ e demais dados estruturais **não podem** ser alterados por essa tela
+- Permissões aplicadas na interface:
+  - `admin`: pode editar contato e excluir registros
+  - `agente_registro`: pode editar contato
+  - `usuario comum`: não pode editar cadastro nem excluir
+
+**Observação importante de regra de negócio**
+
+- Alterações de `nome`, `CPF`, `CNPJ`, `razão social` e outros dados mestres devem acontecer no **cadastro principal**, para refletirem no sistema inteiro.
+
 ---
 
 ### 6. Tela Financeiro
@@ -136,7 +164,65 @@ Nova aba "Pontos de Atendimento" adicionada:
 
 ---
 
+### 8. Tela Comercial — atualização operacional local
+
+**`src/pages/Comercial.tsx`** — PARCIALMENTE FEITO NO LOCAL, AINDA NÃO COMMITADO/PUBLICADO
+
+Evolução da aba `Lançar Vendas` para ficar mais próxima do fluxo operacional desejado:
+
+- filtros no topo por:
+  - `data inicial`
+  - `data final`
+  - `pedido`
+  - `protocolo`
+  - `cliente/documento`
+  - `status`
+- tabela operacional com colunas:
+  - `ações`
+  - `data`
+  - `pedido`
+  - `protocolo`
+  - `cliente`
+  - `documento`
+  - `produto`
+  - `emissão`
+  - `ponto`
+  - `valor`
+  - `pagamento`
+  - `status`
+- ações por linha:
+  - `editar cliente`
+  - `nova venda para esse cliente`
+  - `agendar atendimento`
+- edição de cliente reutiliza o formulário já existente dentro da tela
+- campo `Valor Custo` foi removido da interface de `Registrar Venda`
+
+**Observação**
+
+- A tela ainda não está no nível final da referência enviada pelo usuário. Ela foi só o primeiro bloco da transformação operacional.
+
+---
+
 ## O que falta fazer
+
+### Pendências imediatas de interface
+
+**Renovações**
+- padronizar melhor a experiência de template para o usuário final
+- decidir se a escolha do template ficará só em seletor superior ou também por ação individual
+- validar se o modal de `Editar contato` ficará apenas para `email/telefone` ou se depois haverá atalho para abrir o cadastro mestre
+
+**Comercial**
+- continuar a transformação da aba `Lançar Vendas` para ficar mais próxima da referência operacional
+- incluir mais ações por linha se necessário
+- ligar melhor a consulta operacional com pedido, protocolo e agenda
+
+**Permissões**
+- hoje a regra foi aplicada na interface de `Renovações`
+- ainda falta propagar a mesma lógica para outras telas operacionais
+  - usuário comum não altera cadastro
+  - agente de registro pode alterar cadastro
+  - somente admin exclui vendas ou altera tudo
 
 ### Pendências de infraestrutura
 
@@ -146,6 +232,10 @@ Nova aba "Pontos de Atendimento" adicionada:
 
 **3. `formas_pagamento_v2`** — tabela nova está vazia.
 Comercial ainda usa a antiga `formas_pagamento`. Migrar catálogo quando conveniente.
+
+**4. Dependência nova instalada localmente**
+- `xlsx` adicionada em `package.json` / `package-lock.json`
+- ainda não commitada neste ponto de salvamento
 
 ---
 
@@ -163,3 +253,50 @@ Remoção é opcional e pode ser feita em etapa futura.
 - `VITE_SUPABASE_SERVICE_ROLE_KEY` nunca hardcoded — sempre via `.env` (gitignored)
 - `supabaseAdmin` bypassa RLS — usar somente em operações admin; nunca expor a usuários comuns
 - Campos sensíveis de `nfse_configuracoes` (senhas, chaves API) nunca no frontend
+
+---
+
+## Estado atual do Git no momento deste salvamento
+
+**Arquivos alterados localmente e ainda não publicados**
+
+- `src/pages/Renovacoes.tsx`
+- `src/pages/Comercial.tsx`
+- `src/pages/Parceiros.tsx`
+- `src/types/index.ts`
+- `package.json`
+- `package-lock.json`
+- `sql/parceiros_gestao_v2.sql`
+
+### Bloco novo em andamento: Parceiros
+
+Foi iniciado localmente um novo bloco de gestão em `Parceiros`, com:
+
+- formulário muito mais completo de cadastro
+- possibilidade de editar parceiros existentes
+- busca por código, documento, razão social e cidade
+- campos operacionais de:
+  - acesso
+  - contatos adicionais
+  - endereço
+  - token
+  - inscrições
+  - bloqueios
+  - mensageria
+  - gestores
+  - dados bancários
+  - centro de custo
+
+**SQL de apoio**
+
+- `sql/parceiros_gestao_v2.sql`
+
+**Situação**
+
+- esse SQL já foi executado no Supabase nesta sessão, com retorno do usuário:
+  `feito`
+
+**Arquivos locais que não devem entrar no commit por padrão**
+
+- `.claude/`
+- `.vscode/`

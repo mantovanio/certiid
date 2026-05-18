@@ -26,3 +26,13 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             bash ./deploy.sh
+
+      - name: Deploy Edge Functions no Supabase
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Publicar Edge Function chatwoot-webhook
+        run: supabase functions deploy chatwoot-webhook --project-ref cvfrhfiaprdtwxxplngk
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

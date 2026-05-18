@@ -38,6 +38,15 @@ async function dbPatch(table: string, filter: string, body: unknown) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+function normalizePhone(raw: string | undefined): string | undefined {
+  if (!raw) return undefined
+  const digits = raw.replace(/\D/g, '')
+  if (digits.length === 0) return undefined
+  if (digits.startsWith('55') && digits.length >= 12) return `+${digits}`
+  if (digits.length === 10 || digits.length === 11) return `+55${digits}`
+  return `+${digits}`
+}
+
 function tsToISO(ts: unknown): string | null {
   if (!ts) return null
   if (typeof ts === 'string') return ts
@@ -138,7 +147,7 @@ async function actionCreateConversation(p: Record<string, unknown>) {
   const token   = p.api_token     as string | undefined
   const accId   = p.account_id    as string | undefined
   const inboxId = p.inbox_id      as string | undefined
-  const phone   = p.contact_phone as string | undefined
+  const phone   = normalizePhone(p.contact_phone as string | undefined)
   const name    = (p.contact_name  as string | undefined) ?? 'Cliente'
   const leadId  = p.lead_id       as string | undefined
 

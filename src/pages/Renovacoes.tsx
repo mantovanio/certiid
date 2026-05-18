@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
-import { queueEmailMessage, queueWhatsAppMessage, renderTemplate } from '@/lib/communication'
+import { queueEmailMessage, queueWhatsAppMessage, queueWhatsAppFollowUp, renderTemplate } from '@/lib/communication'
 import { useAuth } from '@/contexts/AuthContext'
 import * as XLSX from 'xlsx'
 import type {
@@ -474,9 +474,11 @@ export default function Renovacoes() {
     const { error } = await queueWhatsAppMessage({ to: r.telefone, body, payload: { renovacao_id: r.id, tipo: 'renovacao' } })
     if (error) { setSendingId(null); showMsg('Erro WhatsApp: ' + error, 'err'); return }
     await atualizarStatus(r.id, 'contatado')
-    await supabase.from('renovacoes').update({ ultimo_lembrete: new Date().toISOString() }).eq('id', r.id)
-    setLista(prev => prev.map(x => x.id === r.id ? { ...x, ultimo_lembrete: new Date().toISOString() } : x))
+    const agora = new Date().toISOString()
+    await supabase.from('renovacoes').update({ ultimo_lembrete: agora }).eq('id', r.id)
+    setLista(prev => prev.map(x => x.id === r.id ? { ...x, ultimo_lembrete: agora } : x))
     await criarLeadKanban(r)
+    void queueWhatsAppFollowUp({ to: r.telefone, body, renovacaoId: r.id })
     setSendingId(null)
   }
 
@@ -520,13 +522,15 @@ export default function Renovacoes() {
     if (!alvos.length) { showMsg('Nenhum selecionado com telefone.', 'err'); return }
     const tpl = getSelectedTpl('whatsapp')
     setBulkSending(true)
-    await Promise.all(alvos.map(r => queueWhatsAppMessage({
+    const base = Date.now()
+    await Promise.all(alvos.map((r, i) => queueWhatsAppMessage({
       to: r.telefone!,
       body: renderTemplate(tpl?.body ?? WHATSAPP_TPL_DEFAULT, tplValues(r)),
       payload: { renovacao_id: r.id, tipo: 'renovacao_lote' },
+      scheduledFor: new Date(base + i * 3000).toISOString(),
     })))
     setBulkSending(false)
-    showMsg(`${alvos.length} WhatsApps enfileirados.`)
+    showMsg(`${alvos.length} WhatsApps enfileirados (espaçados 3s cada).`)
   }
 
   async function bulkEnviarEmail() {
@@ -534,11 +538,13 @@ export default function Renovacoes() {
     if (!alvos.length) { showMsg('Nenhum selecionado com e-mail.', 'err'); return }
     const tpl  = getSelectedTpl('email')
     setBulkSending(true)
-    await Promise.all(alvos.map(r => queueEmailMessage({
+    const base = Date.now()
+    await Promise.all(alvos.map((r, i) => queueEmailMessage({
       to: r.email!,
       subject: renderTemplate(tpl?.subject ?? 'Renovação do seu certificado digital', tplValues(r)),
       body:    renderTemplate(tpl?.body ?? EMAIL_TPL_DEFAULT, tplValues(r)),
       payload: { renovacao_id: r.id, tipo: 'renovacao_lote' },
+      scheduledFor: new Date(base + i * 1500).toISOString(),
     })))
     setBulkSending(false)
     showMsg(`${alvos.length} e-mails enfileirados.`)
@@ -578,13 +584,29 @@ export default function Renovacoes() {
     if (!alvos.length) { showMsg('Nenhum cliente elegível com telefone.', 'err'); return }
     const tpl = getSelectedTpl('whatsapp')
     setSendingId('massa')
-    const results = await Promise.all(alvos.map(r => queueWhatsAppMessage({
+    const base = Date.now()
+    const results = await Promise.all(alvos.map((r, i) => queueWhatsAppMessage({
       to: r.telefone!, body: renderTemplate(tpl?.body ?? WHATSAPP_TPL_DEFAULT, tplValues(r)),
       payload: { renovacao_id: r.id, tipo: 'renovacao_massa' },
+      scheduledFor: new Date(base + i * 3000).toISOString(),
     })))
     setSendingId(null)
     const falhas = results.filter(r => r.error).length
-    showMsg(falhas > 0 ? `${falhas} mensagens falharam.` : `${alvos.length} WhatsApps enfileirados.`, falhas > 0 ? 'err' : 'ok')
+    const tempoTotal = Math.ceil((alvos.length * 3) / 60)
+    showMsg(
+      falhas > 0 ? `${falhas} mensagens falharam.` : `${alvos.length} WhatsApps enfileirados (~${tempoTotal} min para enviar todos).`,
+      falhas > 0 ? 'err' : 'ok'
+    )
+  }
+
+  async function cancelarFollowUps(renovacaoId: string) {
+    await supabase
+      .from('communication_outbox')
+      .delete()
+      .filter('payload->>renovacao_id', 'eq', renovacaoId)
+      .filter('payload->>tipo', 'eq', 'renovacao_followup_auto')
+      .gte('scheduled_for', new Date().toISOString())
+    showMsg('Avisos agendados cancelados.')
   }
 
   async function toggleAutomation(rule: AutomationRule) {
@@ -689,22 +711,31 @@ export default function Renovacoes() {
   }
 
   async function definirTemplatePadrao(tpl: CommunicationTemplate, ativo: boolean) {
-    if (!ativo) {
-      showMsg('Sempre deixe pelo menos um template padrão por canal.', 'err')
-      return
+    if (ativo) {
+      const sameChannelIds = templates.filter(t => t.channel === tpl.channel).map(t => t.id)
+      if (sameChannelIds.length > 0) {
+        const { error: clearError } = await supabase.from('communication_templates')
+          .update({ ativo: false }).in('id', sameChannelIds)
+        if (clearError) { showMsg('Erro ao atualizar templates: ' + clearError.message, 'err'); return }
+      }
+      if (tpl.channel === 'whatsapp') setSelectedWaTplId(tpl.id)
+      else setSelectedEmailTplId(tpl.id)
+    } else {
+      if (tpl.channel === 'whatsapp' && selectedWaTplId === tpl.id) setSelectedWaTplId('')
+      if (tpl.channel === 'email' && selectedEmailTplId === tpl.id) setSelectedEmailTplId('')
     }
-    const sameChannelIds = templates.filter(t => t.channel === tpl.channel).map(t => t.id)
-    if (sameChannelIds.length === 0) return
-    const { error: clearError } = await supabase.from('communication_templates')
-      .update({ ativo: false })
-      .in('id', sameChannelIds)
-    if (clearError) { showMsg('Erro ao atualizar templates: ' + clearError.message, 'err'); return }
-    const { error } = await supabase.from('communication_templates').update({ ativo: true }).eq('id', tpl.id)
-    if (error) { showMsg('Erro ao marcar template padrão: ' + error.message, 'err'); return }
-    if (tpl.channel === 'whatsapp') setSelectedWaTplId(tpl.id)
-    else setSelectedEmailTplId(tpl.id)
+    const { error } = await supabase.from('communication_templates').update({ ativo }).eq('id', tpl.id)
+    if (error) { showMsg('Erro ao atualizar template: ' + error.message, 'err'); return }
     await fetchTemplates()
-    showMsg(`Template padrão de ${tpl.channel === 'whatsapp' ? 'WhatsApp' : 'e-mail'} atualizado.`)
+    showMsg(ativo ? 'Template marcado como padrão.' : 'Template desmarcado.')
+  }
+
+  function toggleTplSelection(tpl: CommunicationTemplate) {
+    if (tpl.channel === 'whatsapp') {
+      setSelectedWaTplId(prev => prev === tpl.id ? '' : tpl.id)
+    } else {
+      setSelectedEmailTplId(prev => prev === tpl.id ? '' : tpl.id)
+    }
   }
 
   // insere variável na posição do cursor no textarea
@@ -1357,18 +1388,21 @@ export default function Renovacoes() {
                         ? <p className="text-xs text-gray-400 pl-3">Nenhum template de WhatsApp.</p>
                         : waTemplates.map(tpl => (
                           <div key={tpl.id}
+                            onClick={() => toggleTplSelection(tpl)}
                             className={cn('flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors',
-                              editingTpl?.id === tpl.id
-                                ? 'border-indigo-400 bg-indigo-100 dark:bg-indigo-900/30'
-                                : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:border-indigo-300')}>
-                            <div className="flex-1 min-w-0" onClick={() => abrirEditarTemplate(tpl)}>
+                              selectedWaTplId === tpl.id
+                                ? 'border-green-500 bg-green-50 dark:bg-green-900/20'
+                                : editingTpl?.id === tpl.id
+                                  ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/20'
+                                  : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:border-green-300')}>
+                            <div className="flex-1 min-w-0">
                               <p className="text-xs font-medium truncate">{tpl.name}</p>
-                              <p className="text-[11px] text-gray-500">
-                                {selectedWaTplId === tpl.id ? 'Em uso no envio agora' : tpl.ativo ? 'Template padrão' : 'Disponível'}
+                              <p className={cn('text-[11px]', selectedWaTplId === tpl.id ? 'text-green-600 dark:text-green-400 font-semibold' : 'text-gray-500')}>
+                                {selectedWaTplId === tpl.id ? '✓ Selecionado para envio' : tpl.ativo ? 'Padrão do canal' : 'Disponível'}
                               </p>
                               <p className="text-xs text-gray-400 truncate">{tpl.body.slice(0, 60)}…</p>
                             </div>
-                            <label className="flex items-center gap-1 text-[11px] text-gray-500 shrink-0">
+                            <label className="flex items-center gap-1 text-[11px] text-gray-500 shrink-0" onClick={e => e.stopPropagation()}>
                               <input
                                 type="checkbox"
                                 checked={tpl.ativo}
@@ -1377,11 +1411,11 @@ export default function Renovacoes() {
                               />
                               Padrão
                             </label>
-                            <button type="button" title="Editar" onClick={() => abrirEditarTemplate(tpl)}
+                            <button type="button" title="Editar" onClick={e => { e.stopPropagation(); abrirEditarTemplate(tpl) }}
                               className="text-gray-400 hover:text-indigo-600 p-1 shrink-0">
                               <MessageSquare size={13} />
                             </button>
-                            <button type="button" title="Excluir" onClick={() => void deletarTemplate(tpl)}
+                            <button type="button" title="Excluir" onClick={e => { e.stopPropagation(); void deletarTemplate(tpl) }}
                               className="text-gray-400 hover:text-red-500 p-1 shrink-0">
                               <Trash2 size={13} />
                             </button>
@@ -1401,19 +1435,22 @@ export default function Renovacoes() {
                         ? <p className="text-xs text-gray-400 pl-3">Nenhum template de e-mail.</p>
                         : emailTemplates.map(tpl => (
                           <div key={tpl.id}
+                            onClick={() => toggleTplSelection(tpl)}
                             className={cn('flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors',
-                              editingTpl?.id === tpl.id
-                                ? 'border-indigo-400 bg-indigo-100 dark:bg-indigo-900/30'
-                                : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:border-indigo-300')}>
-                            <div className="flex-1 min-w-0" onClick={() => abrirEditarTemplate(tpl)}>
+                              selectedEmailTplId === tpl.id
+                                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                                : editingTpl?.id === tpl.id
+                                  ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/20'
+                                  : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:border-blue-300')}>
+                            <div className="flex-1 min-w-0">
                               <p className="text-xs font-medium truncate">{tpl.name}</p>
-                              <p className="text-[11px] text-gray-500">
-                                {selectedEmailTplId === tpl.id ? 'Em uso no envio agora' : tpl.ativo ? 'Template padrão' : 'Disponível'}
+                              <p className={cn('text-[11px]', selectedEmailTplId === tpl.id ? 'text-blue-600 dark:text-blue-400 font-semibold' : 'text-gray-500')}>
+                                {selectedEmailTplId === tpl.id ? '✓ Selecionado para envio' : tpl.ativo ? 'Padrão do canal' : 'Disponível'}
                               </p>
                               {tpl.subject && <p className="text-xs text-gray-500 truncate">Assunto: {tpl.subject}</p>}
                               <p className="text-xs text-gray-400 truncate">{tpl.body.slice(0, 50)}…</p>
                             </div>
-                            <label className="flex items-center gap-1 text-[11px] text-gray-500 shrink-0">
+                            <label className="flex items-center gap-1 text-[11px] text-gray-500 shrink-0" onClick={e => e.stopPropagation()}>
                               <input
                                 type="checkbox"
                                 checked={tpl.ativo}
@@ -1422,11 +1459,11 @@ export default function Renovacoes() {
                               />
                               Padrão
                             </label>
-                            <button type="button" title="Editar" onClick={() => abrirEditarTemplate(tpl)}
+                            <button type="button" title="Editar" onClick={e => { e.stopPropagation(); abrirEditarTemplate(tpl) }}
                               className="text-gray-400 hover:text-indigo-600 p-1 shrink-0">
                               <MessageSquare size={13} />
                             </button>
-                            <button type="button" title="Excluir" onClick={() => void deletarTemplate(tpl)}
+                            <button type="button" title="Excluir" onClick={e => { e.stopPropagation(); void deletarTemplate(tpl) }}
                               className="text-gray-400 hover:text-red-500 p-1 shrink-0">
                               <Trash2 size={13} />
                             </button>
@@ -1667,6 +1704,11 @@ export default function Renovacoes() {
                             title="Criar lead no Kanban"
                             className="p-1 rounded text-purple-600 hover:bg-purple-50 dark:text-purple-400 dark:hover:bg-purple-900/20 disabled:opacity-30">
                             <Users size={12} />
+                          </button>
+                          <button type="button" disabled={busy} onClick={() => void cancelarFollowUps(r.id)}
+                            title="Cancelar avisos automáticos agendados"
+                            className="p-1 rounded text-orange-500 hover:bg-orange-50 dark:text-orange-400 dark:hover:bg-orange-900/20 disabled:opacity-30">
+                            <Bell size={12} className="line-through" />
                           </button>
                           <button type="button" disabled={busy} onClick={() => void excluirRenovacao(r)}
                             title="Excluir da lista de renovações"

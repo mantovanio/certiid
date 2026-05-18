@@ -73,3 +73,24 @@ export function queueChatwootConversationAction(input: {
 export function renderTemplate(template: string, values: Record<string, string | number | null | undefined>) {
   return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => String(values[key] ?? ''))
 }
+
+export function queueWhatsAppFollowUp(input: {
+  to: string
+  body: string
+  renovacaoId: string
+  delayHours?: number
+}) {
+  const delayMs = (input.delayHours ?? 48) * 3600 * 1000
+  return queueCommunication({
+    channel: 'whatsapp',
+    provider: 'chatwoot',
+    to: input.to,
+    body: input.body,
+    payload: {
+      renovacao_id: input.renovacaoId,
+      tipo: 'renovacao_followup_auto',
+      followup_round: 1,
+    },
+    scheduledFor: new Date(Date.now() + delayMs).toISOString(),
+  })
+}

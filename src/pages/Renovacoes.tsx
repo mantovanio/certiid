@@ -38,7 +38,8 @@ const EMAIL_TPL_DEFAULT    = 'Olá {{cliente}},\n\nSeu certificado {{tipo_certif
 
 // variáveis disponíveis para templates
 const TEMPLATE_VARS = [
-  { key: '{{cliente}}',          label: 'Cliente'          },
+  { key: '{{cliente}}',          label: 'Cliente (nome completo)' },
+  { key: '{{primeiro_nome}}',    label: 'Primeiro Nome'    },
   { key: '{{razao_social}}',     label: 'Razão Social'     },
   { key: '{{tipo_certificado}}', label: 'Produto'          },
   { key: '{{dias_restantes}}',   label: 'Dias p/ Vencer'   },
@@ -401,10 +402,18 @@ export default function Renovacoes() {
 
   // ── template values (for rendering) ─────────────────────────
 
+  function primeiroNome(nome: string | null | undefined): string {
+    if (!nome) return ''
+    const palavra = nome.trim().split(/\s+/)[0] ?? ''
+    return palavra.charAt(0).toUpperCase() + palavra.slice(1).toLowerCase()
+  }
+
   function tplValues(r: RenovacaoV2): Record<string, string | number> {
     const linkData = linksMap.get(r.tipo_certificado)
+    const nomeCompleto = r.razao_social ?? r.cliente
     return {
-      cliente:           r.razao_social ?? r.cliente,
+      cliente:           nomeCompleto,
+      primeiro_nome:     primeiroNome(nomeCompleto),
       razao_social:      r.razao_social ?? '',
       tipo_certificado:  r.tipo_certificado,
       dias_restantes:    r.dias_restantes,

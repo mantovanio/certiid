@@ -33,8 +33,70 @@ const STATUS_CONFIG: Record<StatusRenovacao, { label: string; cls: string }> = {
   perdido:    { label: 'Não Renovado',  cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'         },
 }
 
-const WHATSAPP_TPL_DEFAULT = 'Olá {{cliente}}, seu certificado {{tipo_certificado}} vence em {{dias_restantes}} dias ({{data_vencimento}}). Podemos ajudar com a renovação! 🔐'
-const EMAIL_TPL_DEFAULT    = 'Olá {{cliente}},\n\nSeu certificado {{tipo_certificado}} vence em {{dias_restantes}} dias ({{data_vencimento}}).\n\nEntre em contato para renovar e evitar interrupções.\n\nEquipe AR CERTI ID'
+// ── Extração de primeiro nome ─────────────────────────────────────────────────
+// Primeiros nomes que formam nome composto no Brasil (ex: Ana Clara, João Vitor)
+const PREFIXOS_COMPOSTOS = new Set([
+  'ANA', 'ANNA', 'ANNE',
+  'MARIA',
+  'JOAO', 'JOÃO',
+  'JOSE', 'JOSÉ',
+  'LUIZ', 'LUIS', 'LUISA', 'LUÍSA',
+  'MARCO', 'MARCOS',
+  'PEDRO',
+  'PAULO',
+  'CARLOS',
+  'VITOR', 'VICTOR',
+  'LAURA',
+  'CLARA',
+])
+
+// Palavras que NÃO são parte do primeiro nome (conectores e sufixos genealógicos)
+const NAO_NOME = new Set([
+  'DA', 'DE', 'DO', 'DAS', 'DOS', 'DI', 'D', 'E',
+  'FILHO', 'FILHA', 'JUNIOR', 'JÚNIOR', 'JR',
+  'NETO', 'SOBRINHO', 'BISNETO',
+])
+
+function titleCase(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase()
+}
+
+/**
+ * Retorna o primeiro nome (ou nome composto) de uma pessoa.
+ * Para empresas (cnpj preenchido) retorna o nome completo sem alteração.
+ * Exemplos PF: "ANA CLARA SILVA" → "Ana Clara"
+ *              "JOAO VITOR PEREIRA" → "João Vitor"  (usa forma do cadastro)
+ *              "MARIA JULIA SOUZA" → "Maria Julia"
+ *              "CARLOS ALBERTO NETO" → "Carlos"  (Alberto não é prefixo composto)
+ * Exemplo PJ: "VICCARE LTDA" → "Viccare Ltda"  (título, sem cortar)
+ */
+function extrairPrimeiroNome(nome: string | null | undefined, cnpj?: string | null): string {
+  if (!nome) return ''
+  const raw = nome.trim()
+  if (!raw) return ''
+
+  // Empresa: retorna nome completo em title case
+  if (cnpj?.replace(/\D/g, '')) {
+    return raw.split(/\s+/).map(titleCase).join(' ')
+  }
+
+  const palavras = raw.split(/\s+/)
+  if (palavras.length === 0) return ''
+
+  const p0 = palavras[0].toUpperCase()
+  const p1 = palavras[1]?.toUpperCase()
+
+  // Nome composto: primeira palavra é prefixo composto E segunda não é conector/sufixo
+  if (p1 && PREFIXOS_COMPOSTOS.has(p0) && !NAO_NOME.has(p1)) {
+    return titleCase(palavras[0]) + ' ' + titleCase(palavras[1])
+  }
+
+  return titleCase(palavras[0])
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+const WHATSAPP_TPL_DEFAULT = 'Olá {{primeiro_nome}}, seu certificado {{tipo_certificado}} vence em {{dias_restantes}} dias ({{data_vencimento}}). Podemos ajudar com a renovação! 🔐'
+const EMAIL_TPL_DEFAULT    = 'Olá {{primeiro_nome}},\n\nSeu certificado {{tipo_certificado}} vence em {{dias_restantes}} dias ({{data_vencimento}}).\n\nEntre em contato para renovar e evitar interrupções.\n\nEquipe AR CERTI ID'
 
 // variáveis disponíveis para templates
 const TEMPLATE_VARS = [
@@ -402,18 +464,12 @@ export default function Renovacoes() {
 
   // ── template values (for rendering) ─────────────────────────
 
-  function primeiroNome(nome: string | null | undefined): string {
-    if (!nome) return ''
-    const palavra = nome.trim().split(/\s+/)[0] ?? ''
-    return palavra.charAt(0).toUpperCase() + palavra.slice(1).toLowerCase()
-  }
-
   function tplValues(r: RenovacaoV2): Record<string, string | number> {
     const linkData = linksMap.get(r.tipo_certificado)
     const nomeCompleto = r.razao_social ?? r.cliente
     return {
       cliente:           nomeCompleto,
-      primeiro_nome:     primeiroNome(nomeCompleto),
+      primeiro_nome:     extrairPrimeiroNome(nomeCompleto, r.cnpj),
       razao_social:      r.razao_social ?? '',
       tipo_certificado:  r.tipo_certificado,
       dias_restantes:    r.dias_restantes,

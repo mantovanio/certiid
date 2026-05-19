@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "certiid": {
+      "command": "npx",
+      "args": ["tsx", "mcp-server/index.ts"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}

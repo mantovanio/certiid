@@ -26,6 +26,15 @@ interface Props {
   onClose:  () => void
 }
 
+function normalizePhone(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const digits = raw.replace(/\D/g, '')
+  if (!digits) return null
+  if (digits.startsWith('55') && digits.length >= 12) return `+${digits}`
+  if (digits.length === 10 || digits.length === 11) return `+55${digits}`
+  return null // menos de 10 dígitos — inválido
+}
+
 export default function ChatPanel({ lead, chatwoot, onClose }: Props) {
   const [conversationId, setConversationId] = useState<string | null>(lead.id_conversa_chatwoot)
   const [messages, setMessages]   = useState<Message[]>([])
@@ -83,6 +92,17 @@ export default function ChatPanel({ lead, chatwoot, onClose }: Props) {
     let convId = lead.id_conversa_chatwoot
 
     if (!convId) {
+      const phone = normalizePhone(lead.whatsapp_lead)
+      if (!phone) {
+        setFetchError(
+          lead.whatsapp_lead
+            ? `Número "${lead.whatsapp_lead}" inválido — informe DDD + número (ex: 11 99999-9999) e salve o contato antes de abrir o chat.`
+            : 'Contato sem número de WhatsApp. Edite o contato e adicione um número antes de abrir o chat.'
+        )
+        setLoading(false)
+        return
+      }
+
       setLoadingLabel('Criando conversa no Chatwoot...')
       try {
         const res  = await fetch(EDGE_FN, {
@@ -94,7 +114,7 @@ export default function ChatPanel({ lead, chatwoot, onClose }: Props) {
             api_token:     chatwoot.api_token,
             account_id:    chatwoot.account_id,
             inbox_id:      chatwoot.inbox_id,
-            contact_phone: lead.whatsapp_lead,
+            contact_phone: phone,
             contact_name:  lead.nome_lead ?? 'Cliente',
             lead_id:       lead.id,
           }),

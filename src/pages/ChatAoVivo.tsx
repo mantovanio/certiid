@@ -32,6 +32,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import { useAuth } from '@/contexts/AuthContext'
 import ChatPanel, { type ChatwootCfg } from '@/components/ChatPanel'
 import type { Lead, StatusLead } from '@/types'
 
@@ -112,6 +113,8 @@ function emptyColumnForm(): ColumnConfig {
 }
 
 export default function ChatAoVivo() {
+  const { profile } = useAuth()
+  const isAdmin = profile?.perfil === 'admin'
   const [leads, setLeads] = useState<Lead[]>([])
   const [columns, setColumns] = useState<ColumnConfig[]>(DEFAULT_COLUMNS)
   const [loading, setLoading] = useState(true)
@@ -136,6 +139,8 @@ export default function ChatAoVivo() {
   const [quickSendLead, setQuickSendLead] = useState<Lead | null>(null)
   const [quickSendText, setQuickSendText] = useState('')
   const [quickSendLoading, setQuickSendLoading] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [deletingBulk, setDeletingBulk] = useState(false)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
@@ -330,13 +335,40 @@ export default function ChatAoVivo() {
   }
 
   async function deleteLead(lead: Lead) {
+    if (!isAdmin) return
     if (!confirm(`Excluir o contato ${lead.nome_lead || 'sem nome'}?`)) return
     const { error: err } = await supabase.from('leads_contabilidade').delete().eq('id', lead.id)
-    if (err) {
-      alert('Erro ao excluir contato: ' + err.message)
-      return
-    }
+    if (err) { alert('Erro ao excluir contato: ' + err.message); return }
     setLeads(prev => prev.filter(item => item.id !== lead.id))
+    setSelectedIds(prev => { const next = new Set(prev); next.delete(lead.id); return next })
+  }
+
+  async function deleteBulk() {
+    if (!isAdmin || selectedIds.size === 0) return
+    if (!confirm(`Excluir ${selectedIds.size} contato(s) selecionado(s)? Esta ação não pode ser desfeita.`)) return
+    setDeletingBulk(true)
+    const ids = [...selectedIds]
+    const { error: err } = await supabase.from('leads_contabilidade').delete().in('id', ids)
+    setDeletingBulk(false)
+    if (err) { alert('Erro ao excluir: ' + err.message); return }
+    setLeads(prev => prev.filter(item => !selectedIds.has(item.id)))
+    setSelectedIds(new Set())
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll() {
+    if (selectedIds.size === filteredLeads.length && filteredLeads.length > 0) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(filteredLeads.map(l => l.id)))
+    }
   }
 
   async function loadChatwoot() {
@@ -551,6 +583,7 @@ export default function ChatAoVivo() {
                     onOpenWhatsApp={openWhatsApp}
                     onEditColumn={openEditColumn}
                     onMoveColumn={moveColumn}
+                    isAdmin={isAdmin}
                   />
                 )
               })}
@@ -563,6 +596,7 @@ export default function ChatAoVivo() {
                 color="#3b82f6"
                 isDragging
                 hovered={false}
+                isAdmin={false}
                 onQuickMessage={() => undefined}
                 onQuickEdit={() => undefined}
                 onSchedule={() => undefined}
@@ -602,6 +636,17 @@ export default function ChatAoVivo() {
               </select>
             </div>
             <span className="text-xs text-gray-400">{filteredLeads.length} de {totalContatos}</span>
+            {isAdmin && selectedIds.size > 0 && (
+              <button
+                type="button"
+                onClick={() => void deleteBulk()}
+                disabled={deletingBulk}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-medium ml-auto"
+              >
+                <Trash2 size={13} />
+                {deletingBulk ? 'Excluindo…' : `Excluir selecionados (${selectedIds.size})`}
+              </button>
+            )}
           </div>
 
           {/* Tabela */}
@@ -610,6 +655,18 @@ export default function ChatAoVivo() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 dark:bg-gray-800/50 text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide text-left select-none">
+                    {isAdmin && (
+                      <th className="pl-4 pr-2 py-3 w-8">
+                        <input
+                          type="checkbox"
+                          aria-label="Selecionar todos"
+                          checked={filteredLeads.length > 0 && selectedIds.size === filteredLeads.length}
+                          ref={el => { if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < filteredLeads.length }}
+                          onChange={toggleSelectAll}
+                          className="rounded border-gray-300 dark:border-gray-600 accent-red-600 cursor-pointer"
+                        />
+                      </th>
+                    )}
                     {[
                       { col: 'nome_lead', label: 'Nome' },
                       { col: 'whatsapp_lead', label: 'WhatsApp' },
@@ -634,7 +691,24 @@ export default function ChatAoVivo() {
                   {filteredLeads.length === 0 ? (
                     <tr><td colSpan={7} className="px-5 py-10 text-center text-gray-400">Nenhum contato encontrado.</td></tr>
                   ) : filteredLeads.map(lead => (
-                    <tr key={lead.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors group">
+                    <tr
+                      key={lead.id}
+                      className={cn(
+                        'hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors group',
+                        selectedIds.has(lead.id) && 'bg-red-50 dark:bg-red-900/10',
+                      )}
+                    >
+                      {isAdmin && (
+                        <td className="pl-4 pr-2 py-3 w-8">
+                          <input
+                            type="checkbox"
+                            aria-label={`Selecionar ${lead.nome_lead ?? ''}`}
+                            checked={selectedIds.has(lead.id)}
+                            onChange={() => toggleSelect(lead.id)}
+                            className="rounded border-gray-300 dark:border-gray-600 accent-red-600 cursor-pointer"
+                          />
+                        </td>
+                      )}
                       <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100 max-w-[200px] truncate">
                         {lead.nome_lead || '—'}
                       </td>
@@ -679,12 +753,14 @@ export default function ChatAoVivo() {
                             icon={<Pencil size={13} />}
                             onClick={() => openEditLead(lead)}
                           />
-                          <ActionBtn
-                            title="Excluir contato"
-                            color="red"
-                            icon={<Trash2 size={13} />}
-                            onClick={() => deleteLead(lead)}
-                          />
+                          {isAdmin && (
+                            <ActionBtn
+                              title="Excluir contato"
+                              color="red"
+                              icon={<Trash2 size={13} />}
+                              onClick={() => deleteLead(lead)}
+                            />
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -719,7 +795,7 @@ export default function ChatAoVivo() {
           setForm={setLeadForm}
           onClose={() => setLeadModal(null)}
           onSave={saveLead}
-          onDelete={leadModal.mode === 'editar' && leadModal.lead ? () => deleteLead(leadModal.lead!) : undefined}
+          onDelete={isAdmin && leadModal.mode === 'editar' && leadModal.lead ? () => deleteLead(leadModal.lead!) : undefined}
           saving={savingLead}
         />
       )}
@@ -823,6 +899,7 @@ function KanbanColumn({
   onOpenWhatsApp,
   onEditColumn,
   onMoveColumn,
+  isAdmin,
 }: {
   column: ColumnConfig
   leads: Lead[]
@@ -834,6 +911,7 @@ function KanbanColumn({
   onOpenWhatsApp: (lead: Lead) => void
   onEditColumn: (column: ColumnConfig) => void
   onMoveColumn: (columnId: string, direction: -1 | 1) => void
+  isAdmin: boolean
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: column.status_key })
   return (
@@ -867,6 +945,7 @@ function KanbanColumn({
             onOpenEdit={onOpenEdit}
             onDelete={onDelete}
             onOpenWhatsApp={onOpenWhatsApp}
+            isAdmin={isAdmin}
           />
         ))}
         {leads.length === 0 && <p className="text-xs text-gray-400 text-center py-4">Nenhum lead</p>}
@@ -884,6 +963,7 @@ function DraggableCard({
   onOpenEdit,
   onDelete,
   onOpenWhatsApp,
+  isAdmin,
 }: {
   lead: Lead
   color: string
@@ -893,6 +973,7 @@ function DraggableCard({
   onOpenEdit: (lead: Lead) => void
   onDelete: (lead: Lead) => void
   onOpenWhatsApp: (lead: Lead) => void
+  isAdmin: boolean
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: lead.id })
   const nextStatus = nextSuggestedStatus(lead.status)
@@ -908,6 +989,7 @@ function DraggableCard({
         onSchedule={() => onOpenModal(lead, 'agendado')}
         onEdit={() => onOpenEdit(lead)}
         onDelete={() => onDelete(lead)}
+        isAdmin={isAdmin}
       />
     </div>
   )
@@ -923,6 +1005,7 @@ function LeadCard({
   onSchedule,
   onEdit,
   onDelete,
+  isAdmin,
 }: {
   lead: Lead
   color: string
@@ -933,6 +1016,7 @@ function LeadCard({
   onSchedule: () => void
   onEdit: () => void
   onDelete: () => void
+  isAdmin?: boolean
 }) {
   return (
     <div className={cn('group bg-white dark:bg-[#1E2535] rounded-xl p-3 shadow-sm border border-gray-100 dark:border-gray-700 cursor-grab hover:-translate-y-0.5 transition-transform', isDragging && 'shadow-lg cursor-grabbing')} style={{ borderLeftWidth: 4, borderLeftColor: color }}>
@@ -955,7 +1039,7 @@ function LeadCard({
         <QuickButton icon={<ArrowRightLeft size={13} />} label="Etapa" onClick={onQuickEdit} />
         <QuickButton icon={<CalendarClock size={13} />} label="Retorno" onClick={onSchedule} />
         <QuickButton icon={<Pencil size={13} />} label="Editar" onClick={onEdit} />
-        <QuickButton icon={<Trash2 size={13} />} label="Excluir" onClick={onDelete} />
+        {isAdmin && <QuickButton icon={<Trash2 size={13} />} label="Excluir" onClick={onDelete} />}
       </div>
     </div>
   )

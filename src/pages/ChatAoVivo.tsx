@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import React, { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   DndContext,
   DragOverlay,
@@ -26,6 +26,9 @@ import {
   UserPlus,
   ChevronLeft,
   ChevronRight,
+  Search,
+  Send,
+  Filter,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
@@ -127,6 +130,12 @@ export default function ChatAoVivo() {
   const [leadForm, setLeadForm] = useState<LeadFormState>(emptyLeadForm())
   const [chatwoot, setChatwoot] = useState<ChatwootCfg | null>(null)
   const [chatLead, setChatLead] = useState<Lead | null>(null)
+  const [listSearch, setListSearch] = useState('')
+  const [listStatusFilter, setListStatusFilter] = useState('')
+  const [listSort, setListSort] = useState<{ col: string; asc: boolean }>({ col: 'created_at', asc: false })
+  const [quickSendLead, setQuickSendLead] = useState<Lead | null>(null)
+  const [quickSendText, setQuickSendText] = useState('')
+  const [quickSendLoading, setQuickSendLoading] = useState(false)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
@@ -445,6 +454,53 @@ export default function ChatAoVivo() {
   const activeLead = leads.find(item => item.id === activeId)
   const totalContatos = useMemo(() => leads.length, [leads])
 
+  const filteredLeads = useMemo(() => {
+    let list = [...leads]
+    if (listStatusFilter) list = list.filter(l => l.status === listStatusFilter)
+    if (listSearch.trim()) {
+      const q = listSearch.trim().toLowerCase()
+      list = list.filter(l =>
+        (l.nome_lead ?? '').toLowerCase().includes(q) ||
+        (l.whatsapp_lead ?? '').toLowerCase().includes(q) ||
+        (l.motivo_contato ?? '').toLowerCase().includes(q) ||
+        (l.ultima_mensagem ?? '').toLowerCase().includes(q),
+      )
+    }
+    list.sort((a, b) => {
+      const av = String((a as unknown as Record<string, unknown>)[listSort.col] ?? '')
+      const bv = String((b as unknown as Record<string, unknown>)[listSort.col] ?? '')
+      return listSort.asc ? av.localeCompare(bv) : bv.localeCompare(av)
+    })
+    return list
+  }, [leads, listSearch, listStatusFilter, listSort])
+
+  function toggleSort(col: string) {
+    setListSort(prev => prev.col === col ? { col, asc: !prev.asc } : { col, asc: true })
+  }
+
+  async function sendQuickMessage() {
+    if (!quickSendLead || !quickSendText.trim()) return
+    setQuickSendLoading(true)
+    if (chatwoot) {
+      setChatLead(quickSendLead)
+      setQuickSendLead(null)
+      setQuickSendText('')
+      setQuickSendLoading(false)
+      return
+    }
+    const { error: err } = await supabase.from('communication_outbox').insert([{
+      channel: 'whatsapp', provider: 'chatwoot',
+      to_address: quickSendLead.whatsapp_lead,
+      body: quickSendText.trim(),
+      payload: { lead_id: quickSendLead.id, tipo: 'manual_lista' },
+      scheduled_for: new Date().toISOString(),
+    }])
+    setQuickSendLoading(false)
+    if (err) { alert('Erro ao enfileirar mensagem: ' + err.message); return }
+    setQuickSendLead(null)
+    setQuickSendText('')
+  }
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shrink-0">
@@ -519,32 +575,123 @@ export default function ChatAoVivo() {
       )}
 
       {!loading && !error && view === 'lista' && (
-        <div className="flex-1 overflow-auto p-6">
-          <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 dark:bg-gray-800/50 text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide text-left">
-                  <th className="px-5 py-3">Nome</th>
-                  <th className="px-5 py-3">WhatsApp</th>
-                  <th className="px-5 py-3">Motivo do Contato</th>
-                  <th className="px-5 py-3">Status</th>
-                  <th className="px-5 py-3">Criado em</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {leads.length === 0 ? (
-                  <tr><td colSpan={5} className="px-5 py-8 text-center text-gray-400">Nenhum contato encontrado.</td></tr>
-                ) : leads.map(lead => (
-                  <tr key={lead.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
-                    <td className="px-5 py-3 font-medium">{lead.nome_lead || '—'}</td>
-                    <td className="px-5 py-3 text-gray-500 dark:text-gray-400">{lead.whatsapp_lead || '—'}</td>
-                    <td className="px-5 py-3 text-gray-500 dark:text-gray-400 max-w-xs truncate">{lead.motivo_contato || '—'}</td>
-                    <td className="px-5 py-3"><StatusPill status={lead.status} /></td>
-                    <td className="px-5 py-3 text-gray-400 text-xs">{new Date(lead.created_at).toLocaleDateString('pt-BR')}</td>
+        <div className="flex-1 overflow-auto flex flex-col">
+          {/* Barra de filtros */}
+          <div className="px-6 py-3 border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 shrink-0 flex flex-wrap items-center gap-3">
+            <div className="relative flex-1 min-w-48">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Buscar nome, WhatsApp, produto…"
+                value={listSearch}
+                onChange={e => setListSearch(e.target.value)}
+                className="w-full pl-8 pr-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Filter size={13} className="text-gray-400 shrink-0" />
+              <select
+                value={listStatusFilter}
+                onChange={e => setListStatusFilter(e.target.value)}
+                aria-label="Filtrar por status"
+                title="Filtrar por status"
+                className="text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Todos os status</option>
+                {columns.map(col => <option key={col.status_key} value={col.status_key}>{col.label}</option>)}
+              </select>
+            </div>
+            <span className="text-xs text-gray-400">{filteredLeads.length} de {totalContatos}</span>
+          </div>
+
+          {/* Tabela */}
+          <div className="flex-1 overflow-auto p-6 pt-4">
+            <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-gray-800/50 text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide text-left select-none">
+                    {[
+                      { col: 'nome_lead', label: 'Nome' },
+                      { col: 'whatsapp_lead', label: 'WhatsApp' },
+                      { col: 'motivo_contato', label: 'Produto' },
+                      { col: 'ultima_mensagem', label: 'Última mensagem' },
+                      { col: 'status', label: 'Status' },
+                      { col: 'created_at', label: 'Criado em' },
+                    ].map(({ col, label }) => (
+                      <th
+                        key={col}
+                        className="px-4 py-3 cursor-pointer hover:text-gray-700 dark:hover:text-gray-200 whitespace-nowrap"
+                        onClick={() => toggleSort(col)}
+                      >
+                        {label}
+                        {listSort.col === col && <span className="ml-1">{listSort.asc ? '↑' : '↓'}</span>}
+                      </th>
+                    ))}
+                    <th className="px-4 py-3 text-right">Ações</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {filteredLeads.length === 0 ? (
+                    <tr><td colSpan={7} className="px-5 py-10 text-center text-gray-400">Nenhum contato encontrado.</td></tr>
+                  ) : filteredLeads.map(lead => (
+                    <tr key={lead.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors group">
+                      <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100 max-w-[200px] truncate">
+                        {lead.nome_lead || '—'}
+                      </td>
+                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                        {lead.whatsapp_lead || '—'}
+                      </td>
+                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400 max-w-[220px] truncate" title={lead.motivo_contato ?? ''}>
+                        {lead.motivo_contato || '—'}
+                      </td>
+                      <td className="px-4 py-3 text-gray-400 text-xs max-w-[200px] truncate" title={lead.ultima_mensagem ?? lead.resumo_conversa ?? ''}>
+                        {lead.ultima_mensagem || lead.resumo_conversa || '—'}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <StatusPill status={lead.status} />
+                      </td>
+                      <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
+                        {new Date(lead.created_at).toLocaleDateString('pt-BR')}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <ActionBtn
+                            title="Conversar no chat"
+                            color="green"
+                            icon={<MessageCircle size={13} />}
+                            onClick={() => openWhatsApp(lead)}
+                          />
+                          <ActionBtn
+                            title="Enviar mensagem rápida"
+                            color="blue"
+                            icon={<Send size={13} />}
+                            onClick={() => { setQuickSendLead(lead); setQuickSendText('') }}
+                          />
+                          <ActionBtn
+                            title="Mover etapa"
+                            color="amber"
+                            icon={<ArrowRightLeft size={13} />}
+                            onClick={() => openQuickModal(lead, nextSuggestedStatus(lead.status))}
+                          />
+                          <ActionBtn
+                            title="Editar contato"
+                            color="gray"
+                            icon={<Pencil size={13} />}
+                            onClick={() => openEditLead(lead)}
+                          />
+                          <ActionBtn
+                            title="Excluir contato"
+                            color="red"
+                            icon={<Trash2 size={13} />}
+                            onClick={() => deleteLead(lead)}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -597,7 +744,71 @@ export default function ChatAoVivo() {
         />
       )}
 
+      {quickSendLead && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-gray-900 dark:text-gray-100">Enviar mensagem</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">{quickSendLead.nome_lead || 'Sem nome'} · {quickSendLead.whatsapp_lead || 'Sem WhatsApp'}</p>
+              </div>
+              <button type="button" onClick={() => setQuickSendLead(null)} aria-label="Fechar" className="w-8 h-8 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center justify-center text-gray-400">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <textarea
+                rows={4}
+                value={quickSendText}
+                onChange={e => setQuickSendText(e.target.value)}
+                placeholder="Digite a mensagem…"
+                className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              />
+              <p className="text-xs text-gray-400">
+                {chatwoot ? 'Abre o chat para enviar pelo Chatwoot.' : 'A mensagem será enfileirada na communication_outbox para envio pelo N8N.'}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void sendQuickMessage()}
+                  disabled={!quickSendText.trim() || quickSendLoading}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-medium flex items-center justify-center gap-2"
+                >
+                  <Send size={14} />
+                  {quickSendLoading ? 'Enviando…' : chatwoot ? 'Abrir chat' : 'Enfileirar envio'}
+                </button>
+                <button type="button" onClick={() => setQuickSendLead(null)} className="px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
+  )
+}
+
+const ACTION_COLORS = {
+  green: 'bg-green-50 hover:bg-green-100 dark:bg-green-900/20 dark:hover:bg-green-900/40 text-green-700 dark:text-green-400',
+  blue:  'bg-blue-50 hover:bg-blue-100 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 text-blue-700 dark:text-blue-400',
+  amber: 'bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/40 text-amber-700 dark:text-amber-400',
+  gray:  'bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300',
+  red:   'bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400',
+}
+
+function ActionBtn({ icon, title, color, onClick }: { icon: React.ReactNode; title: string; color: keyof typeof ACTION_COLORS; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={e => { e.stopPropagation(); onClick() }}
+      className={cn('w-7 h-7 rounded-lg flex items-center justify-center transition-colors shrink-0', ACTION_COLORS[color])}
+    >
+      {icon}
+    </button>
   )
 }
 

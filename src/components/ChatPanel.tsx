@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { X, Send, Loader2, Smile, Paperclip, Mic, StopCircle, Trash2, MessageCircle, ExternalLink } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { supabase, SUPABASE_ANON_KEY } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import type { ChatContact } from '@/types'
@@ -178,7 +178,7 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
       try {
         const res  = await fetch(EDGE_FN, {
           method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
           body:    JSON.stringify({
             _action:       'create_conversation',
             base_url:      chatwoot.base_url,

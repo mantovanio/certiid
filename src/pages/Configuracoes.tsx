@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Loader2, MapPin, Pencil, X, Check, KeyRound, UserPlus, Eye, EyeOff, MessageCircle, Mail, Webhook, Save, Send, Trash2, Plus, ToggleLeft, ToggleRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { supabase } from '@/lib/supabase'
+import { supabase, SUPABASE_ANON_KEY } from '@/lib/supabase'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { DEFAULT_AGENCY_CONFIG, type AgencyConfig, fetchAgencyConfig } from '@/lib/agencyConfig'
 import { useAuth } from '@/contexts/AuthContext'
@@ -847,7 +847,7 @@ async function testarChatwoot(baseUrl: string, token: string): Promise<{ ok: boo
   try {
     const res = await fetch(EDGE_FN, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
       body: JSON.stringify({ _action: 'test_connection', base_url: baseUrl, api_token: token }),
       signal: AbortSignal.timeout(12000),
     })
@@ -989,7 +989,7 @@ function AbaIntegracoes() {
       try {
         const res = await fetch(EDGE_FN, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
           body: JSON.stringify({
             _action:    'sync_conversations',
             base_url:   integracao.base_url,

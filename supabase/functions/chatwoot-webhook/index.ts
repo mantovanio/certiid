@@ -226,13 +226,19 @@ async function actionGetMessages(p: Record<string, unknown>) {
     const payload = (data.payload as Array<Record<string, unknown>>) ?? []
 
     const messages = payload
-      .filter(m => (m.message_type === 0 || m.message_type === 1) && m.content)
+      .filter(m => (m.message_type === 0 || m.message_type === 1) && (m.content || (m.attachments as unknown[])?.length))
       .map(m => ({
         id:           m.id,
-        content:      m.content,
+        content:      m.content ?? '',
         message_type: m.message_type,
         created_at:   m.created_at,
         sender_name:  (m.sender as Record<string, unknown>)?.name ?? null,
+        attachments:  ((m.attachments as Array<Record<string, unknown>>) ?? []).map(a => ({
+          file_type:    a.file_type,
+          data_url:     a.data_url,
+          download_url: a.download_url,
+          file_name:    a.file_name,
+        })),
       }))
 
     return { ok: true, messages }
@@ -347,9 +353,21 @@ async function actionSendAttachment(form: FormData) {
     )
     if (!res.ok) return { ok: false, error: `Chatwoot HTTP ${res.status}` }
     const msg = await res.json() as Record<string, unknown>
+    const atts = (msg.attachments as Array<Record<string, unknown>>) ?? []
     return {
       ok: true,
-      message: { id: msg.id, content: msg.content ?? '', message_type: 1, created_at: msg.created_at },
+      message: {
+        id:           msg.id,
+        content:      msg.content ?? '',
+        message_type: 1,
+        created_at:   msg.created_at,
+        attachments:  atts.map(a => ({
+          file_type:    a.file_type,
+          data_url:     a.data_url,
+          download_url: a.download_url,
+          file_name:    a.file_name,
+        })),
+      },
     }
   } catch (e) {
     return { ok: false, error: String(e) }

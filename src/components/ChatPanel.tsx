@@ -356,12 +356,12 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
         headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
         body:    form,
       })
-      const data = await res.json() as { ok: boolean; message?: { id: number; content?: string; message_type: number; created_at: number } }
+      const data = await res.json() as { ok: boolean; message?: { id: number; content?: string; message_type: number; created_at: number; attachments?: Attachment[] } }
       logger.info('ChatPanel', 'send_attachment resposta', { ok: data.ok })
       if (data.ok && data.message) {
         setMessages(prev => [
           ...prev,
-          { id: data.message!.id, content: data.message!.content ?? '', message_type: 1, created_at: data.message!.created_at ?? Math.floor(Date.now() / 1000), attachments: [{ file_name: filename }] },
+          { id: data.message!.id, content: data.message!.content ?? '', message_type: 1, created_at: data.message!.created_at ?? Math.floor(Date.now() / 1000), attachments: data.message!.attachments ?? [{ file_name: filename }] },
         ])
         return true
       }

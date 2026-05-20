@@ -235,12 +235,13 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
         setMessages(data.messages)
       } else {
         const detail = data.error ?? `HTTP ${res.status}`
-        logger.error('ChatPanel', 'falha ao buscar mensagens', { detail, convId })
-        setFetchError(
-          detail.includes('404') || detail.includes('not found')
-            ? 'conversa_nao_encontrada'
-            : detail,
-        )
+        if (detail.includes('404') || detail.includes('not found')) {
+          logger.warn('ChatPanel', 'conversa não encontrada — recriando automaticamente', { convId })
+          void clearAndRecreate()
+        } else {
+          logger.error('ChatPanel', 'falha ao buscar mensagens', { detail, convId })
+          setFetchError(detail)
+        }
       }
     } catch (e) {
       logger.error('ChatPanel', 'exceção ao buscar mensagens', String(e))
@@ -525,14 +526,6 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
                     <ExternalLink size={14} /> Abrir no WhatsApp Web
                   </a>
                 )}
-              </>
-            ) : fetchError === 'conversa_nao_encontrada' ? (
-              <>
-                <p className="text-sm text-yellow-700 dark:text-yellow-400">Conversa não encontrada no Chatwoot.</p>
-                <p className="text-xs text-gray-500">Pode ter sido apagada ou o serviço foi reiniciado.</p>
-                <button type="button" onClick={() => void clearAndRecreate()} className="text-xs bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg">
-                  Criar nova conversa
-                </button>
               </>
             ) : (
               <>

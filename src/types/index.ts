@@ -1,3 +1,12 @@
+// ── chat contact (generic, usado no ChatPanel) ────────────────
+export interface ChatContact {
+  id: string
+  nome: string | null
+  telefone: string | null
+  id_conversa_chatwoot: string | null
+  _table?: 'leads_contabilidade'
+}
+
 // ── leads_contabilidade ───────────────────────────────────────
 export type StatusLead = string
 

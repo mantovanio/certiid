@@ -9,6 +9,8 @@ import { cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
 import { queueEmailMessage, queueWhatsAppMessage, queueWhatsAppFollowUp, renderTemplate } from '@/lib/communication'
 import { useAuth } from '@/contexts/AuthContext'
+import ChatPanel, { type ChatwootCfg } from '@/components/ChatPanel'
+import type { ChatContact } from '@/types'
 import * as XLSX from 'xlsx'
 import type {
   AutomationRule, CommunicationTemplate, LinkProduto,
@@ -313,6 +315,10 @@ export default function Renovacoes() {
   const listaRef                          = useRef<RenovacaoV2[]>([])
   const autoKanbanRef                     = useRef(false)
 
+  // ── chatwoot chat flutuante ───────────────────────────────────
+  const [chatwoot, setChatwoot]           = useState<ChatwootCfg | null>(null)
+  const [chatContact, setChatContact]     = useState<ChatContact | null>(null)
+
   // ── toast ────────────────────────────────────────────────────
 
   function showMsg(msg: string, type: 'ok' | 'err' = 'ok') {
@@ -461,6 +467,26 @@ export default function Renovacoes() {
       .from('external_integrations').select('webhook_url').eq('provider', 'n8n').maybeSingle()
     setN8nWebhookUrl((data as { webhook_url: string | null } | null)?.webhook_url ?? null)
   }, [])
+
+  const fetchChatwootConfig = useCallback(async () => {
+    const { data } = await supabase
+      .from('external_integrations')
+      .select('base_url, api_token, account_id, inbox_id')
+      .eq('provider', 'chatwoot')
+      .eq('status', 'ativo')
+      .maybeSingle()
+    if (data?.base_url && data?.api_token && data?.account_id) {
+      setChatwoot({ base_url: data.base_url as string, api_token: data.api_token as string, account_id: data.account_id as string, inbox_id: (data.inbox_id as string | null) ?? null })
+    }
+  }, [])
+
+  useEffect(() => { void fetchChatwootConfig() }, [fetchChatwootConfig])
+
+  function openChat(r: RenovacaoV2) {
+    if (!chatwoot) { showMsg('Chatwoot não configurado. Configure em Configurações → Integrações.', 'err'); return }
+    if (!r.telefone) { showMsg('Cliente sem telefone para chat.', 'err'); return }
+    setChatContact({ id: r.id, nome: r.razao_social ?? r.cliente, telefone: r.telefone, id_conversa_chatwoot: null })
+  }
 
   // ── template values (for rendering) ─────────────────────────
 
@@ -1782,6 +1808,11 @@ export default function Renovacoes() {
                             className="p-1 rounded text-purple-600 hover:bg-purple-50 dark:text-purple-400 dark:hover:bg-purple-900/20 disabled:opacity-30">
                             <Users size={12} />
                           </button>
+                          <button type="button" disabled={busy || !r.telefone} onClick={() => openChat(r)}
+                            title={r.telefone ? 'Abrir chat WhatsApp' : 'Cliente sem telefone'}
+                            className="p-1 rounded text-green-600 hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20 disabled:opacity-30">
+                            <MessageSquare size={12} />
+                          </button>
                           <button type="button" disabled={busy} onClick={() => void cancelarFollowUps(r.id)}
                             title="Cancelar avisos automáticos agendados"
                             className="p-1 rounded text-orange-500 hover:bg-orange-50 dark:text-orange-400 dark:hover:bg-orange-900/20 disabled:opacity-30">
@@ -1831,6 +1862,14 @@ export default function Renovacoes() {
         </div>
 
       </div>
+
+      {chatContact && chatwoot && (
+        <ChatPanel
+          contact={chatContact}
+          chatwoot={chatwoot}
+          onClose={() => setChatContact(null)}
+        />
+      )}
     </div>
   )
 }

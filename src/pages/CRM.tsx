@@ -192,7 +192,13 @@ export default function CRM() {
 
       {chatLead && chatwoot && (
         <ChatPanel
-          lead={chatLead}
+          contact={{
+            id:                   chatLead.id,
+            nome:                 chatLead.nome_lead,
+            telefone:             chatLead.whatsapp_lead,
+            id_conversa_chatwoot: chatLead.id_conversa_chatwoot,
+            _table:               'leads_contabilidade',
+          }}
           chatwoot={chatwoot}
           onClose={() => setChatLead(null)}
         />

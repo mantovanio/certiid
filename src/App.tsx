@@ -14,6 +14,7 @@ import Configuracoes from './pages/Configuracoes'
 import type { PerfilAcesso, PermissaoPagina } from './types'
 import { APP_VERSION } from './lib/version'
 import { DEFAULT_AGENCY_CONFIG, fetchAgencyConfig } from './lib/agencyConfig'
+import ClaudeChat from './components/ClaudeChat'
 
 const PAGE_LABELS: Record<Page, string> = {
   dashboard:     'Dashboard',
@@ -45,6 +46,7 @@ function AppContent() {
   const [page, setPage] = useState<Page>('dashboard')
   const [dark, setDark] = useState(() => localStorage.getItem('theme') === 'dark')
   const [agencyConfig, setAgencyConfig] = useState(DEFAULT_AGENCY_CONFIG)
+  const [claudeOpen, setClaudeOpen] = useState(false)
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -176,6 +178,18 @@ function AppContent() {
             </span>
             <button
               type="button"
+              onClick={() => setClaudeOpen(o => !o)}
+              title="Chat com Claude"
+              className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                claudeOpen
+                  ? 'bg-orange-100 dark:bg-orange-900/30'
+                  : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+              }`}
+            >
+              <ClaudeBadge />
+            </button>
+            <button
+              type="button"
               onClick={() => setDark(d => !d)}
               className="w-8 h-8 rounded-full flex items-center justify-center text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
               title={dark ? 'Modo claro' : 'Modo escuro'}
@@ -195,7 +209,23 @@ function AppContent() {
           {activePage === 'configuracoes' && <Configuracoes />}
         </main>
       </div>
+      {claudeOpen && <ClaudeChat onClose={() => setClaudeOpen(false)} />}
     </div>
+  )
+}
+
+function ClaudeBadge() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M9.74 4.5C8.97 4.5 8.32 4.98 8.07 5.67L4.55 15.5C4.22 16.4 4.88 17.35 5.83 17.35H7.05L8.26 13.97H12.5L11.89 12.25H8.85L10.32 8.05L13.56 17.35H15.28L11.57 6.2C11.32 5.47 10.65 4.97 9.87 4.97L9.74 4.5Z"
+        fill="#CC785C"
+      />
+      <path
+        d="M14.13 4.5L17.86 14.95C18.09 15.6 18.09 16.31 17.86 16.96L17.5 18C17.25 18.7 16.59 19.16 15.83 19.16H14.72L13.5 15.67H9.26L9.87 17.35H13L14.21 20.5H16.05C17.43 20.5 18.67 19.63 19.13 18.31L19.5 17.25C19.91 16.11 19.91 14.85 19.5 13.71L15.77 3.27C15.53 2.6 14.89 2.16 14.17 2.16H12.45L14.13 4.5Z"
+        fill="#CC785C"
+      />
+    </svg>
   )
 }
 

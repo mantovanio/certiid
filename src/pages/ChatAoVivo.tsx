@@ -376,7 +376,6 @@ export default function ChatAoVivo() {
       .from('external_integrations')
       .select('base_url, api_token, account_id, inbox_id')
       .eq('provider', 'chatwoot')
-      .eq('status', 'ativo')
       .maybeSingle()
     if (data?.base_url && data?.api_token && data?.account_id) {
       setChatwoot({

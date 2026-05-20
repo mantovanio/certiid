@@ -190,7 +190,7 @@ export default function CRM() {
         </DragOverlay>
       </DndContext>
 
-      {chatLead && chatwoot && (
+      {chatLead && (
         <ChatPanel
           contact={{
             id:                   chatLead.id,

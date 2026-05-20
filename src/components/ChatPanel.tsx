@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, Send, Loader2, Smile, Paperclip, Mic, StopCircle, Trash2, MessageCircle } from 'lucide-react'
+import { X, Send, Loader2, Smile, Paperclip, Mic, StopCircle, Trash2, MessageCircle, ExternalLink } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import type { ChatContact } from '@/types'
@@ -35,7 +35,7 @@ interface Message {
 
 interface Props {
   contact:  ChatContact
-  chatwoot: ChatwootCfg
+  chatwoot: ChatwootCfg | null
   onClose:  () => void
 }
 
@@ -51,6 +51,14 @@ const EMOJIS = [
 ]
 
 // ── Helpers ────────────────────────────────────────────────────
+
+function whatsappWebUrl(telefone: string | null | undefined): string | null {
+  if (!telefone) return null
+  const digits = telefone.replace(/\D/g, '')
+  if (!digits) return null
+  const full = digits.startsWith('55') ? digits : `55${digits}`
+  return `https://wa.me/${full}`
+}
 
 function normalizePhone(raw: string | null | undefined): string | null {
   if (!raw) return null
@@ -139,6 +147,13 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
   async function init() {
     setLoading(true)
     setFetchError(null)
+
+    if (!chatwoot) {
+      setFetchError('chatwoot_not_configured')
+      setLoading(false)
+      return
+    }
+
     let convId = contact.id_conversa_chatwoot
 
     if (!convId) {
@@ -189,6 +204,7 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
   }
 
   async function fetchMessages(convId: string) {
+    if (!chatwoot) return
     setFetchError(null)
     try {
       const res  = await fetch(EDGE_FN, {
@@ -273,6 +289,7 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
   // ── Send text ────────────────────────────────────────────────
 
   async function handleSend() {
+    if (!chatwoot) return
     const text = input.trim()
     if (!text || sending || !conversationId) return
     setSending(true)
@@ -305,7 +322,7 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
   // ── Send attachment (direct Chatwoot API — CORS deve estar habilitado) ──
 
   async function sendAttachment(file: File | Blob, filename: string, mimeType?: string): Promise<boolean> {
-    if (!conversationId) return false
+    if (!chatwoot || !conversationId) return false
     const form = new FormData()
     form.append('content', '')
     form.append('message_type', 'outgoing')
@@ -445,6 +462,17 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
           <p className="text-white font-semibold text-sm truncate">{contact.nome ?? 'Sem nome'}</p>
           {contact.telefone && <p className="text-gray-400 text-xs truncate">{contact.telefone}</p>}
         </div>
+        {whatsappWebUrl(contact.telefone) && (
+          <a
+            href={whatsappWebUrl(contact.telefone)!}
+            target="_blank"
+            rel="noreferrer"
+            title="Abrir no WhatsApp Web"
+            className="text-gray-400 hover:text-green-400 transition-colors shrink-0"
+          >
+            <ExternalLink size={15} />
+          </a>
+        )}
         <button type="button" onClick={onClose} title="Fechar" aria-label="Fechar chat" className="text-gray-400 hover:text-white transition-colors shrink-0">
           <X size={18} />
         </button>
@@ -461,7 +489,25 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
 
         {!loading && fetchError && (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-4">
-            {fetchError === 'conversa_nao_encontrada' ? (
+            {fetchError === 'chatwoot_not_configured' ? (
+              <>
+                <div className="w-12 h-12 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                  <MessageCircle size={22} className="text-gray-400" />
+                </div>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Chatwoot não configurado</p>
+                <p className="text-xs text-gray-500 max-w-[200px]">Configure a integração em Configurações → Integrações para usar o chat interno.</p>
+                {whatsappWebUrl(contact.telefone) && (
+                  <a
+                    href={whatsappWebUrl(contact.telefone)!}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-2 mt-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-xl transition-colors"
+                  >
+                    <ExternalLink size={14} /> Abrir no WhatsApp Web
+                  </a>
+                )}
+              </>
+            ) : fetchError === 'conversa_nao_encontrada' ? (
               <>
                 <p className="text-sm text-yellow-700 dark:text-yellow-400">Conversa não encontrada no Chatwoot.</p>
                 <p className="text-xs text-gray-500">Pode ter sido apagada ou o serviço foi reiniciado.</p>

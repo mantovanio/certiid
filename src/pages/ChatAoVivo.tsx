@@ -389,15 +389,7 @@ export default function ChatAoVivo() {
   }
 
   function openWhatsApp(lead: Lead) {
-    if (chatwoot) {
-      setChatLead(lead)
-      return
-    }
-    // Fallback quando Chatwoot não está configurado
-    if (!lead.whatsapp_lead) return
-    const digits = lead.whatsapp_lead.replace(/\D/g, '')
-    const text = encodeURIComponent(`Olá ${lead.nome_lead || 'cliente'}, tudo bem?`)
-    window.open(`https://wa.me/55${digits}?text=${text}`, '_blank', 'noopener,noreferrer')
+    setChatLead(lead)
   }
 
   function openQuickModal(lead: Lead, suggestedStatus: StatusLead) {
@@ -812,7 +804,7 @@ export default function ChatAoVivo() {
         />
       )}
 
-      {chatLead && chatwoot && (
+      {chatLead && (
         <ChatPanel
           contact={{
             id:                   chatLead.id,

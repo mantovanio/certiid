@@ -341,25 +341,31 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
 
   async function sendAttachment(file: File | Blob, filename: string, mimeType?: string): Promise<boolean> {
     if (!chatwoot || !conversationId) return false
-    const form = new FormData()
-    form.append('content', '')
-    form.append('message_type', 'outgoing')
-    form.append('private', 'false')
     const blob = (mimeType && !(file instanceof File)) ? new Blob([file], { type: mimeType }) : file
-    form.append('attachments[]', blob, filename)
+    const form = new FormData()
+    form.append('_action',         'send_attachment')
+    form.append('base_url',        chatwoot.base_url)
+    form.append('api_token',       chatwoot.api_token)
+    form.append('account_id',      chatwoot.account_id)
+    form.append('conversation_id', conversationId)
+    form.append('file',            blob, filename)
+    form.append('filename',        filename)
     try {
-      const res = await fetch(
-        `${chatwoot.base_url}/api/v1/accounts/${chatwoot.account_id}/conversations/${conversationId}/messages`,
-        { method: 'POST', headers: { 'api_access_token': chatwoot.api_token }, body: form },
-      )
-      if (res.ok) {
-        const msg = await res.json() as { id: number; content?: string; message_type: number; created_at: number }
+      const res = await fetch(EDGE_FN, {
+        method:  'POST',
+        headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+        body:    form,
+      })
+      const data = await res.json() as { ok: boolean; message?: { id: number; content?: string; message_type: number; created_at: number } }
+      logger.info('ChatPanel', 'send_attachment resposta', { ok: data.ok })
+      if (data.ok && data.message) {
         setMessages(prev => [
           ...prev,
-          { id: msg.id, content: msg.content ?? '', message_type: 1, created_at: msg.created_at ?? Math.floor(Date.now() / 1000), attachments: [{ file_name: filename }] },
+          { id: data.message!.id, content: data.message!.content ?? '', message_type: 1, created_at: data.message!.created_at ?? Math.floor(Date.now() / 1000), attachments: [{ file_name: filename }] },
         ])
         return true
       }
+      logger.error('ChatPanel', 'falha ao enviar anexo via Edge Function', data)
     } catch (e) {
       logger.error('ChatPanel', 'falha ao enviar anexo', String(e))
     }

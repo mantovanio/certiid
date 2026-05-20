@@ -320,18 +320,66 @@ async function actionUpdateConversation(p: Record<string, unknown>) {
   }
 }
 
+// ── Proxy: send file attachment ───────────────────────────────────────────────
+
+async function actionSendAttachment(form: FormData) {
+  const base_url  = (form.get('base_url')        as string | null)?.replace(/\/$/, '')
+  const token     = form.get('api_token')         as string | null
+  const accId     = form.get('account_id')        as string | null
+  const convId    = form.get('conversation_id')   as string | null
+  const file      = form.get('file')              as File   | null
+  const filename  = (form.get('filename') as string | null) ?? file?.name ?? 'arquivo'
+
+  if (!base_url || !token || !accId || !convId || !file) {
+    return { ok: false, error: 'Parâmetros incompletos para envio de anexo' }
+  }
+
+  const out = new FormData()
+  out.append('content', '')
+  out.append('message_type', 'outgoing')
+  out.append('private', 'false')
+  out.append('attachments[]', file, filename)
+
+  try {
+    const res = await fetch(
+      `${base_url}/api/v1/accounts/${accId}/conversations/${convId}/messages`,
+      { method: 'POST', headers: { 'api_access_token': token }, body: out, signal: AbortSignal.timeout(30000) },
+    )
+    if (!res.ok) return { ok: false, error: `Chatwoot HTTP ${res.status}` }
+    const msg = await res.json() as Record<string, unknown>
+    return {
+      ok: true,
+      message: { id: msg.id, content: msg.content ?? '', message_type: 1, created_at: msg.created_at },
+    }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS })
   if (req.method !== 'POST')   return new Response('Method not allowed', { status: 405, headers: CORS })
 
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
+
+  // Requisição multipart (upload de arquivo)
+  const contentType = req.headers.get('content-type') ?? ''
+  if (contentType.includes('multipart/form-data')) {
+    try {
+      const form = await req.formData()
+      if (form.get('_action') === 'send_attachment') return json(await actionSendAttachment(form))
+      return json({ ok: false, error: 'Ação inválida' })
+    } catch (e) {
+      return json({ ok: false, error: String(e) })
+    }
+  }
+
   let payload: Record<string, unknown>
   try { payload = await req.json() }
   catch { return new Response('Invalid JSON', { status: 400, headers: CORS }) }
-
-  const json = (body: unknown, status = 200) =>
-    new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
 
   // ── Proxy actions (chamadas do browser) ────────────────────────────────────
   if (payload._action === 'test_connection')    return json(await actionTestConnection(payload))

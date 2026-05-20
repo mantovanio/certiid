@@ -406,13 +406,16 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
   async function startRecording() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mr = new MediaRecorder(stream)
+      const mimeType = MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+        ? 'audio/ogg;codecs=opus'
+        : 'audio/webm;codecs=opus'
+      const mr = new MediaRecorder(stream, { mimeType })
       mediaRecorderRef.current = mr
       audioChunksRef.current = []
       mr.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
       mr.onstop = () => {
         stream.getTracks().forEach(t => t.stop())
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
+        const blob = new Blob(audioChunksRef.current, { type: mimeType })
         setAudioBlob(blob)
         setAudioUrl(URL.createObjectURL(blob))
         setRecState('preview')
@@ -434,7 +437,9 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
   async function sendAudio() {
     if (!audioBlob || !conversationId) return
     setSending(true)
-    const ok = await sendAttachment(audioBlob, `audio_${Date.now()}.webm`, 'audio/webm')
+    // Sempre envia como OGG Opus — Evolution API / WhatsApp exige esse formato para áudio
+    const oggBlob = new Blob([audioBlob], { type: 'audio/ogg; codecs=opus' })
+    const ok = await sendAttachment(oggBlob, `audio_${Date.now()}.ogg`, 'audio/ogg; codecs=opus')
     setSending(false)
     if (!ok) alert('Não foi possível enviar o áudio. Verifique as configurações de CORS do Chatwoot.')
     discardAudio()

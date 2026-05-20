@@ -12,6 +12,7 @@ import { useDroppable } from '@dnd-kit/core'
 import { useDraggable } from '@dnd-kit/core'
 import { ExternalLink, MessageCircle } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { logger } from '@/lib/logger'
 import ChatPanel, { type ChatwootCfg } from '@/components/ChatPanel'
 import type { Lead, StatusLead } from '@/types'
 
@@ -99,11 +100,14 @@ export default function CRM() {
   }, [])
 
   async function loadChatwoot() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('external_integrations')
       .select('base_url, api_token, account_id, inbox_id')
       .eq('provider', 'chatwoot')
       .maybeSingle()
+    if (error) { logger.error('CRM', 'erro ao buscar config chatwoot', error.message); return }
+    if (!data) { logger.warn('CRM', 'nenhuma integração chatwoot encontrada'); return }
+    logger.info('CRM', 'config chatwoot carregada', { base_url: data.base_url, account_id: data.account_id, inbox_id: data.inbox_id, tem_token: !!data.api_token })
     if (data?.base_url && data?.api_token && data?.account_id) {
       setChatwoot({
         base_url:   data.base_url   as string,

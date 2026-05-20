@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
+import { logger } from '@/lib/logger'
 import { queueEmailMessage, queueWhatsAppMessage, queueWhatsAppFollowUp, renderTemplate } from '@/lib/communication'
 import { useAuth } from '@/contexts/AuthContext'
 import ChatPanel, { type ChatwootCfg } from '@/components/ChatPanel'
@@ -469,11 +470,14 @@ export default function Renovacoes() {
   }, [])
 
   const fetchChatwootConfig = useCallback(async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('external_integrations')
       .select('base_url, api_token, account_id, inbox_id')
       .eq('provider', 'chatwoot')
       .maybeSingle()
+    if (error) { logger.error('Renovacoes', 'erro ao buscar config chatwoot', error.message); return }
+    if (!data) { logger.warn('Renovacoes', 'nenhuma integração chatwoot encontrada'); return }
+    logger.info('Renovacoes', 'config chatwoot carregada', { base_url: data.base_url, account_id: data.account_id, inbox_id: data.inbox_id, tem_token: !!data.api_token })
     if (data?.base_url && data?.api_token && data?.account_id) {
       setChatwoot({ base_url: data.base_url as string, api_token: data.api_token as string, account_id: data.account_id as string, inbox_id: (data.inbox_id as string | null) ?? null })
     }

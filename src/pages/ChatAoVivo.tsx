@@ -34,6 +34,7 @@ import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import ChatPanel, { type ChatwootCfg } from '@/components/ChatPanel'
+import { logger } from '@/lib/logger'
 import type { Lead, StatusLead } from '@/types'
 
 interface ColumnConfig {
@@ -372,11 +373,14 @@ export default function ChatAoVivo() {
   }
 
   async function loadChatwoot() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('external_integrations')
       .select('base_url, api_token, account_id, inbox_id')
       .eq('provider', 'chatwoot')
       .maybeSingle()
+    if (error) { logger.error('ChatAoVivo', 'erro ao buscar config chatwoot', error.message); return }
+    if (!data) { logger.warn('ChatAoVivo', 'nenhuma integração chatwoot encontrada'); return }
+    logger.info('ChatAoVivo', 'config chatwoot carregada', { base_url: data.base_url, account_id: data.account_id, inbox_id: data.inbox_id, tem_token: !!data.api_token })
     if (data?.base_url && data?.api_token && data?.account_id) {
       setChatwoot({
         base_url:   data.base_url   as string,
@@ -384,6 +388,8 @@ export default function ChatAoVivo() {
         account_id: data.account_id as string,
         inbox_id:   (data.inbox_id  as string | null) ?? null,
       })
+    } else {
+      logger.warn('ChatAoVivo', 'config chatwoot incompleta — campos obrigatórios ausentes', { base_url: !!data.base_url, api_token: !!data.api_token, account_id: !!data.account_id })
     }
   }
 

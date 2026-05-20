@@ -15,6 +15,7 @@ import type { PerfilAcesso, PermissaoPagina } from './types'
 import { APP_VERSION } from './lib/version'
 import { DEFAULT_AGENCY_CONFIG, fetchAgencyConfig } from './lib/agencyConfig'
 import ClaudeChat from './components/ClaudeChat'
+import DebugPanel from './components/DebugPanel'
 
 const PAGE_LABELS: Record<Page, string> = {
   dashboard:     'Dashboard',
@@ -47,6 +48,8 @@ function AppContent() {
   const [dark, setDark] = useState(() => localStorage.getItem('theme') === 'dark')
   const [agencyConfig, setAgencyConfig] = useState(DEFAULT_AGENCY_CONFIG)
   const [claudeOpen, setClaudeOpen] = useState(false)
+  const [debugOpen, setDebugOpen]   = useState(false)
+  const isAdmin = profile?.perfil === 'admin'
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -176,6 +179,20 @@ function AppContent() {
             <span className="hidden md:inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-800 px-2 py-1 text-[11px] font-medium text-gray-500 dark:text-gray-400">
               v{APP_VERSION}
             </span>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setDebugOpen(o => !o)}
+                title="Debug logs"
+                className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors text-sm ${
+                  debugOpen
+                    ? 'bg-red-100 dark:bg-red-900/30'
+                    : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+                }`}
+              >
+                🪲
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setClaudeOpen(o => !o)}
@@ -210,6 +227,7 @@ function AppContent() {
         </main>
       </div>
       {claudeOpen && <ClaudeChat onClose={() => setClaudeOpen(false)} />}
+      {debugOpen  && <DebugPanel onClose={() => setDebugOpen(false)} />}
     </div>
   )
 }

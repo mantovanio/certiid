@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { X, Send, Loader2, Smile, Paperclip, Mic, StopCircle, Trash2, MessageCircle, ExternalLink } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import { logger } from '@/lib/logger'
 import type { ChatContact } from '@/types'
 
 // ── Public types ───────────────────────────────────────────────
@@ -147,18 +148,23 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
   async function init() {
     setLoading(true)
     setFetchError(null)
+    logger.info('ChatPanel', 'init', { contact_id: contact.id, nome: contact.nome, telefone: contact.telefone, id_conversa: contact.id_conversa_chatwoot })
 
     if (!chatwoot) {
+      logger.warn('ChatPanel', 'chatwoot não configurado — integration ausente ou campos incompletos')
       setFetchError('chatwoot_not_configured')
       setLoading(false)
       return
     }
+
+    logger.info('ChatPanel', 'chatwoot config carregada', { base_url: chatwoot.base_url, account_id: chatwoot.account_id, inbox_id: chatwoot.inbox_id })
 
     let convId = contact.id_conversa_chatwoot
 
     if (!convId) {
       const phone = normalizePhone(contact.telefone)
       if (!phone) {
+        logger.warn('ChatPanel', 'telefone inválido ou ausente', { telefone: contact.telefone })
         setFetchError(
           contact.telefone
             ? `Número "${contact.telefone}" inválido. Informe DDD + número e salve antes de abrir o chat.`
@@ -168,6 +174,7 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
         return
       }
       setLoadingLabel('Criando conversa no Chatwoot...')
+      logger.info('ChatPanel', 'criando conversa no Chatwoot', { phone, inbox_id: chatwoot.inbox_id })
       try {
         const res  = await fetch(EDGE_FN, {
           method:  'POST',
@@ -184,14 +191,17 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
           }),
         })
         const data = await res.json() as { ok: boolean; conversation_id?: string; error?: string }
+        logger.info('ChatPanel', 'create_conversation resposta', data)
         if (!data.ok || !data.conversation_id) {
+          logger.error('ChatPanel', 'falha ao criar conversa', { error: data.error, inbox_id: chatwoot.inbox_id })
           setFetchError(data.error ?? 'Não foi possível criar a conversa')
           setLoading(false)
           return
         }
         convId = data.conversation_id
         setConversationId(convId)
-      } catch {
+      } catch (e) {
+        logger.error('ChatPanel', 'exceção ao criar conversa', String(e))
         setFetchError('Sem conexão com o servidor')
         setLoading(false)
         return
@@ -206,6 +216,7 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
   async function fetchMessages(convId: string) {
     if (!chatwoot) return
     setFetchError(null)
+    logger.info('ChatPanel', 'buscando mensagens', { convId })
     try {
       const res  = await fetch(EDGE_FN, {
         method:  'POST',
@@ -219,17 +230,20 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
         }),
       })
       const data = await res.json() as { ok: boolean; messages?: Message[]; error?: string }
+      logger.info('ChatPanel', 'get_messages resposta', { ok: data.ok, count: data.messages?.length, error: data.error })
       if (data.ok && data.messages) {
         setMessages(data.messages)
       } else {
         const detail = data.error ?? `HTTP ${res.status}`
+        logger.error('ChatPanel', 'falha ao buscar mensagens', { detail, convId })
         setFetchError(
           detail.includes('404') || detail.includes('not found')
             ? 'conversa_nao_encontrada'
             : detail,
         )
       }
-    } catch {
+    } catch (e) {
+      logger.error('ChatPanel', 'exceção ao buscar mensagens', String(e))
       setFetchError('Sem conexão com o servidor')
     } finally {
       setLoading(false)
@@ -292,6 +306,7 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
     if (!chatwoot) return
     const text = input.trim()
     if (!text || sending || !conversationId) return
+    logger.info('ChatPanel', 'enviando mensagem', { convId: conversationId, length: text.length })
     setSending(true)
     setInput('')
     const tempId = `temp-${Date.now()}`
@@ -313,7 +328,9 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
       if (data.ok && data.message) {
         setMessages(prev => prev.map(m => m.id === tempId ? { ...data.message!, id: data.message!.id } : m))
       }
-    } catch { /* mantém mensagem otimista */ } finally {
+    } catch (e) {
+      logger.error('ChatPanel', 'falha ao enviar mensagem', String(e))
+    } finally {
       setSending(false)
       inputRef.current?.focus()
     }
@@ -342,7 +359,9 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
         ])
         return true
       }
-    } catch { /* handled by return false */ }
+    } catch (e) {
+      logger.error('ChatPanel', 'falha ao enviar anexo', String(e))
+    }
     return false
   }
 

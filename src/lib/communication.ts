@@ -37,7 +37,7 @@ export function queueWhatsAppMessage(input: Omit<QueueMessageInput, 'channel' | 
   return queueCommunication({
     ...input,
     channel: 'whatsapp',
-    provider: 'chatwoot',
+    provider: 'chatwoot_disparo',
   })
 }
 
@@ -83,7 +83,7 @@ export function queueWhatsAppFollowUp(input: {
   const delayMs = (input.delayHours ?? 48) * 3600 * 1000
   return queueCommunication({
     channel: 'whatsapp',
-    provider: 'chatwoot',
+    provider: 'chatwoot_disparo',
     to: input.to,
     body: input.body,
     payload: {

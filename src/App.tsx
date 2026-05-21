@@ -16,6 +16,7 @@ import { APP_VERSION } from './lib/version'
 import { DEFAULT_AGENCY_CONFIG, fetchAgencyConfig } from './lib/agencyConfig'
 import ClaudeChat from './components/ClaudeChat'
 import DebugPanel from './components/DebugPanel'
+import { Menu } from 'lucide-react'
 
 const PAGE_LABELS: Record<Page, string> = {
   dashboard:     'Dashboard',
@@ -47,8 +48,9 @@ function AppContent() {
   const [page, setPage] = useState<Page>('dashboard')
   const [dark, setDark] = useState(() => localStorage.getItem('theme') === 'dark')
   const [agencyConfig, setAgencyConfig] = useState(DEFAULT_AGENCY_CONFIG)
-  const [claudeOpen, setClaudeOpen] = useState(false)
-  const [debugOpen, setDebugOpen]   = useState(false)
+  const [claudeOpen, setClaudeOpen]   = useState(false)
+  const [debugOpen, setDebugOpen]     = useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const isAdmin = profile?.perfil === 'admin'
 
   useEffect(() => {
@@ -163,12 +165,20 @@ function AppContent() {
         allowedPages={allowedPages}
         onLogout={handleLogout}
         agencyConfig={agencyConfig}
+        mobileOpen={mobileNavOpen}
+        onMobileClose={() => setMobileNavOpen(false)}
       />
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-14 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex items-center justify-between px-6 shrink-0">
-          <span className="font-semibold text-blue-600 dark:text-blue-400">
-            {PAGE_LABELS[activePage]}
-          </span>
+        <header className="h-14 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex items-center justify-between px-4 shrink-0">
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={() => setMobileNavOpen(true)}
+              className="md:hidden w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+              <Menu size={18} />
+            </button>
+            <span className="font-semibold text-blue-600 dark:text-blue-400">
+              {PAGE_LABELS[activePage]}
+            </span>
+          </div>
           <div className="flex items-center gap-3">
             <div className="text-right hidden sm:block">
               <p className="text-sm font-medium text-gray-700 dark:text-gray-300 leading-none">{nomeDisplay}</p>

@@ -89,13 +89,14 @@ type ModalSenha = { userId: string; nome: string } | null
 type ModalNovoUsuario = { aberto: boolean }
 
 const PROVIDER_LABEL: Record<IntegrationProvider, string> = {
-  chatwoot: 'Chatwoot / WhatsApp',
-  email_smtp: 'Email SMTP',
-  n8n: 'N8N Webhooks',
-  gestao_ar: 'CertiID / Gestão AR',
-  safe2pay: 'Safe2Pay',
-  safeweb: 'Safeweb',
-  supabase: 'Supabase',
+  chatwoot:          'Chatwoot / WhatsApp (Atendimento)',
+  chatwoot_disparo:  'Chatwoot / WhatsApp (Disparos)',
+  email_smtp:        'Email SMTP',
+  n8n:               'N8N Webhooks',
+  gestao_ar:         'CertiID / Gestão AR',
+  safe2pay:          'Safe2Pay',
+  safeweb:           'Safeweb',
+  supabase:          'Supabase',
 }
 
 const STATUS_LABEL: Record<IntegrationStatus, string> = {
@@ -113,7 +114,7 @@ const STATUS_CLASS: Record<IntegrationStatus, string> = {
 }
 
 function providerIcon(provider: IntegrationProvider) {
-  if (provider === 'chatwoot') return MessageCircle
+  if (provider === 'chatwoot' || provider === 'chatwoot_disparo') return MessageCircle
   if (provider === 'email_smtp') return Mail
   return Webhook
 }
@@ -988,7 +989,7 @@ function AbaIntegracoes() {
     let lastError: string | null = editing.last_error ?? null
     let lastTestAt: string | null = editing.last_test_at ?? null
 
-    if (editing.provider === 'chatwoot') {
+    if (editing.provider === 'chatwoot' || editing.provider === 'chatwoot_disparo') {
       const baseUrl = form.base_url ?? ''
       const token = form.api_token ?? ''
       if (baseUrl && token) {
@@ -1033,7 +1034,7 @@ function AbaIntegracoes() {
   async function registrarTeste(integracao: ExternalIntegration) {
     setTestando(integracao.provider)
 
-    if (integracao.provider === 'chatwoot') {
+    if (integracao.provider === 'chatwoot' || integracao.provider === 'chatwoot_disparo') {
       if (!integracao.base_url || !integracao.api_token || !integracao.account_id) {
         alert('Configure URL base, API Token e Account ID primeiro.')
         setTestando(null)
@@ -1152,9 +1153,11 @@ function AbaIntegracoes() {
       {editing && (
         <ModalOverlay titulo={`Configurar ${PROVIDER_LABEL[editing.provider]}`} onClose={closeEdit}>
           <div className="space-y-3">
-            {editing.provider === 'chatwoot' ? (
+            {(editing.provider === 'chatwoot' || editing.provider === 'chatwoot_disparo') ? (
               <p className="text-xs text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 rounded-lg px-3 py-2">
-                Status detectado automaticamente ao salvar
+                {editing.provider === 'chatwoot_disparo'
+                  ? '📤 Número de disparos — usado para renovações e mensagens automáticas'
+                  : 'Status detectado automaticamente ao salvar'}
               </p>
             ) : (
               <label className="flex flex-col gap-1">
@@ -1172,10 +1175,10 @@ function AbaIntegracoes() {
             <ConfigInput label="URL base / API" value={form.base_url ?? ''} onChange={base_url => setForm(p => ({ ...p, base_url }))} placeholder="https://chatwoot.seudominio.com" />
             <ConfigInput label="Webhook de entrada/saída" value={form.webhook_url ?? ''} onChange={webhook_url => setForm(p => ({ ...p, webhook_url }))} placeholder="https://..." />
 
-            {editing.provider === 'chatwoot' && (
+            {(editing.provider === 'chatwoot' || editing.provider === 'chatwoot_disparo') && (
               <>
                 <ConfigInput label="Account ID" value={form.account_id ?? ''} onChange={account_id => setForm(p => ({ ...p, account_id }))} />
-                <ConfigInput label="Inbox ID WhatsApp" value={form.inbox_id ?? ''} onChange={inbox_id => setForm(p => ({ ...p, inbox_id }))} />
+                <ConfigInput label={editing.provider === 'chatwoot_disparo' ? 'Inbox ID (Disparos)' : 'Inbox ID WhatsApp'} value={form.inbox_id ?? ''} onChange={inbox_id => setForm(p => ({ ...p, inbox_id }))} />
                 <ConfigInput label="Access Token / API Token" type="password" value={form.api_token ?? ''} onChange={api_token => setForm(p => ({ ...p, api_token }))} />
               </>
             )}
@@ -1357,7 +1360,7 @@ function AbaIntegracoes() {
                     {STATUS_LABEL[int.status]}
                   </span>
                   <div className="flex items-center gap-1">
-                    {(['chatwoot', 'email_smtp', 'n8n'] as IntegrationProvider[]).includes(int.provider) && (
+                    {(['chatwoot', 'chatwoot_disparo', 'email_smtp', 'n8n'] as IntegrationProvider[]).includes(int.provider) && (
                       <button type="button" onClick={() => registrarTeste(int)} disabled={testando === int.provider}
                         title="Registrar teste na fila"
                         className="w-8 h-8 rounded-lg text-gray-400 hover:bg-green-50 dark:hover:bg-green-900/20 hover:text-green-600 dark:hover:text-green-400 flex items-center justify-center">

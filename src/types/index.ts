@@ -295,12 +295,12 @@ export interface ContaBancaria {
 
 // ── integrações / comunicação ─────────────────────────────────
 export type IntegrationProvider =
-  | 'chatwoot' | 'email_smtp' | 'n8n' | 'gestao_ar'
+  | 'chatwoot' | 'chatwoot_disparo' | 'email_smtp' | 'n8n' | 'gestao_ar'
   | 'safe2pay' | 'safeweb' | 'supabase'
 
 export type IntegrationStatus = 'ativo' | 'pendente' | 'erro' | 'inativo'
 export type CommunicationChannel = 'whatsapp' | 'email' | 'webhook'
-export type CommunicationProvider = 'chatwoot' | 'email_smtp' | 'n8n'
+export type CommunicationProvider = 'chatwoot' | 'chatwoot_disparo' | 'email_smtp' | 'n8n'
 export type CommunicationStatus = 'queued' | 'processing' | 'sent' | 'failed' | 'cancelled'
 export type AutomationChannel = 'whatsapp' | 'email' | 'whatsapp_email' | 'webhook'
 

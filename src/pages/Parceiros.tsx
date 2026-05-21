@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Edit3, PlusCircle, RefreshCw, Search, X } from 'lucide-react'
+import { Edit3, PlusCircle, RefreshCw, Search, X, Trash2, PowerOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
@@ -115,6 +115,10 @@ export default function Parceiros() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState<NovoParceiro>(EMPTY)
   const [salvando, setSalvando] = useState(false)
+
+  type AcaoModal = { parceiro: Parceiro; tipo: 'excluir' | 'inativar'; vinculosCount: number }
+  const [acaoModal, setAcaoModal]     = useState<AcaoModal | null>(null)
+  const [executando, setExecutando]   = useState(false)
 
   useEffect(() => { void fetchAll() }, [])
 
@@ -280,6 +284,41 @@ export default function Parceiros() {
     setShowForm(false)
     setEditingId(null)
     setForm({ ...EMPTY })
+    await fetchAll()
+  }
+
+  async function contarVinculos(parceiroId: string): Promise<number> {
+    const { count } = await supabase
+      .from('vendas')
+      .select('id', { count: 'exact', head: true })
+      .eq('parceiro_id', parceiroId)
+    return count ?? 0
+  }
+
+  async function iniciarExcluir(parceiro: Parceiro) {
+    if (!canManage) return
+    const count = await contarVinculos(parceiro.id)
+    if (count > 0) {
+      setAcaoModal({ parceiro, tipo: 'inativar', vinculosCount: count })
+    } else {
+      setAcaoModal({ parceiro, tipo: 'excluir', vinculosCount: 0 })
+    }
+  }
+
+  async function confirmarAcao() {
+    if (!acaoModal) return
+    setExecutando(true)
+    const { parceiro, tipo } = acaoModal
+    if (tipo === 'excluir') {
+      await supabase.from('parceiros').delete().eq('id', parceiro.id)
+    } else {
+      const dataDesativacao = new Date().toISOString().slice(0, 10)
+      await supabase.from('parceiros')
+        .update({ status: 'inativo', segmento: 'inativo', data_desativacao: dataDesativacao })
+        .eq('id', parceiro.id)
+    }
+    setAcaoModal(null)
+    setExecutando(false)
     await fetchAll()
   }
 
@@ -547,9 +586,18 @@ export default function Parceiros() {
                             title={parceiro.status === 'ativo' ? 'Desativar parceiro' : 'Ativar parceiro'}
                             onClick={() => void toggleStatus(parceiro)}
                             disabled={!canManage}
-                            className="px-2 py-1 rounded-md text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800 disabled:opacity-40"
+                            className="p-1.5 rounded-md text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800 disabled:opacity-40"
                           >
-                            {parceiro.status === 'ativo' ? 'Desativar' : 'Ativar'}
+                            <PowerOff size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            title="Excluir parceiro"
+                            onClick={() => void iniciarExcluir(parceiro)}
+                            disabled={!canManage}
+                            className="p-1.5 rounded-md text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20 disabled:opacity-40"
+                          >
+                            <Trash2 size={13} />
                           </button>
                         </div>
                       </td>
@@ -598,6 +646,67 @@ export default function Parceiros() {
           </div>
         </div>
       </div>
+
+      {/* Modal excluir / inativar */}
+      {acaoModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className={cn('w-10 h-10 rounded-full flex items-center justify-center shrink-0',
+                acaoModal.tipo === 'excluir'
+                  ? 'bg-red-100 dark:bg-red-900/30'
+                  : 'bg-yellow-100 dark:bg-yellow-900/30')}>
+                {acaoModal.tipo === 'excluir'
+                  ? <Trash2 size={18} className="text-red-600 dark:text-red-400" />
+                  : <PowerOff size={18} className="text-yellow-600 dark:text-yellow-400" />}
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-900 dark:text-white">
+                  {acaoModal.tipo === 'excluir' ? 'Excluir parceiro' : 'Inativar parceiro'}
+                </h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  {acaoModal.tipo === 'excluir' ? 'Esta ação não pode ser desfeita.' : 'O parceiro continuará no histórico.'}
+                </p>
+              </div>
+            </div>
+
+            {acaoModal.tipo === 'inativar' && (
+              <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-xl px-4 py-3">
+                <p className="text-sm text-yellow-800 dark:text-yellow-300 font-medium">
+                  ⚠️ Este parceiro possui <strong>{acaoModal.vinculosCount} venda{acaoModal.vinculosCount !== 1 ? 's' : ''}</strong> vinculada{acaoModal.vinculosCount !== 1 ? 's' : ''} no sistema.
+                </p>
+                <p className="text-xs text-yellow-700 dark:text-yellow-400 mt-1">
+                  Por isso ele não pode ser excluído. Ao inativar, ele fica oculto nas operações mas o histórico é preservado.
+                </p>
+              </div>
+            )}
+
+            <p className="text-sm text-gray-700 dark:text-gray-300">
+              {acaoModal.tipo === 'excluir'
+                ? <>Confirma a exclusão permanente de <strong className="text-gray-900 dark:text-white">{acaoModal.parceiro.razao_social ?? acaoModal.parceiro.nome}</strong>?</>
+                : <>Deseja inativar <strong className="text-gray-900 dark:text-white">{acaoModal.parceiro.razao_social ?? acaoModal.parceiro.nome}</strong>?</>}
+            </p>
+
+            <div className="flex gap-2 pt-1">
+              <button type="button" onClick={() => setAcaoModal(null)} disabled={executando}
+                className="flex-1 px-4 py-2.5 text-sm rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 transition-colors">
+                Cancelar
+              </button>
+              <button type="button" onClick={() => void confirmarAcao()} disabled={executando}
+                className={cn('flex-1 px-4 py-2.5 text-sm rounded-xl text-white font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-60',
+                  acaoModal.tipo === 'excluir'
+                    ? 'bg-red-600 hover:bg-red-700'
+                    : 'bg-yellow-500 hover:bg-yellow-600')}>
+                {executando
+                  ? <RefreshCw size={14} className="animate-spin" />
+                  : acaoModal.tipo === 'excluir'
+                    ? <><Trash2 size={14} /> Excluir</>
+                    : <><PowerOff size={14} /> Inativar</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

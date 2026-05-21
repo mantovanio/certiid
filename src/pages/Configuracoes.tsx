@@ -356,6 +356,10 @@ function AbaUsuarios() {
   const [senhaOk, setSenhaOk]         = useState(false)
   const [salvandoSenha, setSalvandoSenha] = useState(false)
 
+  // Confirmação de exclusão de usuário
+  const [confirmExcluirUser, setConfirmExcluirUser] = useState<Profile | null>(null)
+  const [excluindoUser, setExcluindoUser]           = useState(false)
+
   // Modal novo usuário
   const [novoModal, setNovoModal]     = useState<ModalNovoUsuario>({ aberto: false })
   const [novoNome, setNovoNome]       = useState('')
@@ -417,6 +421,16 @@ function AbaUsuarios() {
   async function toggleStatus(u: Profile) {
     const novoStatus = u.status === 'ativo' ? 'inativo' : 'ativo'
     await supabase.from('profiles').update({ status: novoStatus }).eq('id', u.id)
+    void load()
+  }
+
+  async function excluirUsuario() {
+    if (!confirmExcluirUser) return
+    setExcluindoUser(true)
+    await supabase.from('profiles').delete().eq('id', confirmExcluirUser.id)
+    await supabaseAdmin.auth.admin.deleteUser(confirmExcluirUser.id)
+    setConfirmExcluirUser(null)
+    setExcluindoUser(false)
     void load()
   }
 
@@ -577,6 +591,38 @@ function AbaUsuarios() {
         </ModalOverlay>
       )}
 
+      {/* ── Modal Confirmar Exclusão de Usuário ── */}
+      {confirmExcluirUser && (
+        <ModalOverlay titulo="Excluir usuário" onClose={() => { if (!excluindoUser) setConfirmExcluirUser(null) }}>
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center shrink-0">
+                <Trash2 size={18} className="text-red-600 dark:text-red-400" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-900 dark:text-white">Excluir usuário</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Esta ação não pode ser desfeita.</p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-700 dark:text-gray-300">
+              Tem certeza que deseja excluir permanentemente o usuário{' '}
+              <strong className="text-gray-900 dark:text-white">{confirmExcluirUser.nome}</strong>?{' '}
+              O acesso será removido imediatamente.
+            </p>
+            <div className="flex gap-2 pt-1">
+              <button type="button" onClick={() => setConfirmExcluirUser(null)} disabled={excluindoUser}
+                className="flex-1 px-4 py-2.5 text-sm rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50">
+                Cancelar
+              </button>
+              <button type="button" onClick={excluirUsuario} disabled={excluindoUser}
+                className="flex-1 px-4 py-2.5 text-sm rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-medium transition-colors flex items-center justify-center gap-2">
+                {excluindoUser ? <><Loader2 size={14} className="animate-spin" /> Excluindo...</> : <><Trash2 size={14} /> Excluir</>}
+              </button>
+            </div>
+          </div>
+        </ModalOverlay>
+      )}
+
       {/* ── Modal Novo Usuário ── */}
       {novoModal.aberto && (
         <ModalOverlay titulo="Criar novo usuário" onClose={() => setNovoModal({ aberto: false })}>
@@ -704,14 +750,21 @@ function AbaUsuarios() {
                             <KeyRound size={13} />
                           </button>
                           {u.id !== myProfile?.id && (
-                            <button type="button" onClick={() => toggleStatus(u)}
-                              className={cn('text-xs px-2 py-1 rounded-lg font-medium transition-colors',
-                                u.status === 'ativo'
-                                  ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20'
-                                  : 'text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20')}
-                              title={u.status === 'ativo' ? 'Desativar' : 'Liberar acesso'}>
-                              {u.status === 'ativo' ? 'Desativar' : 'Liberar'}
-                            </button>
+                            <>
+                              <button type="button" onClick={() => toggleStatus(u)}
+                                className={cn('text-xs px-2 py-1 rounded-lg font-medium transition-colors',
+                                  u.status === 'ativo'
+                                    ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20'
+                                    : 'text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20')}
+                                title={u.status === 'ativo' ? 'Desativar' : 'Liberar acesso'}>
+                                {u.status === 'ativo' ? 'Desativar' : 'Liberar'}
+                              </button>
+                              <button type="button" onClick={() => setConfirmExcluirUser(u)}
+                                title="Excluir usuário"
+                                className="w-7 h-7 rounded-lg text-gray-400 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500 flex items-center justify-center transition-colors">
+                                <Trash2 size={13} />
+                              </button>
+                            </>
                           )}
                         </div>
                       )}

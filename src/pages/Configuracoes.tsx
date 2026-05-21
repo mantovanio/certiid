@@ -1254,10 +1254,10 @@ function AbaIntegracoes() {
             </label>
             <ConfigInput label="URL base / API" value={novaForm.base_url ?? ''} onChange={v => setNovaForm(f => ({ ...f, base_url: v }))} placeholder="https://..." />
             <ConfigInput label="Webhook" value={novaForm.webhook_url ?? ''} onChange={v => setNovaForm(f => ({ ...f, webhook_url: v }))} placeholder="https://..." />
-            {novaProvider === 'chatwoot' && (
+            {(novaProvider === 'chatwoot' || novaProvider === 'chatwoot_disparo') && (
               <>
                 <ConfigInput label="Account ID" value={novaForm.account_id ?? ''} onChange={v => setNovaForm(f => ({ ...f, account_id: v }))} />
-                <ConfigInput label="Inbox ID WhatsApp" value={novaForm.inbox_id ?? ''} onChange={v => setNovaForm(f => ({ ...f, inbox_id: v }))} />
+                <ConfigInput label={novaProvider === 'chatwoot_disparo' ? 'Inbox ID (Disparos)' : 'Inbox ID WhatsApp'} value={novaForm.inbox_id ?? ''} onChange={v => setNovaForm(f => ({ ...f, inbox_id: v }))} />
                 <ConfigInput label="API Token" type="password" value={novaForm.api_token ?? ''} onChange={v => setNovaForm(f => ({ ...f, api_token: v }))} />
               </>
             )}

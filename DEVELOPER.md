@@ -514,8 +514,8 @@ Fila de mensagens a serem enviadas.
 // src/lib/supabase.ts — para uso no frontend
 import { supabase } from '@/lib/supabase'
 
-// src/lib/supabaseAdmin.ts — bypassa RLS, use apenas server-side
-import { supabaseAdmin } from '@/lib/supabaseAdmin'
+// Operações administrativas devem rodar apenas em Edge Functions/backend,
+// nunca no bundle do frontend.
 ```
 
 ### Operações principais por tabela
@@ -1023,7 +1023,7 @@ Sequência: Decodifica chave SSH → SSH na VPS → executa `deploy.sh`
 
 > ⚠️ **Ações pendentes para produção segura**
 
-1. **Service Role Key hardcoded** — `src/lib/supabaseAdmin.ts` contém a chave de serviço no código. Mover para variável de ambiente server-side (Edge Function ou backend dedicado).
+1. **Service Role Key** — deve existir apenas como `SUPABASE_SERVICE_ROLE_KEY` em ambiente server-side. Nunca usar prefixo `VITE_` para essa chave.
 
 2. **Webhook sem autenticação** — O endpoint da Edge Function (`chatwoot-webhook`) não valida a origem dos eventos incoming. Adicionar verificação de IP ou HMAC signature do Chatwoot.
 

@@ -6,7 +6,6 @@ export $(grep -v '^#' .env | xargs)
 docker build --no-cache \
   --build-arg "VITE_SUPABASE_URL=$VITE_SUPABASE_URL" \
   --build-arg "VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY" \
-  --build-arg "VITE_SUPABASE_SERVICE_ROLE_KEY=$VITE_SUPABASE_SERVICE_ROLE_KEY" \
   -t certiid:latest .
 docker stack rm certiid 2>/dev/null || true
 sleep 20

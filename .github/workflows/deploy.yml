@@ -47,3 +47,8 @@ jobs:
         run: supabase functions deploy notify-new-user --project-ref cvfrhfiaprdtwxxplngk --no-verify-jwt
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Publicar Edge Function admin-users
+        run: supabase functions deploy admin-users --project-ref cvfrhfiaprdtwxxplngk
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

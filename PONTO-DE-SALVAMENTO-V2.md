@@ -27,7 +27,7 @@
 - **Domínio:** `certiid.mantovan.com.br` (sem www — sem registro DNS para www)
 - **Stack:** Docker Swarm + Traefik + Let's Encrypt
 - **Deploy:** push na `main` dispara GitHub Actions → SSH na VPS → `bash /opt/certiid/deploy.sh`
-- **`.env` na VPS** (`/opt/certiid/.env`): confirmado com `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_SUPABASE_SERVICE_ROLE_KEY` presentes e corretos
+- **`.env` na VPS** (`/opt/certiid/.env`): manter `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` e `SUPABASE_SERVICE_ROLE_KEY`
 - **Edge Functions:** deploy separado via Supabase CLI (`supabase functions deploy chatwoot-webhook`)
 
 ---
@@ -181,8 +181,8 @@ Chatwoot Webhook → supabase/functions/chatwoot-webhook/index.ts
 
 ## Regras de segurança permanentes
 
-- `VITE_SUPABASE_SERVICE_ROLE_KEY` nunca hardcoded — sempre via `.env` (gitignored)
-- `supabaseAdmin` bypassa RLS — somente em operações admin
+- `SUPABASE_SERVICE_ROLE_KEY` nunca pode usar prefixo `VITE_` nem entrar no bundle
+- operacoes admin devem passar por Edge Function/backend dedicado
 - Campos sensíveis de `nfse_configuracoes` nunca no frontend
 - Edge Functions leem `SERVICE_ROLE_KEY` via `Deno.env.get()`
 

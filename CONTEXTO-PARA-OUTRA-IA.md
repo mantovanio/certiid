@@ -60,10 +60,11 @@ Essa migration criou a base relacional nova, incluindo:
 
 Arquivo:
 
-- `src/lib/supabaseAdmin.ts`
+- `supabase/functions/admin-users/index.ts`
 
-Ja foi removido o uso hardcoded da `service_role key`.
-Agora o arquivo usa `import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY`.
+As operacoes administrativas de usuario foram movidas para uma Edge Function
+server-side. A chave sensivel agora deve existir apenas como
+`SUPABASE_SERVICE_ROLE_KEY`, sem prefixo `VITE_`.
 
 ### 3. Tipos V2
 

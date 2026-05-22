@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Loader2, MapPin, Pencil, X, Check, KeyRound, UserPlus, Eye, EyeOff, MessageCircle, Mail, Webhook, Save, Send, Trash2, Plus, ToggleLeft, ToggleRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { supabase, SUPABASE_ANON_KEY } from '@/lib/supabase'
-import { supabaseAdmin } from '@/lib/supabaseAdmin'
+import { createAdminManagedUser, deleteAdminManagedUser, updateAdminManagedPassword } from '@/lib/adminUsers'
 import { DEFAULT_AGENCY_CONFIG, type AgencyConfig, fetchAgencyConfig } from '@/lib/agencyConfig'
 import { useAuth } from '@/contexts/AuthContext'
 import type {
@@ -428,11 +428,15 @@ function AbaUsuarios() {
   async function excluirUsuario() {
     if (!confirmExcluirUser) return
     setExcluindoUser(true)
-    await supabase.from('profiles').delete().eq('id', confirmExcluirUser.id)
-    await supabaseAdmin.auth.admin.deleteUser(confirmExcluirUser.id)
-    setConfirmExcluirUser(null)
-    setExcluindoUser(false)
-    void load()
+    try {
+      await deleteAdminManagedUser({ userId: confirmExcluirUser.id })
+      setConfirmExcluirUser(null)
+      void load()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Erro ao excluir usuário.')
+    } finally {
+      setExcluindoUser(false)
+    }
   }
 
   function startEdit(u: Profile) {
@@ -501,10 +505,14 @@ function AbaUsuarios() {
     if (novaSenha.length < 6) { setSenhaErro('A senha deve ter pelo menos 6 caracteres.'); return }
     if (novaSenha !== confirmSenha) { setSenhaErro('As senhas não coincidem.'); return }
     setSalvandoSenha(true)
-    const { error } = await supabaseAdmin.auth.admin.updateUserById(modalSenha!.userId, { password: novaSenha })
-    setSalvandoSenha(false)
-    if (error) { setSenhaErro(error.message); return }
-    setSenhaOk(true)
+    try {
+      await updateAdminManagedPassword({ userId: modalSenha!.userId, password: novaSenha })
+      setSenhaOk(true)
+    } catch (error) {
+      setSenhaErro(error instanceof Error ? error.message : 'Erro ao atualizar senha.')
+    } finally {
+      setSalvandoSenha(false)
+    }
   }
 
   function abrirNovoUsuario() {
@@ -518,28 +526,22 @@ function AbaUsuarios() {
     setCriadoErro(null)
     if (novoSenhaU.length < 6) { setCriadoErro('Senha mínima de 6 caracteres.'); return }
     setCriandoUser(true)
-    const { data, error } = await supabaseAdmin.auth.admin.createUser({
-      email: novoEmail,
-      password: novoSenhaU,
-      email_confirm: true,
-      user_metadata: { nome: novoNome, perfil: novoPerfil },
-    })
-    if (error) { setCriadoErro(error.message); setCriandoUser(false); return }
-    // Garante perfil criado (trigger pode demorar)
-    if (data.user) {
-      await supabaseAdmin.from('profiles').upsert({
-        id: data.user.id,
+    try {
+      await createAdminManagedUser({
         nome: novoNome,
         email: novoEmail,
+        senha: novoSenhaU,
         perfil: novoPerfil,
-        status: 'ativo',
-        tipo_vinculo: novoPerfil === 'agente_registro' ? 'agente_registro' : novoPerfil === 'vendedor' ? 'vendedor' : 'usuario_comum',
         permissoes: DEFAULT_PERMISSIONS[novoPerfil],
       })
+      setCriadoOk(true)
+      void load()
+    } catch (error) {
+      setCriadoErro(error instanceof Error ? error.message : 'Erro ao criar usuário.')
+      return
+    } finally {
+      setCriandoUser(false)
     }
-    setCriandoUser(false)
-    setCriadoOk(true)
-    void load()
   }
 
   if (!isAdmin) {

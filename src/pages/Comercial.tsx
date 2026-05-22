@@ -761,7 +761,7 @@ export default function Comercial() {
           const wb = XLSX.read(data, { type: 'array' })
           const ws = wb.Sheets[wb.SheetNames[0]]
           const normalize = (h: string) =>
-            String(h ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+            String(h ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
           const json: Record<string, unknown>[] = XLSX.utils.sheet_to_json(ws, { defval: '' })
           const rows = json.map(r => {
             const out: Record<string, string> = {}
@@ -1007,7 +1007,7 @@ export default function Comercial() {
           data_vencimento:        parseDate(r['data_fim_validade'] ?? r['data_vencimento'] ?? ''),
           data_inicio_validade:   parseDate(r['data_inicio_validade'] ?? r['data_inicio'] ?? ''),
           numero_serie:           (r['numero_de_serie'] ?? r['numero_serie'] ?? '').trim() || null,
-          voucher_codigo:         (r['vouchercod'] ?? r['voucher_codigo'] ?? '').trim() || null,
+          voucher_codigo:         (r['vouchercodigo'] ?? r['voucher_codigo'] ?? r['vouchercod'] ?? '').trim() || null,
           voucher_percentual:     parseNum(r['voucherpercentual'] ?? r['voucher_percentual'] ?? '0') || null,
           voucher_valor:          parseNum(r['vouchervalor'] ?? r['voucher_valor'] ?? '0') || null,
           nome_ar:                (r['nome_da_autoridade_de_registro'] ?? r['nome_ar'] ?? '').trim() || null,
@@ -1018,19 +1018,23 @@ export default function Comercial() {
         }
       }).filter((x): x is NonNullable<typeof x> => x !== null)
 
-      // 4. verifica quais já existem no CRM (para contar batidos vs novos)
+      // 4. separa registros que já existem no CRM dos que são só da Safeweb
       const protocolos = vendasPayloads.map(v => v.protocolo_numero)
       const { data: existentes } = await supabase
         .from('vendas_certificados').select('protocolo_numero').in('protocolo_numero', protocolos)
       const existSet = new Set((existentes ?? []).map(e => e.protocolo_numero as string))
-      const novos      = vendasPayloads.filter(v => !existSet.has(v.protocolo_numero)).length
-      const atualizados = vendasPayloads.filter(v =>  existSet.has(v.protocolo_numero)).length
+      const paraAtualizar = vendasPayloads.filter(v =>  existSet.has(v.protocolo_numero))
+      const novos         = vendasPayloads.filter(v => !existSet.has(v.protocolo_numero)).length
 
-      // 5. upsert vendas
-      for (let i = 0; i < vendasPayloads.length; i += BATCH) {
-        const { error } = await supabase.from('vendas_certificados')
-          .upsert(vendasPayloads.slice(i, i + BATCH), { onConflict: 'protocolo_numero', ignoreDuplicates: false })
-        if (error) { alert('Erro ao importar vendas: ' + error.message); return }
+      // 5. atualiza apenas os que já existem (INSERT violaria NOT NULL de vendedor_id, etc.)
+      for (let i = 0; i < paraAtualizar.length; i += BATCH) {
+        const batch = paraAtualizar.slice(i, i + BATCH)
+        const ops = batch.map(({ protocolo_numero, ...campos }) =>
+          supabase.from('vendas_certificados').update(campos).eq('protocolo_numero', protocolo_numero)
+        )
+        const results = await Promise.all(ops)
+        const err = results.find(r => r.error)
+        if (err?.error) { alert('Erro ao importar vendas: ' + err.error.message); return }
       }
 
       // 6. conta divergentes: vendas no CRM sem validado_safeweb que têm protocolo fora da planilha
@@ -1041,7 +1045,7 @@ export default function Comercial() {
         .eq('status_venda', 'emitido')
         .is('validado_safeweb', null)
 
-      setResultSafeweb({ clientes: clientesUniq.length, novos, atualizados, divergentes: divergentes ?? 0 })
+      setResultSafeweb({ clientes: clientesUniq.length, novos, atualizados: paraAtualizar.length, divergentes: divergentes ?? 0 })
     } finally {
       setImportandoSafeweb(false)
     }

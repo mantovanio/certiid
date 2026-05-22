@@ -157,15 +157,74 @@ export type NovoClienteComercial = Omit<ClienteComercial, 'id' | 'created_at' | 
 // ── comercial / catálogo ──────────────────────────────────────
 export interface Certificado {
   id: string
-  tipo: string
+  codigo: number | null
+  tipo: string              // nome do produto, ex: "e-CPF A1"
+  descricao: string | null
+  validade: string          // ex: "1 Ano", "2 Anos"
+  modelo: string | null     // A1, A3
+  categoria: string | null  // e-CPF, e-CNPJ, NF-e, SSL
+  tipo_emissao_padrao: string | null
+  descricao_produto: string | null
+  produto_vinculado_ac: string | null
+  preco_venda: number
+  valor_custo_ac: number
+  valor_custo: number
+  agrupador: string | null
+  hash: string | null
   estoque: number
-  validade: string
   ativo: boolean
   created_at: string
   updated_at: string
 }
 
 export type NovoCertificado = Omit<Certificado, 'id' | 'created_at' | 'updated_at'>
+
+// ── tabelas de preço ──────────────────────────────────────────
+export interface TabelaPreco {
+  id: string
+  nome: string
+  descricao: string | null
+  codigo_voucher: string | null
+  max_desconto_percentual: number
+  max_desconto_valor: number
+  comissao_venda_pct: number
+  comissao_gestor_pct: number
+  comissao_gestor_valor: number
+  ativo: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type NovaTabelaPreco = Omit<TabelaPreco, 'id' | 'created_at' | 'updated_at'>
+
+export type TipoParticipanteTabelaPreco = 'parceiro' | 'tipo_parceiro' | 'perfil'
+
+export interface TabelaPrecoParticipante {
+  id: string
+  tabela_preco_id: string
+  tipo_participante: TipoParticipanteTabelaPreco
+  parceiro_id: string | null
+  tipo_parceiro: TipoParceiro | null
+  perfil: PerfilAcesso | null
+  created_at: string
+}
+
+export type NovaTabelaPrecoParticipante = Omit<TabelaPrecoParticipante, 'id' | 'created_at'>
+
+export interface TabelaPrecoItem {
+  id: string
+  tabela_preco_id: string
+  certificado_id: string
+  valor: number
+  valor_custo: number
+  valor_repasse: number
+  link_safeweb: string | null
+  ativo: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type NovaTabelaPrecoItem = Omit<TabelaPrecoItem, 'id' | 'created_at' | 'updated_at'>
 
 export interface PrecoCertificado {
   id: string
@@ -511,12 +570,17 @@ export interface VendaCertificado {
   id: string
   cadastro_base_id: string
   empresa_id: string | null
-  titular_id: string
+  titular_id: string | null     // null até a emissão do protocolo
   certificado_id: string | null
+  tabela_preco_id: string | null
+  tabela_preco_item_id: string | null
+  pago: boolean
+  data_pagamento: string | null
+  data_vencimento: string | null
   tipo_produto: string
   tipo_venda: string | null
   tipo_emissao: string | null
-  tabela_preco: string | null
+  tabela_preco: string | null   // nome da tabela (snapshot texto)
   forma_pagamento_id: string | null
   valor_venda: number | null
   valor_custo: number | null

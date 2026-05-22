@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { supabase, getSupabaseAccessToken } from '@/lib/supabase'
 import { createAdminManagedUser, deleteAdminManagedUser, updateAdminManagedPassword } from '@/lib/adminUsers'
 import { DEFAULT_AGENCY_CONFIG, type AgencyConfig, fetchAgencyConfig } from '@/lib/agencyConfig'
+import { DEFAULT_PERMISSIONS, PAGE_PERMISSIONS, hasPerfil, isAdminProfile } from '@/lib/security'
 import { useAuth } from '@/contexts/AuthContext'
 import type {
   AutomationRule,
@@ -50,24 +51,6 @@ const TIPO_VINCULO_LABEL: Record<TipoVinculoUsuario, string> = {
   vendedor:        'Vendedor',
   contador:        'Contador',
   usuario_comum:   'Usuário comum',
-}
-
-const PAGE_PERMISSIONS: { id: PermissaoPagina; label: string; description: string }[] = [
-  { id: 'dashboard',     label: 'Dashboard',     description: 'Ver indicadores principais' },
-  { id: 'comercial',     label: 'Comercial',     description: 'Clientes, vendas, agenda e certificados' },
-  { id: 'chat',          label: 'Chat ao Vivo',  description: 'Atendimento e Kanban de conversas' },
-  { id: 'renovacoes',    label: 'Renovações',    description: 'Base e campanhas de renovação' },
-  { id: 'financeiro',    label: 'Financeiro',    description: 'Lançamentos, contas e pagamentos' },
-  { id: 'relatorios',    label: 'Relatórios',    description: 'Análises e relatórios' },
-  { id: 'parceiros',     label: 'Parceiros',     description: 'Cadastro e acompanhamento de parceiros' },
-  { id: 'configuracoes', label: 'Configurações', description: 'Configurações, integrações e usuários' },
-]
-
-const DEFAULT_PERMISSIONS: Record<PerfilAcesso, PermissaoPagina[]> = {
-  admin:           PAGE_PERMISSIONS.map(p => p.id),
-  agente_registro: ['dashboard', 'comercial', 'chat', 'renovacoes'],
-  vendedor:        ['dashboard', 'comercial', 'parceiros', 'relatorios'],
-  usuario:         ['dashboard', 'relatorios'],
 }
 
 type UserEditForm = {
@@ -171,7 +154,7 @@ function CampoSenha({ label, value, onChange, autoFocus }: { label: string; valu
 
 function AbaGeral() {
   const { profile } = useAuth()
-  const isAdmin = profile?.perfil === 'admin'
+  const isAdmin = isAdminProfile(profile)
   const [form, setForm] = useState<AgencyConfig>(DEFAULT_AGENCY_CONFIG)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -339,7 +322,7 @@ function AbaGeral() {
 
 function AbaUsuarios() {
   const { profile: myProfile } = useAuth()
-  const isAdmin = myProfile?.perfil === 'admin'
+  const isAdmin = isAdminProfile(myProfile)
 
   const [users, setUsers]           = useState<Profile[]>([])
   const [parceiros, setParceiros]   = useState<Parceiro[]>([])
@@ -918,7 +901,7 @@ async function testarChatwoot(baseUrl: string, token: string): Promise<{ ok: boo
 
 function AbaIntegracoes() {
   const { profile } = useAuth()
-  const isAdmin = profile?.perfil === 'admin'
+  const isAdmin = isAdminProfile(profile)
 
   const [integracoes, setIntegracoes] = useState<ExternalIntegration[]>([])
   const [outbox, setOutbox] = useState<CommunicationOutbox[]>([])
@@ -1421,7 +1404,7 @@ function AbaIntegracoes() {
 
 function AbaAutomacoes() {
   const { profile } = useAuth()
-  const isAdmin = profile?.perfil === 'admin'
+  const isAdmin = isAdminProfile(profile)
   const [automacoes, setAutomacoes] = useState<AutomationRule[]>([])
   const [loading, setLoading] = useState(true)
   const [erro, setErro] = useState<string | null>(null)
@@ -1546,7 +1529,7 @@ const EMPTY_PONTO: NovoPontoAtendimento = {
 
 function AbaPontos() {
   const { profile } = useAuth()
-  const isAdmin = profile?.perfil === 'admin'
+  const isAdmin = isAdminProfile(profile)
   const [pontos, setPontos]     = useState<PontoAtendimento[]>([])
   const [loading, setLoading]   = useState(true)
   const [erro, setErro]         = useState<string | null>(null)

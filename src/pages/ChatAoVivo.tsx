@@ -33,6 +33,7 @@ import {
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
+import { isAdminProfile } from '@/lib/security'
 import ChatPanel, { type ChatwootCfg } from '@/components/ChatPanel'
 import { logger } from '@/lib/logger'
 import type { Lead, StatusLead } from '@/types'
@@ -115,7 +116,7 @@ function emptyColumnForm(): ColumnConfig {
 
 export default function ChatAoVivo() {
   const { profile } = useAuth()
-  const isAdmin = profile?.perfil === 'admin'
+  const isAdmin = isAdminProfile(profile)
   const [leads, setLeads] = useState<Lead[]>([])
   const [columns, setColumns] = useState<ColumnConfig[]>(DEFAULT_COLUMNS)
   const [loading, setLoading] = useState(true)

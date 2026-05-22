@@ -3,6 +3,7 @@ import { Edit3, PlusCircle, RefreshCw, Search, X, Trash2, PowerOff } from 'lucid
 import { cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
+import { hasPerfil } from '@/lib/security'
 import type {
   Banco,
   CentroCusto,
@@ -102,7 +103,7 @@ type GestorOption = Pick<Profile, 'id' | 'nome' | 'perfil' | 'status'>
 
 export default function Parceiros() {
   const { profile } = useAuth()
-  const canManage = profile?.perfil === 'admin' || profile?.perfil === 'vendedor'
+  const canManage = hasPerfil(profile, 'admin', 'vendedor')
   const [lista, setLista] = useState<Parceiro[]>([])
   const [bancos, setBancos] = useState<Banco[]>([])
   const [centros, setCentros] = useState<CentroCusto[]>([])

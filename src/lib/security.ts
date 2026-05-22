@@ -1,0 +1,66 @@
+import type { Page } from '@/components/Sidebar'
+import type { PerfilAcesso, PermissaoPagina, Profile } from '@/types'
+
+export const PAGE_LABELS: Record<Page, string> = {
+  dashboard: 'Dashboard',
+  comercial: 'Comercial',
+  clientes: 'Clientes',
+  chat: 'Chat ao Vivo',
+  renovacoes: 'Renovações',
+  financeiro: 'Financeiro',
+  relatorios: 'Relatórios',
+  parceiros: 'Parceiros',
+  configuracoes: 'Configurações',
+}
+
+export const PAGE_PERMISSIONS: { id: PermissaoPagina; label: string; description: string }[] = [
+  { id: 'dashboard', label: 'Dashboard', description: 'Ver indicadores principais' },
+  { id: 'comercial', label: 'Comercial', description: 'Clientes, vendas, agenda e certificados' },
+  { id: 'chat', label: 'Chat ao Vivo', description: 'Atendimento e Kanban de conversas' },
+  { id: 'renovacoes', label: 'Renovações', description: 'Base e campanhas de renovação' },
+  { id: 'financeiro', label: 'Financeiro', description: 'Lançamentos, contas e pagamentos' },
+  { id: 'relatorios', label: 'Relatórios', description: 'Análises e relatórios' },
+  { id: 'parceiros', label: 'Parceiros', description: 'Cadastro e acompanhamento de parceiros' },
+  { id: 'configuracoes', label: 'Configurações', description: 'Configurações, integrações e usuários' },
+]
+
+export const DEFAULT_PERMISSIONS: Record<PerfilAcesso, PermissaoPagina[]> = {
+  admin: PAGE_PERMISSIONS.map(p => p.id),
+  agente_registro: ['dashboard', 'comercial', 'chat', 'renovacoes'],
+  vendedor: ['dashboard', 'comercial', 'parceiros', 'relatorios'],
+  usuario: ['dashboard', 'relatorios'],
+}
+
+export const PERFIL_LABEL: Record<PerfilAcesso, string> = {
+  admin: 'Administrador',
+  agente_registro: 'Agente de Registro',
+  vendedor: 'Vendedor',
+  usuario: 'Usuário',
+}
+
+export function isProfileActive(profile: Profile | null | undefined) {
+  return profile?.status === 'ativo'
+}
+
+export function isAdminProfile(profile: Profile | null | undefined) {
+  return profile?.perfil === 'admin' && isProfileActive(profile)
+}
+
+export function hasPerfil(profile: Profile | null | undefined, ...perfis: PerfilAcesso[]) {
+  if (!profile || !isProfileActive(profile)) return false
+  return perfis.includes(profile.perfil)
+}
+
+export function hasPagePermission(profile: Profile | null | undefined, page: PermissaoPagina) {
+  if (!profile || !isProfileActive(profile)) return false
+  if (profile.perfil === 'admin') return true
+  const permissoes = profile.permissoes?.length ? profile.permissoes : DEFAULT_PERMISSIONS[profile.perfil]
+  return permissoes.includes(page)
+}
+
+export function resolveAllowedPages(profile: Profile | null | undefined): Page[] {
+  if (!profile || !isProfileActive(profile)) return []
+  if (profile.perfil === 'admin') return DEFAULT_PERMISSIONS.admin
+  const customPermissions = profile.permissoes?.filter((p): p is Page => p in PAGE_LABELS) ?? []
+  return customPermissions.length > 0 ? customPermissions : DEFAULT_PERMISSIONS[profile.perfil]
+}

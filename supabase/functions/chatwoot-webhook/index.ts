@@ -1,6 +1,5 @@
 // @ts-nocheck — Deno runtime (Supabase Edge Functions), não Node.js
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
-const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+import { CORS, SERVICE_KEY, SUPABASE_URL, requireAuthenticatedUser } from '../_shared/security.ts'
 
 const DB = {
   'apikey':        SERVICE_KEY,
@@ -8,31 +7,8 @@ const DB = {
   'Content-Type':  'application/json',
 }
 
-const CORS = {
-  'Access-Control-Allow-Origin':  '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, apikey',
-}
-
 const STATUS_MAP: Record<string, string> = {
   open: 'conversando', pending: 'iniciou_conversa', resolved: 'cliente', snoozed: 'follow_up',
-}
-
-async function requireAuthenticatedUser(req: Request) {
-  const authHeader = req.headers.get('Authorization') ?? ''
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null
-  if (!token) return { ok: false, status: 401, error: 'Token ausente' }
-
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-    headers: {
-      'apikey': SERVICE_KEY,
-      'Authorization': `Bearer ${token}`,
-    },
-  })
-
-  if (!res.ok) return { ok: false, status: 401, error: 'Sessão inválida' }
-
-  return { ok: true }
 }
 
 // ── DB helpers ────────────────────────────────────────────────────────────────

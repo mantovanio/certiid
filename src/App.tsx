@@ -12,7 +12,7 @@ import Financeiro from './pages/Financeiro'
 import Relatorios from './pages/Relatorios'
 import Parceiros from './pages/Parceiros'
 import Configuracoes from './pages/Configuracoes'
-import type { PerfilAcesso, PermissaoPagina } from './types'
+import type { PermissaoPagina } from './types'
 import { APP_VERSION } from './lib/version'
 import { DEFAULT_AGENCY_CONFIG, fetchAgencyConfig } from './lib/agencyConfig'
 import ClaudeChat from './components/ClaudeChat'
@@ -20,32 +20,7 @@ import DebugPanel from './components/DebugPanel'
 import NotificationBell from './components/NotificationBell'
 import { useNotifications } from './hooks/useNotifications'
 import { Menu } from 'lucide-react'
-
-const PAGE_LABELS: Record<Page, string> = {
-  dashboard:     'Dashboard',
-  comercial:     'Comercial',
-  clientes:      'Clientes',
-  chat:          'Chat ao Vivo',
-  renovacoes:    'Renovações',
-  financeiro:    'Financeiro',
-  relatorios:    'Relatórios',
-  parceiros:     'Parceiros',
-  configuracoes: 'Configurações',
-}
-
-const PAGE_ACCESS: Record<PerfilAcesso, PermissaoPagina[]> = {
-  admin:           ['dashboard', 'comercial', 'clientes', 'chat', 'renovacoes', 'financeiro', 'relatorios', 'parceiros', 'configuracoes'],
-  agente_registro: ['dashboard', 'comercial', 'clientes', 'chat', 'renovacoes'],
-  vendedor:        ['dashboard', 'comercial', 'clientes', 'parceiros', 'relatorios'],
-  usuario:         ['dashboard', 'relatorios'],
-}
-
-const PERFIL_LABEL: Record<PerfilAcesso, string> = {
-  admin:           'Administrador',
-  agente_registro: 'Agente de Registro',
-  vendedor:        'Vendedor',
-  usuario:         'Usuário',
-}
+import { PAGE_LABELS, PERFIL_LABEL, isAdminProfile, resolveAllowedPages } from './lib/security'
 
 function AppContent() {
   const { user, profile, loading, signOut, isPasswordRecovery } = useAuth()
@@ -55,7 +30,7 @@ function AppContent() {
   const [claudeOpen, setClaudeOpen]   = useState(false)
   const [debugOpen, setDebugOpen]     = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
-  const isAdmin = profile?.perfil === 'admin'
+  const isAdmin = isAdminProfile(profile)
   const { notifications } = useNotifications(isAdmin)
 
   useEffect(() => {
@@ -141,12 +116,7 @@ function AppContent() {
     )
   }
 
-  const customPermissions = profile.permissoes?.filter((p): p is Page => p in PAGE_LABELS) ?? []
-  const allowedPages = profile.perfil === 'admin'
-    ? PAGE_ACCESS.admin
-    : customPermissions.length > 0
-      ? customPermissions
-      : PAGE_ACCESS[profile.perfil]
+  const allowedPages = resolveAllowedPages(profile)
 
   // Se a página atual não estiver disponível para o perfil, volta ao dashboard
   const activePage: Page = allowedPages.includes(page) ? page : 'dashboard'

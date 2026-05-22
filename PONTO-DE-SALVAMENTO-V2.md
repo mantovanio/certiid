@@ -76,6 +76,35 @@ Objetivo em andamento:
 - exigir `access_token` real nas ações internas do proxy
 - manter eventos inbound do Chatwoot funcionando normalmente
 
+#### 5. Núcleo central de segurança — IMPLEMENTADO
+
+Agora a arquitetura de segurança foi organizada em 3 centros:
+
+- `src/lib/security.ts`
+  - permissões padrão por perfil
+  - labels de perfil
+  - helpers:
+    - `isAdminProfile`
+    - `hasPerfil`
+    - `hasPagePermission`
+    - `resolveAllowedPages`
+
+- `supabase/functions/_shared/security.ts`
+  - `adminDb`
+  - `json`
+  - `CORS`
+  - `requireAuthenticatedUser`
+  - `requireAdmin`
+
+- consumo inicial refatorado em:
+  - `src/App.tsx`
+  - `src/pages/Configuracoes.tsx`
+  - `src/pages/ChatAoVivo.tsx`
+  - `src/pages/Parceiros.tsx`
+  - `src/pages/Renovacoes.tsx`
+  - `supabase/functions/admin-users/index.ts`
+  - `supabase/functions/chatwoot-webhook/index.ts`
+
 ---
 
 ## SQL aplicado no Supabase (acumulado)

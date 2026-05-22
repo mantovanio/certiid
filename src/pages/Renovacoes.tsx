@@ -10,6 +10,7 @@ import { supabase } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
 import { queueEmailMessage, queueWhatsAppMessage, queueWhatsAppFollowUp, renderTemplate } from '@/lib/communication'
 import { useAuth } from '@/contexts/AuthContext'
+import { hasPerfil, isAdminProfile } from '@/lib/security'
 import ChatPanel, { type ChatwootCfg } from '@/components/ChatPanel'
 import type { ChatContact } from '@/types'
 import * as XLSX from 'xlsx'
@@ -257,8 +258,8 @@ function fmtCurrency(v: number | null) {
 
 export default function Renovacoes() {
   const { profile } = useAuth()
-  const isAdmin = profile?.perfil === 'admin'
-  const canEditCadastro = profile?.perfil === 'admin' || profile?.perfil === 'agente_registro'
+  const isAdmin = isAdminProfile(profile)
+  const canEditCadastro = hasPerfil(profile, 'admin', 'agente_registro')
 
   // ── list state ──────────────────────────────────────────────
   const [lista, setLista]           = useState<RenovacaoV2[]>([])

@@ -1,6 +1,6 @@
 # Ponto de Salvamento — CertiID 1.0.0
 
-> Última atualização: 2026-05-19
+> Última atualização: 2026-05-22
 > Para retomar em nova sessão de IA sem perder contexto.
 
 ---
@@ -8,11 +8,16 @@
 ## Estado atual do Git
 
 **Branch:** `main`
-**Último commit publicado:** `2e13f81` — ci: adiciona deploy automático da Edge Function no Supabase
+**Último commit publicado em produção:** `a9b50da` — fix: adiciona notificacoes faltantes no build
 
-**Todos os arquivos estão commitados e publicados. Nenhuma alteração local pendente.**
+**Situação local:** a correção principal de segurança já está em produção. Ainda existem arquivos paralelos do ambiente do usuário fora desse pacote principal.
 
-### Commits recentes (sessão 2026-05-18/19)
+### Commits recentes (sessão 2026-05-22)
+
+- `a9b50da` — fix: adiciona notificacoes faltantes no build
+- `2b85214` — fix: protege service role e move acoes admin para edge function
+
+### Commits anteriores (sessão 2026-05-18/19)
 
 - `2e13f81` — ci: deploy automático Edge Function Supabase no GitHub Actions
 - `ff0b7ae` — fix: normaliza telefone E.164 no import, edição manual e Edge Function
@@ -28,7 +33,48 @@
 - **Stack:** Docker Swarm + Traefik + Let's Encrypt
 - **Deploy:** push na `main` dispara GitHub Actions → SSH na VPS → `bash /opt/certiid/deploy.sh`
 - **`.env` na VPS** (`/opt/certiid/.env`): manter `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` e `SUPABASE_SERVICE_ROLE_KEY`
-- **Edge Functions:** deploy separado via Supabase CLI (`supabase functions deploy chatwoot-webhook`)
+- **Edge Functions publicadas:** `chatwoot-webhook`, `notify-new-user`, `admin-users`
+- **Produção confirmada:** frontend recompilado na VPS e site voltou ao ar após deploy manual
+
+---
+
+## Segurança — estado atual (2026-05-22)
+
+### O que foi corrigido
+
+#### 1. `service_role` removida do frontend — CORRIGIDO
+- `src/lib/supabaseAdmin.ts` foi removido
+- `SUPABASE_SERVICE_ROLE_KEY` agora existe apenas server-side
+- arquivos ajustados: `.env.example`, `deploy.sh`, `Dockerfile`, `mcp-server/index.ts`, `query_db.js`
+
+#### 2. Gestão admin de usuários movida para backend — CORRIGIDO
+**Arquivos:**
+- `supabase/functions/admin-users/index.ts`
+- `src/lib/adminUsers.ts`
+- `src/pages/Configuracoes.tsx`
+
+Fluxos preservados:
+- criar usuário
+- trocar senha
+- excluir usuário
+
+Tudo isso agora valida sessão e perfil `admin` no backend.
+
+#### 3. Produção atualizada — CORRIGIDO
+- push realizado para `main`
+- Edge Function `admin-users` confirmada online
+- deploy manual na VPS concluído após correção de build
+
+### Próxima camada de endurecimento
+
+#### 4. Proxy `chatwoot-webhook`
+Situação identificada:
+- ações `_action` do proxy ainda precisavam autenticar com token real da sessão do usuário
+- uso de `SUPABASE_ANON_KEY` como bearer não deve ser tratado como autenticação de usuário
+
+Objetivo em andamento:
+- exigir `access_token` real nas ações internas do proxy
+- manter eventos inbound do Chatwoot funcionando normalmente
 
 ---
 

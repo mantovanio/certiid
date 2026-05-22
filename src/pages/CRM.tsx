@@ -11,7 +11,7 @@ import {
 import { useDroppable } from '@dnd-kit/core'
 import { useDraggable } from '@dnd-kit/core'
 import { ExternalLink, MessageCircle } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { supabase, getSupabaseAccessToken } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
 import ChatPanel, { type ChatwootCfg } from '@/components/ChatPanel'
 import type { Lead, StatusLead } from '@/types'
@@ -54,9 +54,10 @@ const TO_CHATWOOT_LABEL: Partial<Record<StatusLead, string>> = {
 
 async function pushToChatwoot(conversationId: string, status: StatusLead, cfg: ChatwootCfg) {
   const label = TO_CHATWOOT_LABEL[status] ?? null
+  const accessToken = await getSupabaseAccessToken()
   await fetch(EDGE_FN, {
     method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
     body:    JSON.stringify({
       _action:         'update_conversation',
       conversation_id: conversationId,

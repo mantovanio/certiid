@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Loader2, MapPin, Pencil, X, Check, KeyRound, UserPlus, Eye, EyeOff, MessageCircle, Mail, Webhook, Save, Send, Trash2, Plus, ToggleLeft, ToggleRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { supabase, SUPABASE_ANON_KEY } from '@/lib/supabase'
+import { supabase, getSupabaseAccessToken } from '@/lib/supabase'
 import { createAdminManagedUser, deleteAdminManagedUser, updateAdminManagedPassword } from '@/lib/adminUsers'
 import { DEFAULT_AGENCY_CONFIG, type AgencyConfig, fetchAgencyConfig } from '@/lib/agencyConfig'
 import { useAuth } from '@/contexts/AuthContext'
@@ -901,9 +901,10 @@ const EDGE_FN = 'https://cvfrhfiaprdtwxxplngk.supabase.co/functions/v1/chatwoot-
 
 async function testarChatwoot(baseUrl: string, token: string): Promise<{ ok: boolean; erro: string | null }> {
   try {
+    const accessToken = await getSupabaseAccessToken()
     const res = await fetch(EDGE_FN, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
       body: JSON.stringify({ _action: 'test_connection', base_url: baseUrl, api_token: token }),
       signal: AbortSignal.timeout(12000),
     })
@@ -1043,9 +1044,10 @@ function AbaIntegracoes() {
         return
       }
       try {
+        const accessToken = await getSupabaseAccessToken()
         const res = await fetch(EDGE_FN, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
           body: JSON.stringify({
             _action:    'sync_conversations',
             base_url:   integracao.base_url,

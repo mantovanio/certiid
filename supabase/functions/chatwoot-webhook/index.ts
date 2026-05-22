@@ -18,6 +18,23 @@ const STATUS_MAP: Record<string, string> = {
   open: 'conversando', pending: 'iniciou_conversa', resolved: 'cliente', snoozed: 'follow_up',
 }
 
+async function requireAuthenticatedUser(req: Request) {
+  const authHeader = req.headers.get('Authorization') ?? ''
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null
+  if (!token) return { ok: false, status: 401, error: 'Token ausente' }
+
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: {
+      'apikey': SERVICE_KEY,
+      'Authorization': `Bearer ${token}`,
+    },
+  })
+
+  if (!res.ok) return { ok: false, status: 401, error: 'Sessão inválida' }
+
+  return { ok: true }
+}
+
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
 async function dbUpsert(table: string, rows: unknown[]) {
@@ -388,7 +405,11 @@ Deno.serve(async (req) => {
   if (contentType.includes('multipart/form-data')) {
     try {
       const form = await req.formData()
-      if (form.get('_action') === 'send_attachment') return json(await actionSendAttachment(form))
+      if (form.get('_action') === 'send_attachment') {
+        const auth = await requireAuthenticatedUser(req)
+        if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status)
+        return json(await actionSendAttachment(form))
+      }
       return json({ ok: false, error: 'Ação inválida' })
     } catch (e) {
       return json({ ok: false, error: String(e) })
@@ -400,12 +421,16 @@ Deno.serve(async (req) => {
   catch { return new Response('Invalid JSON', { status: 400, headers: CORS }) }
 
   // ── Proxy actions (chamadas do browser) ────────────────────────────────────
-  if (payload._action === 'test_connection')    return json(await actionTestConnection(payload))
-  if (payload._action === 'sync_conversations') return json(await actionSyncConversations(payload))
-  if (payload._action === 'create_conversation') return json(await actionCreateConversation(payload))
-  if (payload._action === 'get_messages')       return json(await actionGetMessages(payload))
-  if (payload._action === 'send_message')       return json(await actionSendMessage(payload))
-  if (payload._action === 'update_conversation') return json(await actionUpdateConversation(payload))
+  if (payload._action) {
+    const auth = await requireAuthenticatedUser(req)
+    if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status)
+    if (payload._action === 'test_connection')    return json(await actionTestConnection(payload))
+    if (payload._action === 'sync_conversations') return json(await actionSyncConversations(payload))
+    if (payload._action === 'create_conversation') return json(await actionCreateConversation(payload))
+    if (payload._action === 'get_messages')       return json(await actionGetMessages(payload))
+    if (payload._action === 'send_message')       return json(await actionSendMessage(payload))
+    if (payload._action === 'update_conversation') return json(await actionUpdateConversation(payload))
+  }
 
   // ── Chatwoot webhook events ────────────────────────────────────────────────
   const event = payload.event as string

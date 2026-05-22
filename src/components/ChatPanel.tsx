@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { X, Send, Loader2, Smile, Paperclip, Mic, StopCircle, Trash2, MessageCircle, ExternalLink } from 'lucide-react'
-import { supabase, SUPABASE_ANON_KEY } from '@/lib/supabase'
+import { supabase, getSupabaseAccessToken } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import type { ChatContact } from '@/types'
@@ -176,9 +176,10 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
       setLoadingLabel('Criando conversa no Chatwoot...')
       logger.info('ChatPanel', 'criando conversa no Chatwoot', { phone, inbox_id: chatwoot.inbox_id })
       try {
+        const accessToken = await getSupabaseAccessToken()
         const res  = await fetch(EDGE_FN, {
           method:  'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
           body:    JSON.stringify({
             _action:       'create_conversation',
             base_url:      chatwoot.base_url,
@@ -218,9 +219,10 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
     setFetchError(null)
     logger.info('ChatPanel', 'buscando mensagens', { convId })
     try {
+      const accessToken = await getSupabaseAccessToken()
       const res  = await fetch(EDGE_FN, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
         body:    JSON.stringify({
           _action:         'get_messages',
           conversation_id: convId,
@@ -313,9 +315,10 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
     const tempId = `temp-${Date.now()}`
     setMessages(prev => [...prev, { id: tempId, content: text, message_type: 1, created_at: Math.floor(Date.now() / 1000) }])
     try {
+      const accessToken = await getSupabaseAccessToken()
       const res  = await fetch(EDGE_FN, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
         body:    JSON.stringify({
           _action:         'send_message',
           conversation_id: conversationId,
@@ -351,9 +354,10 @@ export default function ChatPanel({ contact, chatwoot, onClose }: Props) {
     form.append('file',            blob, filename)
     form.append('filename',        filename)
     try {
+      const accessToken = await getSupabaseAccessToken()
       const res = await fetch(EDGE_FN, {
         method:  'POST',
-        headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+        headers: { 'Authorization': `Bearer ${accessToken}` },
         body:    form,
       })
       const data = await res.json() as { ok: boolean; message?: { id: number; content?: string; message_type: number; created_at: number; attachments?: Attachment[] } }

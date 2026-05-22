@@ -5,6 +5,7 @@ import Login from './pages/Login'
 import UpdatePassword from './pages/UpdatePassword'
 import Dashboard from './pages/Dashboard'
 import Comercial from './pages/Comercial'
+import Clientes from './pages/Clientes'
 import ChatAoVivo from './pages/ChatAoVivo'
 import Renovacoes from './pages/Renovacoes'
 import Financeiro from './pages/Financeiro'
@@ -16,11 +17,14 @@ import { APP_VERSION } from './lib/version'
 import { DEFAULT_AGENCY_CONFIG, fetchAgencyConfig } from './lib/agencyConfig'
 import ClaudeChat from './components/ClaudeChat'
 import DebugPanel from './components/DebugPanel'
+import NotificationBell from './components/NotificationBell'
+import { useNotifications } from './hooks/useNotifications'
 import { Menu } from 'lucide-react'
 
 const PAGE_LABELS: Record<Page, string> = {
   dashboard:     'Dashboard',
   comercial:     'Comercial',
+  clientes:      'Clientes',
   chat:          'Chat ao Vivo',
   renovacoes:    'Renovações',
   financeiro:    'Financeiro',
@@ -30,9 +34,9 @@ const PAGE_LABELS: Record<Page, string> = {
 }
 
 const PAGE_ACCESS: Record<PerfilAcesso, PermissaoPagina[]> = {
-  admin:           ['dashboard', 'comercial', 'chat', 'renovacoes', 'financeiro', 'relatorios', 'parceiros', 'configuracoes'],
-  agente_registro: ['dashboard', 'comercial', 'chat', 'renovacoes'],
-  vendedor:        ['dashboard', 'comercial', 'parceiros', 'relatorios'],
+  admin:           ['dashboard', 'comercial', 'clientes', 'chat', 'renovacoes', 'financeiro', 'relatorios', 'parceiros', 'configuracoes'],
+  agente_registro: ['dashboard', 'comercial', 'clientes', 'chat', 'renovacoes'],
+  vendedor:        ['dashboard', 'comercial', 'clientes', 'parceiros', 'relatorios'],
   usuario:         ['dashboard', 'relatorios'],
 }
 
@@ -52,6 +56,7 @@ function AppContent() {
   const [debugOpen, setDebugOpen]     = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const isAdmin = profile?.perfil === 'admin'
+  const { notifications } = useNotifications(isAdmin)
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -189,6 +194,7 @@ function AppContent() {
             <span className="hidden md:inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-800 px-2 py-1 text-[11px] font-medium text-gray-500 dark:text-gray-400">
               v{APP_VERSION}
             </span>
+            <NotificationBell notifications={notifications} onNavigate={handleNavigate} />
             {isAdmin && (
               <button
                 type="button"
@@ -228,6 +234,7 @@ function AppContent() {
         <main className="flex-1 overflow-auto">
           {activePage === 'dashboard'     && <Dashboard />}
           {activePage === 'comercial'     && <Comercial />}
+          {activePage === 'clientes'      && <Clientes />}
           {activePage === 'chat'          && <ChatAoVivo />}
           {activePage === 'renovacoes'    && <Renovacoes />}
           {activePage === 'financeiro'    && <Financeiro />}

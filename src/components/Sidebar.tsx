@@ -6,6 +6,7 @@ import {
   DollarSign,
   BarChart2,
   Users,
+  UserSearch,
   Settings,
   LogOut,
   X,
@@ -16,6 +17,7 @@ import type { AgencyConfig } from '@/lib/agencyConfig'
 export type Page =
   | 'dashboard'
   | 'comercial'
+  | 'clientes'
   | 'chat'
   | 'renovacoes'
   | 'financeiro'
@@ -36,6 +38,7 @@ interface Props {
 const ALL_ITEMS: { id: Page; icon: React.ComponentType<{ size?: number; className?: string }>; label: string }[] = [
   { id: 'dashboard',     icon: LayoutDashboard, label: 'Dashboard'       },
   { id: 'comercial',     icon: ShoppingCart,    label: 'Comercial'       },
+  { id: 'clientes',      icon: UserSearch,      label: 'Clientes'        },
   { id: 'chat',          icon: MessageSquare,   label: 'Chat ao Vivo'    },
   { id: 'renovacoes',    icon: RefreshCw,       label: 'Renovações'      },
   { id: 'financeiro',    icon: DollarSign,      label: 'Financeiro'      },

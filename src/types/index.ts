@@ -436,6 +436,7 @@ export type TipoVinculoUsuario = 'agente_registro' | 'parceiro' | 'vendedor' | '
 export type PermissaoPagina =
   | 'dashboard'
   | 'comercial'
+  | 'clientes'
   | 'chat'
   | 'renovacoes'
   | 'financeiro'

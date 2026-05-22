@@ -291,6 +291,10 @@ export default function Comercial() {
   const [showClienteForm, setShowClienteForm] = useState(false)
   const [editingClienteId, setEditingClienteId] = useState<string | null>(null)
   const [clienteSearch, setClienteSearch]     = useState('')
+  const [clienteResultados, setClienteResultados] = useState<CadastroBase[]>([])
+  const [clienteBuscando, setClienteBuscando]     = useState(false)
+  const [clienteDropdownOpen, setClienteDropdownOpen] = useState(false)
+  const [clienteSelecionadoObj, setClienteSelecionadoObj] = useState<CadastroBase | null>(null)
   const [formCliente, setFormCliente]   = useState<NovoCadastroBase>(EMPTY_CLIENTE_BASE)
   const [salvandoV, setSalvandoV]       = useState(false)
   const [salvandoCliente, setSalvandoCliente] = useState(false)
@@ -324,6 +328,7 @@ export default function Comercial() {
   const [importando, setImportando]             = useState(false)
   const [selectedCertIds, setSelectedCertIds]   = useState<Set<string>>(new Set())
   const [selectedItemIds, setSelectedItemIds]   = useState<Set<string>>(new Set())
+  const clienteSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const importInputRef                          = useRef<HTMLInputElement>(null)
   const importItensRef                          = useRef<HTMLInputElement>(null)
   const importSafewebRef                        = useRef<HTMLInputElement>(null)
@@ -332,6 +337,9 @@ export default function Comercial() {
   const [importandoClientes, setImportandoClientes] = useState(false)
   const [resultSafeweb, setResultSafeweb] = useState<{ clientes: number; novos: number; atualizados: number; divergentes: number } | null>(null)
   const [resultClientes, setResultClientes] = useState<{ inseridos: number; atualizados: number } | null>(null)
+  const [safewebVendas, setSafewebVendas] = useState<VendaRow[]>([])
+  const [loadingSafewebVendas, setLoadingSafewebVendas] = useState(false)
+  const [safewebViewerOpen, setSafewebViewerOpen] = useState(false)
   // tabelas form
   const [selectedTabelaId, setSelectedTabelaId]   = useState<string | null>(null)
   const [showFormTabela, setShowFormTabela]         = useState(false)
@@ -399,18 +407,6 @@ export default function Comercial() {
     return null
   }
 
-  const clienteSelecionado = useMemo(
-    () => clientes.find(c => c.id === formV2.cadastro_base_id) ?? null,
-    [clientes, formV2.cadastro_base_id],
-  )
-
-  const clientesFiltrados = useMemo(() => {
-    const term = clienteSearch.trim().toLowerCase()
-    return term
-      ? clientes.filter(c => [c.nome, c.nome_fantasia, c.cpf_cnpj, c.email, c.telefone].some(v => v?.toLowerCase().includes(term)))
-      : clientes
-  }, [clientes, clienteSearch])
-
   const vendasFiltradas = useMemo(() => {
     return vendasV2.filter(v => {
       const criado = new Date(v.created_at)
@@ -470,6 +466,22 @@ export default function Comercial() {
     setPontos((data ?? []) as PontoAtendimento[])
   }, [])
 
+  async function buscarClientes(term: string) {
+    const t = term.trim()
+    if (t.length < 3) { setClienteResultados([]); setClienteDropdownOpen(false); return }
+    setClienteBuscando(true)
+    const like = `%${t}%`
+    const { data } = await supabase
+      .from('cadastros_base')
+      .select('id, nome, nome_fantasia, cpf_cnpj, telefone, cidade, uf, status')
+      .or(`nome.ilike.${like},nome_fantasia.ilike.${like},cpf_cnpj.ilike.${like},telefone.ilike.${like}`)
+      .order('nome', { ascending: true })
+      .limit(10)
+    setClienteResultados((data ?? []) as CadastroBase[])
+    setClienteDropdownOpen(true)
+    setClienteBuscando(false)
+  }
+
   const fetchAgenda = useCallback(async () => {
     setLoadingA(true)
     const hoje = new Date().toISOString().split('T')[0]
@@ -525,10 +537,10 @@ export default function Comercial() {
 
   // pre-fill protocolo CPF when client changes
   useEffect(() => {
-    if (clienteSelecionado) {
-      setFormProtocolo(p => ({ ...p, cpf: clienteSelecionado.cpf_cnpj }))
+    if (clienteSelecionadoObj) {
+      setFormProtocolo(p => ({ ...p, cpf: clienteSelecionadoObj.cpf_cnpj }))
     }
-  }, [clienteSelecionado])
+  }, [clienteSelecionadoObj])
 
   // ── V2 mutations ─────────────────────────────────────────────
   async function salvarVendaV2() {
@@ -539,7 +551,7 @@ export default function Comercial() {
     if (!currentUserId) { alert('Usuário não autenticado.'); return }
     setSalvandoV(true)
 
-    const cli = clienteSelecionado
+    const cli = clienteSelecionadoObj
     const cert = certificadoById.get(formV2.certificado_id)
     const tabela = tabelaById.get(formV2.tabela_preco_id)
 
@@ -599,6 +611,8 @@ export default function Comercial() {
     if (error) { alert('Erro: ' + error.message); return }
     setShowFormV(false)
     setFormV2({ ...EMPTY_VENDA_V2, ponto_atendimento_id: pontosAtivos[0]?.id ?? '' })
+    setClienteSelecionadoObj(null)
+    setClienteSearch('')
     void fetchVendasV2()
   }
 
@@ -623,7 +637,11 @@ export default function Comercial() {
     setShowClienteForm(false)
     setEditingClienteId(null)
     await fetchClientes()
-    if (data?.id) setFormV2(p => ({ ...p, cadastro_base_id: data.id }))
+    if (data?.id) {
+      setFormV2(p => ({ ...p, cadastro_base_id: data.id }))
+      const { data: novo } = await supabase.from('cadastros_base').select('*').eq('id', data.id).single()
+      setClienteSelecionadoObj((novo as CadastroBase) ?? null)
+    }
   }
 
   function abrirNovoCliente() {
@@ -663,6 +681,8 @@ export default function Comercial() {
 
   function prepararNovaVendaParaCliente(cadastroId: string) {
     setFormV2(p => ({ ...p, cadastro_base_id: cadastroId }))
+    const c = clientes.find(x => x.id === cadastroId)
+    setClienteSelecionadoObj(c ?? null)
     setShowFormV(true)
     setShowClienteForm(false)
   }
@@ -1112,6 +1132,18 @@ export default function Comercial() {
     }
   }
 
+  async function carregarSafewebVendas() {
+    setLoadingSafewebVendas(true)
+    const { data } = await supabase
+      .from('vendas_certificados')
+      .select('*, cadastros_base(nome, cpf_cnpj)')
+      .eq('validado_safeweb', true)
+      .order('data_inicio_validade', { ascending: false })
+      .limit(500)
+    setSafewebVendas((data ?? []) as VendaRow[])
+    setLoadingSafewebVendas(false)
+  }
+
   // tabela participantes
   function abrirNovoParticipante(tabelaId: string) {
     setFormParticipante({ ...EMPTY_PARTICIPANTE, tabela_preco_id: tabelaId })
@@ -1383,7 +1415,7 @@ export default function Comercial() {
             )}
 
             {showFormV && (
-              <Panel title="Lançar Venda" onClose={() => setShowFormV(false)}>
+              <Panel title="Lançar Venda" onClose={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch('') }}>
                 {/* linha 1: Tipo Venda + Cliente + Novo Cliente */}
                 <div className="grid grid-cols-1 md:grid-cols-[160px_1fr_auto] gap-3 mb-3">
                   <SelectInput label="Tipo Venda" value={formV2.tipo_venda}
@@ -1391,26 +1423,69 @@ export default function Comercial() {
                     options={TIPO_VENDA_OPTIONS} />
                   <div>
                     <label className="block text-xs text-gray-500 mb-1">Cliente *</label>
-                    <div className="flex gap-2">
-                      <input list="clientes-base-list"
-                        value={clienteSelecionado ? `${clienteSelecionado.cpf_cnpj} - ${clienteSelecionado.nome}` : clienteSearch}
-                        onChange={e => {
-                          const v = e.target.value
-                          setClienteSearch(v)
-                          const match = clientes.find(c => c.nome.toLowerCase() === v.toLowerCase() || c.cpf_cnpj === v || `${c.cpf_cnpj} - ${c.nome}` === v)
-                          if (match) { setFormV2(p => ({ ...p, cadastro_base_id: match.id })); setClienteSearch('') }
-                          else setFormV2(p => ({ ...p, cadastro_base_id: '' }))
-                        }}
-                        placeholder="CPF/CNPJ ou nome do cliente"
-                        className="flex-1 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                      <datalist id="clientes-base-list">
-                        {clientesFiltrados.map(c => (
-                          <option key={c.id} value={`${c.cpf_cnpj} - ${c.nome}`} />
-                        ))}
-                      </datalist>
+                    <div className="relative flex gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          value={formV2.cadastro_base_id && clienteSelecionadoObj
+                            ? `${clienteSelecionadoObj.cpf_cnpj} · ${clienteSelecionadoObj.nome}`
+                            : clienteSearch}
+                          onChange={e => {
+                            const v = e.target.value
+                            setClienteSearch(v)
+                            if (formV2.cadastro_base_id) {
+                              setFormV2(p => ({ ...p, cadastro_base_id: '' }))
+                              setClienteSelecionadoObj(null)
+                            }
+                            if (clienteSearchTimerRef.current) clearTimeout(clienteSearchTimerRef.current)
+                            clienteSearchTimerRef.current = setTimeout(() => void buscarClientes(v), 300)
+                          }}
+                          onFocus={() => { if (clienteResultados.length > 0) setClienteDropdownOpen(true) }}
+                          onBlur={() => setTimeout(() => setClienteDropdownOpen(false), 150)}
+                          placeholder="Nome, CPF, CNPJ ou telefone (mín. 3 caracteres)"
+                          className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 pr-8 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        {clienteBuscando && (
+                          <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-gray-400 pointer-events-none" />
+                        )}
+                        {clienteDropdownOpen && clienteResultados.length > 0 && (
+                          <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl max-h-64 overflow-y-auto">
+                            {clienteResultados.map(c => (
+                              <button key={c.id} type="button"
+                                onMouseDown={e => e.preventDefault()}
+                                onClick={() => {
+                                  setFormV2(p => ({ ...p, cadastro_base_id: c.id }))
+                                  setClienteSelecionadoObj(c)
+                                  setClienteSearch('')
+                                  setClienteDropdownOpen(false)
+                                  setClienteResultados([])
+                                }}
+                                className="w-full text-left px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 border-b border-gray-100 dark:border-gray-800 last:border-0 transition-colors">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-medium truncate">{c.nome}</p>
+                                    {c.nome_fantasia && <p className="text-xs text-gray-400 truncate">{c.nome_fantasia}</p>}
+                                  </div>
+                                  <div className="text-right shrink-0">
+                                    <p className="text-xs text-gray-500 font-mono">{c.cpf_cnpj}</p>
+                                    {c.telefone && <p className="text-xs text-gray-400">{c.telefone}</p>}
+                                    {(c.cidade || c.uf) && <p className="text-xs text-gray-400">{[c.cidade, c.uf].filter(Boolean).join('/')}</p>}
+                                  </div>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {clienteDropdownOpen && !clienteBuscando && clienteResultados.length === 0 && clienteSearch.length >= 3 && (
+                          <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl px-4 py-3 text-sm text-gray-400">
+                            Nenhum cliente encontrado para "{clienteSearch}"
+                          </div>
+                        )}
+                      </div>
                       {formV2.cadastro_base_id && (
-                        <button type="button" title="Limpar cliente" onClick={() => { setFormV2(p => ({ ...p, cadastro_base_id: '' })); setClienteSearch('') }}
-                          className="px-2 text-gray-400 hover:text-gray-600"><X size={14} /></button>
+                        <button type="button" title="Limpar cliente"
+                          onClick={() => { setFormV2(p => ({ ...p, cadastro_base_id: '' })); setClienteSearch(''); setClienteSelecionadoObj(null) }}
+                          className="px-2 text-gray-400 hover:text-gray-600">
+                          <X size={14} />
+                        </button>
                       )}
                     </div>
                   </div>
@@ -1600,7 +1675,7 @@ export default function Comercial() {
 
                 <FormActions
                   onSave={salvarVendaV2}
-                  onCancel={() => setShowFormV(false)}
+                  onCancel={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch('') }}
                   saving={salvandoV}
                   disabled={!formV2.cadastro_base_id || !formV2.tabela_preco_id || !formV2.certificado_id}
                 />
@@ -1934,13 +2009,13 @@ export default function Comercial() {
                 const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s
               })
               return (
-                <DataTable headers={['', 'Cód', 'Tipo Emissão', 'Nome', 'Validade', 'Tipo', 'Produto AC', 'Preço Venda', 'Custo AC', 'Custo', 'Status', 'Ações']}>
+                <DataTable headers={['', 'Cód', 'Nome', 'Descrição', 'Modelo', 'Validade', 'Tipo', 'Tipo Emissão', 'Produto AC', 'Preço Venda', 'Custo AC', 'Custo', 'Status', 'Ações']}>
                   {certificados.length === 0 ? (
-                    <EmptyRow colSpan={12} label="Nenhum certificado cadastrado. Use 'Importar Planilha' ou 'Novo Certificado'." />
+                    <EmptyRow colSpan={14} label="Nenhum certificado cadastrado. Use 'Importar Planilha' ou 'Novo Certificado'." />
                   ) : (
                     <>
                       <tr className="bg-gray-50 dark:bg-gray-800/50">
-                        <td className="px-4 py-2" colSpan={12}>
+                        <td className="px-4 py-2" colSpan={14}>
                           <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-500 select-none">
                             <input type="checkbox" checked={allSelected} onChange={toggleAll}
                               className="w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer" />
@@ -1955,13 +2030,12 @@ export default function Comercial() {
                               className="w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer" />
                           </td>
                           <td className="px-4 py-3 text-xs text-gray-400">{c.codigo ?? '—'}</td>
-                          <td className="px-4 py-3 text-xs">{c.tipo_emissao_padrao ?? '—'}</td>
-                          <td className="px-4 py-3 font-medium">
-                            <p className="text-sm">{c.tipo || '—'}</p>
-                            {c.descricao && <p className="text-xs text-gray-400">{c.descricao}</p>}
-                          </td>
+                          <td className="px-4 py-3 font-medium text-sm">{c.tipo || '—'}</td>
+                          <td className="px-4 py-3 text-xs text-gray-500 max-w-[160px] truncate" title={c.descricao ?? ''}>{c.descricao ?? '—'}</td>
+                          <td className="px-4 py-3 text-xs text-gray-500">{c.modelo ?? '—'}</td>
                           <td className="px-4 py-3 text-sm">{c.validade || '—'}</td>
                           <td className="px-4 py-3 text-xs">{c.categoria ?? '—'}</td>
+                          <td className="px-4 py-3 text-xs">{c.tipo_emissao_padrao ?? '—'}</td>
                           <td className="px-4 py-3 text-xs text-gray-400 max-w-[140px] truncate" title={c.produto_vinculado_ac ?? ''}>{c.produto_vinculado_ac ?? '—'}</td>
                           <td className="px-4 py-3 text-sm font-semibold">{c.preco_venda ? <span className="text-green-600 dark:text-green-400">{formatCurrency(c.preco_venda)}</span> : <span className="text-gray-400">—</span>}</td>
                           <td className="px-4 py-3 text-sm text-gray-500">{c.valor_custo_ac ? formatCurrency(c.valor_custo_ac) : '—'}</td>
@@ -2387,6 +2461,77 @@ export default function Comercial() {
                 </button>
                 <span className="text-xs text-gray-400">Suporta XLS, XLSX, CSV</span>
               </div>
+            </div>
+
+            {/* Dados importados da Safeweb */}
+            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+              <div className="flex items-center justify-between gap-3 mb-1 flex-wrap">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-teal-100 dark:bg-teal-900/30 flex items-center justify-center">
+                    <List size={18} className="text-teal-600 dark:text-teal-400" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-800 dark:text-gray-100">Dados Importados da Safeweb</h3>
+                    <p className="text-xs text-gray-500">Visualize as vendas validadas pelo relatório Safeweb (validado_safeweb = true).</p>
+                  </div>
+                </div>
+                <button type="button"
+                  onClick={() => {
+                    const next = !safewebViewerOpen
+                    setSafewebViewerOpen(next)
+                    if (next) void carregarSafewebVendas()
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-medium rounded-xl transition-colors">
+                  {safewebViewerOpen ? 'Fechar' : 'Ver registros'}
+                </button>
+              </div>
+
+              {safewebViewerOpen && (
+                <div className="mt-4">
+                  {loadingSafewebVendas ? (
+                    <div className="flex items-center gap-2 text-gray-400 text-sm py-4"><Loader2 size={16} className="animate-spin" /> Carregando...</div>
+                  ) : safewebVendas.length === 0 ? (
+                    <p className="text-sm text-gray-400 py-4">Nenhum registro importado da Safeweb encontrado.</p>
+                  ) : (
+                    <>
+                      <p className="text-xs text-gray-500 mb-3">{safewebVendas.length} registro(s) encontrado(s)</p>
+                      <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-800">
+                        <table className="w-full text-xs min-w-[1400px]">
+                          <thead>
+                            <tr className="bg-gray-50 dark:bg-gray-800/50 text-gray-500 dark:text-gray-400 uppercase tracking-wide text-left border-b border-gray-200 dark:border-gray-800">
+                              {['Protocolo', 'Cliente', 'CPF/CNPJ', 'Produto', 'Valor', 'Início Validade', 'Vencimento', 'Nº Série', 'Voucher', 'AR', 'Parceiro Safeweb', 'Status Cert.'].map(h => (
+                                <th key={h} className="px-3 py-2 font-medium whitespace-nowrap">{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                            {safewebVendas.map(v => (
+                              <tr key={v.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                <td className="px-3 py-2 font-mono text-blue-600 dark:text-blue-400 whitespace-nowrap">{v.protocolo_numero ?? '—'}</td>
+                                <td className="px-3 py-2 max-w-[160px] truncate">{(v.cadastros_base as { nome?: string } | null)?.nome ?? v.nome_faturamento ?? '—'}</td>
+                                <td className="px-3 py-2 text-gray-500 whitespace-nowrap">{(v.cadastros_base as { cpf_cnpj?: string } | null)?.cpf_cnpj ?? v.documento_faturamento ?? '—'}</td>
+                                <td className="px-3 py-2 text-gray-600 dark:text-gray-300 max-w-[140px] truncate">{v.tipo_produto ?? '—'}</td>
+                                <td className="px-3 py-2 text-right font-semibold text-green-600 dark:text-green-400 whitespace-nowrap">{v.valor_venda ? formatCurrency(v.valor_venda) : '—'}</td>
+                                <td className="px-3 py-2 text-gray-500 whitespace-nowrap">{(v as any).data_inicio_validade ? new Date((v as any).data_inicio_validade).toLocaleDateString('pt-BR') : '—'}</td>
+                                <td className="px-3 py-2 text-gray-500 whitespace-nowrap">{v.data_vencimento ? new Date(v.data_vencimento).toLocaleDateString('pt-BR') : '—'}</td>
+                                <td className="px-3 py-2 text-gray-500 font-mono max-w-[120px] truncate">{(v as any).numero_serie ?? '—'}</td>
+                                <td className="px-3 py-2 text-gray-500">{(v as any).voucher_codigo ?? '—'}</td>
+                                <td className="px-3 py-2 text-gray-500 max-w-[120px] truncate">{(v as any).nome_ar ?? '—'}</td>
+                                <td className="px-3 py-2 text-gray-500 max-w-[120px] truncate">{(v as any).nome_parceiro_safeweb ?? '—'}</td>
+                                <td className="px-3 py-2">
+                                  {(v as any).status_certificado
+                                    ? <span className="px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400 whitespace-nowrap">{(v as any).status_certificado}</span>
+                                    : '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
           </div>

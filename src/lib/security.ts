@@ -26,9 +26,22 @@ export const PAGE_PERMISSIONS: { id: PermissaoPagina; label: string; description
 
 export const DEFAULT_PERMISSIONS: Record<PerfilAcesso, PermissaoPagina[]> = {
   admin: PAGE_PERMISSIONS.map(p => p.id),
-  agente_registro: ['dashboard', 'comercial', 'chat', 'renovacoes'],
-  vendedor: ['dashboard', 'comercial', 'parceiros', 'relatorios'],
+  agente_registro: ['dashboard', 'comercial', 'clientes', 'chat', 'renovacoes'],
+  vendedor: ['dashboard', 'comercial', 'clientes', 'parceiros', 'relatorios'],
   usuario: ['dashboard', 'relatorios'],
+}
+
+const LEGACY_REQUIRED_PERMISSIONS: Partial<Record<PerfilAcesso, PermissaoPagina[]>> = {
+  agente_registro: ['clientes'],
+  vendedor: ['clientes'],
+}
+
+function normalizePermissions(
+  perfil: PerfilAcesso,
+  permissoes: PermissaoPagina[],
+): PermissaoPagina[] {
+  const required = LEGACY_REQUIRED_PERMISSIONS[perfil] ?? []
+  return Array.from(new Set([...permissoes, ...required]))
 }
 
 export const PERFIL_LABEL: Record<PerfilAcesso, string> = {
@@ -54,7 +67,8 @@ export function hasPerfil(profile: Profile | null | undefined, ...perfis: Perfil
 export function hasPagePermission(profile: Profile | null | undefined, page: PermissaoPagina) {
   if (!profile || !isProfileActive(profile)) return false
   if (profile.perfil === 'admin') return true
-  const permissoes = profile.permissoes?.length ? profile.permissoes : DEFAULT_PERMISSIONS[profile.perfil]
+  const basePermissions = profile.permissoes?.length ? profile.permissoes : DEFAULT_PERMISSIONS[profile.perfil]
+  const permissoes = normalizePermissions(profile.perfil, basePermissions)
   return permissoes.includes(page)
 }
 
@@ -62,5 +76,6 @@ export function resolveAllowedPages(profile: Profile | null | undefined): Page[]
   if (!profile || !isProfileActive(profile)) return []
   if (profile.perfil === 'admin') return DEFAULT_PERMISSIONS.admin
   const customPermissions = profile.permissoes?.filter((p): p is Page => p in PAGE_LABELS) ?? []
-  return customPermissions.length > 0 ? customPermissions : DEFAULT_PERMISSIONS[profile.perfil]
+  const basePermissions = customPermissions.length > 0 ? customPermissions : DEFAULT_PERMISSIONS[profile.perfil]
+  return normalizePermissions(profile.perfil, basePermissions) as Page[]
 }

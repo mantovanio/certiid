@@ -320,6 +320,7 @@ export default function Comercial() {
   const [editingCertId, setEditingCertId]       = useState<string | null>(null)
   const [formCert, setFormCert]                 = useState<NovoCertificado>(EMPTY_CERTIFICADO)
   const [importando, setImportando]             = useState(false)
+  const [selectedCertIds, setSelectedCertIds]   = useState<Set<string>>(new Set())
   const importInputRef                          = useRef<HTMLInputElement>(null)
   const importItensRef                          = useRef<HTMLInputElement>(null)
   // tabelas form
@@ -729,6 +730,17 @@ export default function Comercial() {
     const { error } = await supabase.from('certificados').delete().eq('id', id)
     if (error) { alert('Erro: ' + error.message); return }
     setCertificados(prev => prev.filter(c => c.id !== id))
+    setSelectedCertIds(prev => { const s = new Set(prev); s.delete(id); return s })
+  }
+
+  async function excluirCertificadosSelecionados() {
+    if (!selectedCertIds.size) return
+    if (!confirm(`Excluir ${selectedCertIds.size} certificado(s) selecionado(s)? Esta ação não pode ser desfeita.`)) return
+    const ids = [...selectedCertIds]
+    const { error } = await supabase.from('certificados').delete().in('id', ids)
+    if (error) { alert('Erro: ' + error.message); return }
+    setCertificados(prev => prev.filter(c => !selectedCertIds.has(c.id)))
+    setSelectedCertIds(new Set())
   }
 
   function lerPlanilha(file: File): Promise<Record<string, string>[]> {
@@ -1668,9 +1680,15 @@ export default function Comercial() {
         {tab === 'certificados' && (
           <div className="space-y-5">
             {/* header com dois botões */}
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
               <h2 className="font-semibold text-gray-800 dark:text-gray-200">Catálogo de Certificados</h2>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                {selectedCertIds.size > 0 && (
+                  <button type="button" onClick={excluirCertificadosSelecionados}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-red-600 text-white text-xs font-medium rounded-lg hover:bg-red-700 transition-colors">
+                    <Trash2 size={13} /> Excluir selecionados ({selectedCertIds.size})
+                  </button>
+                )}
                 <input ref={importInputRef} type="file" accept=".csv,.tsv,.txt,.xls,.xlsx" className="hidden"
                   onChange={e => { const f = e.target.files?.[0]; if (f) void importarPlanilha(f); e.target.value = '' }} />
                 <button type="button" onClick={() => importInputRef.current?.click()} disabled={importando}
@@ -1714,28 +1732,55 @@ export default function Comercial() {
               </Panel>
             )}
 
-            <DataTable headers={['Cód', 'Tipo Emissão', 'Nome', 'Validade', 'Tipo', 'Produto AC', 'Preço Venda', 'Custo AC', 'Custo', 'Status', 'Ações']}>
-              {certificados.length === 0 ? (
-                <EmptyRow colSpan={11} label="Nenhum certificado cadastrado. Use 'Importar Planilha' ou 'Novo Certificado'." />
-              ) : certificados.map(c => (
-                <tr key={c.id} className={cn('hover:bg-gray-50 dark:hover:bg-gray-800/50', !c.ativo && 'opacity-50')}>
-                  <td className="px-4 py-3 text-xs text-gray-400">{c.codigo ?? '—'}</td>
-                  <td className="px-4 py-3 text-xs">{c.tipo_emissao_padrao ?? '—'}</td>
-                  <td className="px-4 py-3 font-medium">
-                    <p className="text-sm">{c.tipo || '—'}</p>
-                    {c.descricao && <p className="text-xs text-gray-400">{c.descricao}</p>}
-                  </td>
-                  <td className="px-4 py-3 text-sm">{c.validade || '—'}</td>
-                  <td className="px-4 py-3 text-xs">{c.categoria ?? '—'}</td>
-                  <td className="px-4 py-3 text-xs text-gray-400 max-w-[140px] truncate" title={c.produto_vinculado_ac ?? ''}>{c.produto_vinculado_ac ?? '—'}</td>
-                  <td className="px-4 py-3 text-sm font-semibold">{c.preco_venda ? <span className="text-green-600 dark:text-green-400">{formatCurrency(c.preco_venda)}</span> : <span className="text-gray-400">—</span>}</td>
-                  <td className="px-4 py-3 text-sm text-gray-500">{c.valor_custo_ac ? formatCurrency(c.valor_custo_ac) : '—'}</td>
-                  <td className="px-4 py-3 text-sm text-gray-500">{c.valor_custo ? formatCurrency(c.valor_custo) : '—'}</td>
-                  <td className="px-4 py-3"><StatusPill active={c.ativo} /></td>
-                  <td className="px-4 py-3"><RowActions active={c.ativo} onEdit={() => editarCertificado(c)} onToggle={() => toggleCertificado(c)} onDelete={() => excluirCertificado(c.id)} /></td>
-                </tr>
-              ))}
-            </DataTable>
+            {(() => {
+              const allIds = certificados.map(c => c.id)
+              const allSelected = allIds.length > 0 && allIds.every(id => selectedCertIds.has(id))
+              const toggleAll = () => setSelectedCertIds(allSelected ? new Set() : new Set(allIds))
+              const toggleOne = (id: string) => setSelectedCertIds(prev => {
+                const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s
+              })
+              return (
+                <DataTable headers={['', 'Cód', 'Tipo Emissão', 'Nome', 'Validade', 'Tipo', 'Produto AC', 'Preço Venda', 'Custo AC', 'Custo', 'Status', 'Ações']}>
+                  {certificados.length === 0 ? (
+                    <EmptyRow colSpan={12} label="Nenhum certificado cadastrado. Use 'Importar Planilha' ou 'Novo Certificado'." />
+                  ) : (
+                    <>
+                      <tr className="bg-gray-50 dark:bg-gray-800/50">
+                        <td className="px-4 py-2" colSpan={12}>
+                          <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-500 select-none">
+                            <input type="checkbox" checked={allSelected} onChange={toggleAll}
+                              className="w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer" />
+                            {allSelected ? 'Desmarcar todos' : `Selecionar todos (${certificados.length})`}
+                          </label>
+                        </td>
+                      </tr>
+                      {certificados.map(c => (
+                        <tr key={c.id} className={cn('hover:bg-gray-50 dark:hover:bg-gray-800/50', !c.ativo && 'opacity-50', selectedCertIds.has(c.id) && 'bg-blue-50 dark:bg-blue-900/10')}>
+                          <td className="px-4 py-3">
+                            <input type="checkbox" checked={selectedCertIds.has(c.id)} onChange={() => toggleOne(c.id)}
+                              className="w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer" />
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-400">{c.codigo ?? '—'}</td>
+                          <td className="px-4 py-3 text-xs">{c.tipo_emissao_padrao ?? '—'}</td>
+                          <td className="px-4 py-3 font-medium">
+                            <p className="text-sm">{c.tipo || '—'}</p>
+                            {c.descricao && <p className="text-xs text-gray-400">{c.descricao}</p>}
+                          </td>
+                          <td className="px-4 py-3 text-sm">{c.validade || '—'}</td>
+                          <td className="px-4 py-3 text-xs">{c.categoria ?? '—'}</td>
+                          <td className="px-4 py-3 text-xs text-gray-400 max-w-[140px] truncate" title={c.produto_vinculado_ac ?? ''}>{c.produto_vinculado_ac ?? '—'}</td>
+                          <td className="px-4 py-3 text-sm font-semibold">{c.preco_venda ? <span className="text-green-600 dark:text-green-400">{formatCurrency(c.preco_venda)}</span> : <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3 text-sm text-gray-500">{c.valor_custo_ac ? formatCurrency(c.valor_custo_ac) : '—'}</td>
+                          <td className="px-4 py-3 text-sm text-gray-500">{c.valor_custo ? formatCurrency(c.valor_custo) : '—'}</td>
+                          <td className="px-4 py-3"><StatusPill active={c.ativo} /></td>
+                          <td className="px-4 py-3"><RowActions active={c.ativo} onEdit={() => editarCertificado(c)} onToggle={() => toggleCertificado(c)} onDelete={() => excluirCertificado(c.id)} /></td>
+                        </tr>
+                      ))}
+                    </>
+                  )}
+                </DataTable>
+              )
+            })()}
           </div>
         )}
 

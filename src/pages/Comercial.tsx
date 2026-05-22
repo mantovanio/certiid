@@ -992,7 +992,7 @@ export default function Comercial() {
           tipo_produto:           (r['produto'] ?? '').trim() || null,
           tipo_emissao:           (r['tipo_de_emissao_realizada'] ?? r['tipo_emissao'] ?? '').trim() || null,
           valor_venda:            parseNum(r['valor_do_boleto'] ?? r['valor_boleto'] ?? r['valor'] ?? '0'),
-          status:                 'emitido' as StatusVendaCertificado,
+          status_venda:           'emitido' as StatusVendaCertificado,
           pago:                   true,
           validado_safeweb:       true,
           data_vencimento:        (r['data_fim_validade'] ?? r['data_vencimento'] ?? '').trim() || null,
@@ -1029,7 +1029,7 @@ export default function Comercial() {
       const { count: divergentes } = await supabase
         .from('vendas_certificados')
         .select('id', { count: 'exact', head: true })
-        .eq('status', 'emitido')
+        .eq('status_venda', 'emitido')
         .is('validado_safeweb', null)
 
       setResultSafeweb({ clientes: clientesUniq.length, novos, atualizados, divergentes: divergentes ?? 0 })

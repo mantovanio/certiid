@@ -723,6 +723,13 @@ export default function Comercial() {
     setCertificados(prev => prev.map(c => c.id === certificado.id ? { ...c, ativo: !c.ativo } : c))
   }
 
+  async function excluirCertificado(id: string) {
+    if (!confirm('Excluir este certificado do catálogo? Esta ação não pode ser desfeita.')) return
+    const { error } = await supabase.from('certificados').delete().eq('id', id)
+    if (error) { alert('Erro: ' + error.message); return }
+    setCertificados(prev => prev.filter(c => c.id !== id))
+  }
+
   async function importarPlanilha(file: File) {
     setImportando(true)
     try {
@@ -1718,11 +1725,11 @@ export default function Comercial() {
                   <td className="px-4 py-3 text-sm">{c.validade || '—'}</td>
                   <td className="px-4 py-3 text-xs">{c.categoria ?? '—'}</td>
                   <td className="px-4 py-3 text-xs text-gray-400 max-w-[140px] truncate" title={c.produto_vinculado_ac ?? ''}>{c.produto_vinculado_ac ?? '—'}</td>
-                  <td className="px-4 py-3 text-sm text-green-600 dark:text-green-400 font-semibold">{c.preco_venda ? formatCurrency(c.preco_venda) : '—'}</td>
+                  <td className="px-4 py-3 text-sm font-semibold">{c.preco_venda ? <span className="text-green-600 dark:text-green-400">{formatCurrency(c.preco_venda)}</span> : <span className="text-gray-400">—</span>}</td>
                   <td className="px-4 py-3 text-sm text-gray-500">{c.valor_custo_ac ? formatCurrency(c.valor_custo_ac) : '—'}</td>
                   <td className="px-4 py-3 text-sm text-gray-500">{c.valor_custo ? formatCurrency(c.valor_custo) : '—'}</td>
                   <td className="px-4 py-3"><StatusPill active={c.ativo} /></td>
-                  <td className="px-4 py-3"><RowActions active={c.ativo} onEdit={() => editarCertificado(c)} onToggle={() => toggleCertificado(c)} /></td>
+                  <td className="px-4 py-3"><RowActions active={c.ativo} onEdit={() => editarCertificado(c)} onToggle={() => toggleCertificado(c)} onDelete={() => excluirCertificado(c.id)} /></td>
                 </tr>
               ))}
             </DataTable>
@@ -2313,7 +2320,7 @@ function DataTable({ headers, children }: { headers: string[]; children: React.R
   )
 }
 
-function RowActions({ active, onEdit, onToggle }: { active: boolean; onEdit: () => void; onToggle: () => void }) {
+function RowActions({ active, onEdit, onToggle, onDelete }: { active: boolean; onEdit: () => void; onToggle: () => void; onDelete?: () => void }) {
   return (
     <div className="flex items-center gap-1 shrink-0">
       <button type="button" title="Editar" onClick={onEdit}
@@ -2325,6 +2332,12 @@ function RowActions({ active, onEdit, onToggle }: { active: boolean; onEdit: () 
           active ? 'text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800')}>
         {active ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
       </button>
+      {onDelete && (
+        <button type="button" title="Excluir" onClick={onDelete}
+          className="w-8 h-8 rounded-lg text-gray-400 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 flex items-center justify-center transition-colors">
+          <Trash2 size={14} />
+        </button>
+      )}
     </div>
   )
 }

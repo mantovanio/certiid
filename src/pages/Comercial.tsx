@@ -285,6 +285,7 @@ export default function Comercial() {
   const [pontos, setPontos]             = useState<PontoAtendimento[]>([])
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [loadingV, setLoadingV]         = useState(true)
+  const [vendedorNomes, setVendedorNomes] = useState<Map<string, string>>(new Map())
   const [showFormV, setShowFormV]       = useState(false)
   const [formV2, setFormV2]             = useState<LocalFormVenda>(EMPTY_VENDA_V2)
   const [contadorSearch, setContadorSearch] = useState('')
@@ -443,7 +444,13 @@ export default function Comercial() {
       .select('*, cadastros_base(nome, cpf_cnpj), pontos_atendimento(nome)')
       .order('created_at', { ascending: false })
       .limit(50)
-    setVendasV2((data ?? []) as VendaRow[])
+    const rows = (data ?? []) as VendaRow[]
+    setVendasV2(rows)
+    const ids = [...new Set(rows.map(v => v.vendedor_id).filter((id): id is string => !!id))]
+    if (ids.length > 0) {
+      const { data: profs } = await supabase.from('profiles').select('id, nome').in('id', ids)
+      setVendedorNomes(new Map((profs ?? []).map(p => [p.id as string, p.nome as string])))
+    }
     setLoadingV(false)
   }, [])
 
@@ -1840,7 +1847,9 @@ export default function Comercial() {
                         <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">
                           {new Date(v.created_at).toLocaleDateString('pt-BR')}
                         </td>
-                        <td className="px-3 py-2 text-gray-400">—</td>
+                        <td className="px-3 py-2 text-gray-500 whitespace-nowrap">
+                          {v.vendedor_id ? (vendedorNomes.get(v.vendedor_id) ?? '—') : '—'}
+                        </td>
                         <td className="px-3 py-2 text-gray-500 max-w-[120px] truncate">{v.observacoes ?? '—'}</td>
                       </tr>
                     ))}

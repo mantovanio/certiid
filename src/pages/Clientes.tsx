@@ -28,6 +28,8 @@ interface VendaResumida {
   data_inicio_validade: string | null
   data_vencimento: string | null
   validado_safeweb: boolean | null
+  vendedor_id: string | null
+  agente_registro_id: string | null
   created_at: string
 }
 
@@ -36,6 +38,7 @@ interface ClienteComVendas extends Cliente {
   valor_total: number
   ultimo_produto: string | null
   ultima_compra: string | null
+  ultimo_agente_id: string | null
 }
 
 const PAGE_SIZE = 50
@@ -57,6 +60,15 @@ function formatDate(v: string | null) {
   return d.toLocaleDateString('pt-BR')
 }
 
+const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
+  emitido:      { label: 'Emitido',      cls: 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400' },
+  vendido:      { label: 'Vendido',      cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
+  cancelado:    { label: 'Cancelado',    cls: 'bg-red-100 text-red-600 dark:bg-red-900/20 dark:text-red-400' },
+  agendado:     { label: 'Agendado',     cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400' },
+  em_validacao: { label: 'Em validação', cls: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-400' },
+  rascunho:     { label: 'Rascunho',     cls: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400' },
+}
+
 export default function Clientes() {
   const [clientes, setClientes] = useState<ClienteComVendas[]>([])
   const [loading, setLoading] = useState(true)
@@ -69,6 +81,20 @@ export default function Clientes() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [vendas, setVendas] = useState<Record<string, VendaResumida[]>>({})
   const [loadingVendas, setLoadingVendas] = useState<string | null>(null)
+  const [profileNomes, setProfileNomes] = useState<Map<string, string>>(new Map())
+
+  async function resolveProfiles(ids: string[]) {
+    const unknown = ids.filter(id => !profileNomes.has(id))
+    if (!unknown.length) return
+    const { data } = await supabase.from('profiles').select('id, nome').in('id', unknown)
+    if (data?.length) {
+      setProfileNomes(prev => {
+        const next = new Map(prev)
+        for (const p of data) next.set(p.id as string, p.nome as string)
+        return next
+      })
+    }
+  }
 
   const fetchClientes = useCallback(async () => {
     setLoading(true)
@@ -89,35 +115,47 @@ export default function Clientes() {
       const ids = (data ?? []).map(c => c.id as string)
       setTotal(count ?? 0)
 
-      // busca resumo de vendas por cliente em lote
       if (ids.length === 0) { setClientes([]); return }
+
       const { data: vendasData } = await supabase
         .from('vendas_certificados')
-        .select('cadastro_base_id, tipo_produto, valor_venda, created_at')
+        .select('cadastro_base_id, tipo_produto, valor_venda, created_at, vendedor_id, agente_registro_id')
         .in('cadastro_base_id', ids)
-        .neq('status_venda', 'cancelado')
 
-      const vendasPorCliente = new Map<string, { count: number; valor: number; ultimo_produto: string | null; ultima: string | null }>()
+      const vendasPorCliente = new Map<string, {
+        count: number; valor: number
+        ultimo_produto: string | null; ultima: string | null
+        ultimo_agente_id: string | null
+      }>()
+
+      const agentIds: string[] = []
+
       for (const v of vendasData ?? []) {
         const cid = v.cadastro_base_id as string
-        const cur = vendasPorCliente.get(cid) ?? { count: 0, valor: 0, ultimo_produto: null, ultima: null }
+        const cur = vendasPorCliente.get(cid) ?? { count: 0, valor: 0, ultimo_produto: null, ultima: null, ultimo_agente_id: null }
         cur.count++
         cur.valor += (v.valor_venda as number) ?? 0
         if (!cur.ultima || (v.created_at as string) > cur.ultima) {
           cur.ultima = v.created_at as string
           cur.ultimo_produto = v.tipo_produto as string
+          cur.ultimo_agente_id = (v.agente_registro_id ?? v.vendedor_id) as string | null
         }
         vendasPorCliente.set(cid, cur)
+        if (v.vendedor_id) agentIds.push(v.vendedor_id as string)
+        if (v.agente_registro_id) agentIds.push(v.agente_registro_id as string)
       }
+
+      void resolveProfiles([...new Set(agentIds)])
 
       setClientes((data ?? []).map(c => {
         const res = vendasPorCliente.get(c.id as string)
         return {
           ...(c as Cliente),
-          total_vendas:  res?.count ?? 0,
-          valor_total:   res?.valor ?? 0,
-          ultimo_produto: res?.ultimo_produto ?? null,
-          ultima_compra:  res?.ultima ?? null,
+          total_vendas:    res?.count ?? 0,
+          valor_total:     res?.valor ?? 0,
+          ultimo_produto:  res?.ultimo_produto ?? null,
+          ultima_compra:   res?.ultima ?? null,
+          ultimo_agente_id: res?.ultimo_agente_id ?? null,
         }
       }))
     } finally {
@@ -134,11 +172,17 @@ export default function Clientes() {
     setLoadingVendas(id)
     const { data } = await supabase
       .from('vendas_certificados')
-      .select('id, protocolo_numero, tipo_produto, valor_venda, status_venda, data_inicio_validade, data_vencimento, validado_safeweb, created_at')
+      .select('id, protocolo_numero, tipo_produto, valor_venda, status_venda, data_inicio_validade, data_vencimento, validado_safeweb, vendedor_id, agente_registro_id, created_at')
       .eq('cadastro_base_id', id)
       .order('created_at', { ascending: false })
       .limit(20)
     setVendas(prev => ({ ...prev, [id]: (data ?? []) as VendaResumida[] }))
+    const ids: string[] = []
+    for (const v of data ?? []) {
+      if (v.vendedor_id) ids.push(v.vendedor_id as string)
+      if (v.agente_registro_id) ids.push(v.agente_registro_id as string)
+    }
+    void resolveProfiles([...new Set(ids)])
     setLoadingVendas(null)
   }
 
@@ -220,6 +264,7 @@ export default function Clientes() {
                 <th className="px-4 py-3 font-medium hidden lg:table-cell">Contato</th>
                 <th className="px-4 py-3 font-medium text-center">Vendas</th>
                 <th className="px-4 py-3 font-medium hidden md:table-cell">Último produto</th>
+                <th className="px-4 py-3 font-medium hidden xl:table-cell">Último atendimento</th>
                 <th className="px-4 py-3 font-medium text-right hidden lg:table-cell">Valor total</th>
                 <th className="px-4 py-3 font-medium text-center">Status</th>
               </tr>
@@ -262,6 +307,9 @@ export default function Clientes() {
                       <p className="truncate max-w-[140px]">{c.ultimo_produto ?? '—'}</p>
                       {c.ultima_compra && <p className="text-xs text-gray-400">{formatDate(c.ultima_compra)}</p>}
                     </td>
+                    <td className="px-4 py-3 text-gray-500 text-xs hidden xl:table-cell">
+                      {c.ultimo_agente_id ? (profileNomes.get(c.ultimo_agente_id) ?? '—') : '—'}
+                    </td>
                     <td className="px-4 py-3 text-right hidden lg:table-cell">
                       {c.valor_total > 0
                         ? <span className="text-green-600 dark:text-green-400 font-medium">{formatCurrency(c.valor_total)}</span>
@@ -280,7 +328,7 @@ export default function Clientes() {
                   {/* expanded: histórico de vendas */}
                   {expandedId === c.id && (
                     <tr key={`${c.id}-detail`} className="bg-blue-50/30 dark:bg-blue-900/5">
-                      <td colSpan={9} className="px-6 pb-4 pt-2">
+                      <td colSpan={10} className="px-6 pb-4 pt-2">
                         {loadingVendas === c.id ? (
                           <div className="flex items-center gap-2 text-xs text-gray-400 py-2">
                             <Loader2 size={12} className="animate-spin" /> Carregando histórico...
@@ -298,36 +346,42 @@ export default function Clientes() {
                                   <th className="py-1.5 pr-4 text-left font-medium">Emissão</th>
                                   <th className="py-1.5 pr-4 text-left font-medium">Vencimento</th>
                                   <th className="py-1.5 pr-4 text-left font-medium">Status</th>
+                                  <th className="py-1.5 pr-4 text-left font-medium">Vendedor</th>
+                                  <th className="py-1.5 pr-4 text-left font-medium">Agente AR</th>
                                   <th className="py-1.5 text-left font-medium">Safeweb</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-blue-100 dark:divide-blue-900/20">
-                                {(vendas[c.id] ?? []).map(v => (
-                                  <tr key={v.id} className="text-gray-600 dark:text-gray-300">
-                                    <td className="py-1.5 pr-4 font-mono">{v.protocolo_numero ?? '—'}</td>
-                                    <td className="py-1.5 pr-4">{v.tipo_produto}</td>
-                                    <td className="py-1.5 pr-4 font-medium text-green-600 dark:text-green-400">
-                                      {v.valor_venda ? formatCurrency(v.valor_venda) : '—'}
-                                    </td>
-                                    <td className="py-1.5 pr-4">{formatDate(v.data_inicio_validade ?? v.created_at)}</td>
-                                    <td className="py-1.5 pr-4">{formatDate(v.data_vencimento)}</td>
-                                    <td className="py-1.5 pr-4">
-                                      <span className={cn('px-1.5 py-0.5 rounded font-medium',
-                                        v.status_venda === 'emitido' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                                        : v.status_venda === 'cancelado' ? 'bg-red-100 text-red-600'
-                                        : 'bg-gray-100 text-gray-500 dark:bg-gray-800')}>
-                                        {v.status_venda}
-                                      </span>
-                                    </td>
-                                    <td className="py-1.5">
-                                      {v.validado_safeweb === true
-                                        ? <span className="text-green-600 dark:text-green-400">✓ Validado</span>
-                                        : v.validado_safeweb === false
-                                          ? <span className="text-red-500">✗ Divergente</span>
-                                          : <span className="text-gray-400">— Não verificado</span>}
-                                    </td>
-                                  </tr>
-                                ))}
+                                {(vendas[c.id] ?? []).map(v => {
+                                  const st = STATUS_LABEL[v.status_venda] ?? { label: v.status_venda, cls: 'bg-gray-100 text-gray-500' }
+                                  return (
+                                    <tr key={v.id} className="text-gray-600 dark:text-gray-300">
+                                      <td className="py-1.5 pr-4 font-mono">{v.protocolo_numero ?? '—'}</td>
+                                      <td className="py-1.5 pr-4">{v.tipo_produto}</td>
+                                      <td className="py-1.5 pr-4 font-medium text-green-600 dark:text-green-400">
+                                        {v.valor_venda ? formatCurrency(v.valor_venda) : '—'}
+                                      </td>
+                                      <td className="py-1.5 pr-4">{formatDate(v.data_inicio_validade ?? v.created_at)}</td>
+                                      <td className="py-1.5 pr-4">{formatDate(v.data_vencimento)}</td>
+                                      <td className="py-1.5 pr-4">
+                                        <span className={cn('px-1.5 py-0.5 rounded font-medium', st.cls)}>{st.label}</span>
+                                      </td>
+                                      <td className="py-1.5 pr-4 text-gray-500">
+                                        {v.vendedor_id ? (profileNomes.get(v.vendedor_id) ?? '—') : '—'}
+                                      </td>
+                                      <td className="py-1.5 pr-4 text-gray-500">
+                                        {v.agente_registro_id ? (profileNomes.get(v.agente_registro_id) ?? '—') : '—'}
+                                      </td>
+                                      <td className="py-1.5">
+                                        {v.validado_safeweb === true
+                                          ? <span className="text-green-600 dark:text-green-400">✓ Validado</span>
+                                          : v.validado_safeweb === false
+                                            ? <span className="text-red-500">✗ Divergente</span>
+                                            : <span className="text-gray-400">— Não verificado</span>}
+                                      </td>
+                                    </tr>
+                                  )
+                                })}
                               </tbody>
                             </table>
                           </div>

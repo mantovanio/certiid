@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import * as XLSX from 'xlsx'
 import { cn } from '@/lib/utils'
 import {
   AlertCircle,
@@ -730,22 +731,35 @@ export default function Comercial() {
     setCertificados(prev => prev.filter(c => c.id !== id))
   }
 
+  function lerPlanilha(file: File): Promise<Record<string, string>[]> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = e => {
+        try {
+          const data = new Uint8Array(e.target!.result as ArrayBuffer)
+          const wb = XLSX.read(data, { type: 'array' })
+          const ws = wb.Sheets[wb.SheetNames[0]]
+          const normalize = (h: string) =>
+            String(h ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+          const json: Record<string, unknown>[] = XLSX.utils.sheet_to_json(ws, { defval: '' })
+          const rows = json.map(r => {
+            const out: Record<string, string> = {}
+            Object.entries(r).forEach(([k, v]) => { out[normalize(k)] = String(v ?? '') })
+            return out
+          })
+          resolve(rows)
+        } catch (err) { reject(err) }
+      }
+      reader.onerror = reject
+      reader.readAsArrayBuffer(file)
+    })
+  }
+
   async function importarPlanilha(file: File) {
     setImportando(true)
     try {
-      const text = await file.text()
-      const delim = text.includes('\t') ? '\t' : ','
-      const lines = text.trim().split('\n').filter(l => l.trim())
-      if (lines.length < 2) { alert('Planilha sem dados.'); return }
-      const normalize = (h: string) =>
-        h.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '_').replace(/^"|"$/g, '')
-      const headers = lines[0].split(delim).map(h => normalize(h.trim()))
-      const rows = lines.slice(1).map(line => {
-        const vals = line.split(delim).map(v => v.trim().replace(/^"|"$/g, ''))
-        const row: Record<string, string> = {}
-        headers.forEach((h, i) => { row[h] = vals[i] ?? '' })
-        return row
-      })
+      const rows = await lerPlanilha(file)
+      if (!rows.length) { alert('Planilha sem dados.'); return }
       const parseNum = (v: string) => parseFloat((v ?? '').replace(/[R$\s]/g, '').replace(',', '.')) || 0
       const records = rows.filter(r => Object.values(r).some(v => v)).map(row => ({
         codigo:               row['codigo'] ? parseInt(row['codigo']) : null,
@@ -853,20 +867,9 @@ export default function Comercial() {
   async function importarItensTabelaFile(file: File, tabelaId: string) {
     setImportando(true)
     try {
-      const text = await file.text()
-      const delim = text.includes('\t') ? '\t' : ','
-      const lines = text.trim().split('\n').filter(l => l.trim())
-      if (lines.length < 2) { alert('Planilha sem dados.'); return }
-      const normalize = (h: string) =>
-        h.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '_').replace(/^"|"$/g, '').replace(/[^a-z0-9_]/g, '')
-      const headers = lines[0].split(delim).map(h => normalize(h.trim()))
+      const rows = await lerPlanilha(file)
+      if (!rows.length) { alert('Planilha sem dados.'); return }
       const parseVal = (v: string) => parseFloat((v ?? '0').replace(/[R$\s]/g, '').replace(',', '.')) || 0
-      const rows = lines.slice(1).map(line => {
-        const vals = line.split(delim).map(v => v.trim().replace(/^"|"$/g, ''))
-        const row: Record<string, string> = {}
-        headers.forEach((h, i) => { row[h] = vals[i] ?? '' })
-        return row
-      })
       const certsAll = await supabase.from('certificados').select('id, codigo, tipo')
       const certByCode = new Map((certsAll.data ?? []).filter(c => c.codigo != null).map(c => [c.codigo as number, c.id as string]))
       const certByName = new Map((certsAll.data ?? []).map(c => [(c.tipo as string).toLowerCase().trim(), c.id as string]))
@@ -1668,7 +1671,7 @@ export default function Comercial() {
             <div className="flex items-center justify-between gap-3">
               <h2 className="font-semibold text-gray-800 dark:text-gray-200">Catálogo de Certificados</h2>
               <div className="flex items-center gap-2">
-                <input ref={importInputRef} type="file" accept=".csv,.tsv,.txt" className="hidden"
+                <input ref={importInputRef} type="file" accept=".csv,.tsv,.txt,.xls,.xlsx" className="hidden"
                   onChange={e => { const f = e.target.files?.[0]; if (f) void importarPlanilha(f); e.target.value = '' }} />
                 <button type="button" onClick={() => importInputRef.current?.click()} disabled={importando}
                   className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-medium rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50">
@@ -1813,7 +1816,7 @@ export default function Comercial() {
                     <div className="flex items-center justify-between">
                       <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">Produtos e Preços</h4>
                       <div className="flex items-center gap-2">
-                        <input ref={importItensRef} type="file" accept=".csv,.tsv,.txt" className="hidden"
+                        <input ref={importItensRef} type="file" accept=".csv,.tsv,.txt,.xls,.xlsx" className="hidden"
                           onChange={e => { const f = e.target.files?.[0]; if (f) void importarItensTabelaFile(f, selectedTabelaId); e.target.value = '' }} />
                         <button type="button" onClick={() => importItensRef.current?.click()} disabled={importando}
                           className="flex items-center gap-1 px-2 py-1.5 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs rounded-lg hover:bg-gray-200 disabled:opacity-50">

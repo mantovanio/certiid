@@ -57,6 +57,7 @@ import type {
   TipoParticipanteTabelaPreco,
   TipoParceiro,
   PerfilAcesso,
+  TipoCliente,
 } from '@/types'
 
 // ── local types ────────────────────────────────────────────────
@@ -112,7 +113,7 @@ type ParceiroSimples = {
 }
 
 // ── tab definition ─────────────────────────────────────────────
-type Tab = 'vendas' | 'agenda' | 'certificados' | 'tabelas' | 'comissoes' | 'pagamento'
+type Tab = 'vendas' | 'agenda' | 'certificados' | 'tabelas' | 'comissoes' | 'pagamento' | 'importar'
 
 const TABS: { id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }[] = [
   { id: 'vendas',       label: 'Lançar Vendas',    icon: TrendingUp  },
@@ -121,6 +122,7 @@ const TABS: { id: Tab; label: string; icon: React.ComponentType<{ size?: number 
   { id: 'tabelas',      label: 'Tabelas de Preço', icon: Tag         },
   { id: 'comissoes',    label: 'Faixas Comissão',  icon: TrendingUp  },
   { id: 'pagamento',    label: 'Forma Pagamento',  icon: CreditCard  },
+  { id: 'importar',     label: 'Importar Safeweb', icon: Upload      },
 ]
 
 const FALLBACK_CERTS = ['e-CPF A1', 'e-CPF A3', 'e-CNPJ A1', 'e-CNPJ A3', 'NF-e A1', 'SSL']
@@ -324,6 +326,12 @@ export default function Comercial() {
   const [selectedItemIds, setSelectedItemIds]   = useState<Set<string>>(new Set())
   const importInputRef                          = useRef<HTMLInputElement>(null)
   const importItensRef                          = useRef<HTMLInputElement>(null)
+  const importSafewebRef                        = useRef<HTMLInputElement>(null)
+  const importClientesRef                       = useRef<HTMLInputElement>(null)
+  const [importandoSafeweb, setImportandoSafeweb] = useState(false)
+  const [importandoClientes, setImportandoClientes] = useState(false)
+  const [resultSafeweb, setResultSafeweb] = useState<{ clientes: number; novos: number; atualizados: number; divergentes: number } | null>(null)
+  const [resultClientes, setResultClientes] = useState<{ inseridos: number; atualizados: number } | null>(null)
   // tabelas form
   const [selectedTabelaId, setSelectedTabelaId]   = useState<string | null>(null)
   const [showFormTabela, setShowFormTabela]         = useState(false)
@@ -927,6 +935,167 @@ export default function Comercial() {
       void fetchCatalogo()
     } finally {
       setImportando(false)
+    }
+  }
+
+  // ── importar relatório Safeweb — batimento mensal ────────────
+  async function importarRelatorioSafeweb(file: File) {
+    setImportandoSafeweb(true)
+    setResultSafeweb(null)
+    try {
+      const rows = await lerPlanilha(file)
+      if (!rows.length) { alert('Planilha sem dados.'); return }
+      const parseNum = (v: string) => parseFloat((v ?? '').replace(/[R$\s.]/g, '').replace(',', '.')) || 0
+      const cleanDoc = (v: string) => (v ?? '').replace(/\D/g, '')
+      const BATCH = 100
+
+      // 1. upsert clientes
+      const clientePayloads = rows.map(r => {
+        const doc = cleanDoc(r['documento'] ?? r['cnpj_cpf'] ?? '')
+        const nome = (r['nome'] ?? r['nome_razao_social'] ?? '').trim()
+        if (!doc || !nome) return null
+        const tipo: TipoCliente = doc.length === 11 ? 'pessoa_fisica' : 'pessoa_juridica'
+        return {
+          cpf_cnpj:     doc,
+          nome,
+          tipo_cliente: tipo,
+          tipo_cadastro: 'cliente' as const,
+          email:        (r['e_mail_do_titular'] ?? r['email_do_titular'] ?? r['email'] ?? '').trim() || null,
+          telefone:     (r['telefone_do_titular'] ?? r['telefone'] ?? '').trim() || null,
+          iss_retido:   false,
+          status:       'ativo' as const,
+          metadata:     {} as Record<string, unknown>,
+        }
+      }).filter((x): x is NonNullable<typeof x> => x !== null)
+
+      const clientesUniq = [...new Map(clientePayloads.map(c => [c.cpf_cnpj, c])).values()]
+      for (let i = 0; i < clientesUniq.length; i += BATCH) {
+        const { error } = await supabase.from('cadastros_base')
+          .upsert(clientesUniq.slice(i, i + BATCH), { onConflict: 'cpf_cnpj', ignoreDuplicates: false })
+        if (error) { alert('Erro ao importar clientes: ' + error.message); return }
+      }
+
+      // 2. busca IDs de clientes para vincular às vendas
+      const allDocs = clientesUniq.map(c => c.cpf_cnpj)
+      const { data: cadastrosData } = await supabase
+        .from('cadastros_base').select('id, cpf_cnpj').in('cpf_cnpj', allDocs)
+      const idByDoc = new Map((cadastrosData ?? []).map(c => [c.cpf_cnpj as string, c.id as string]))
+
+      // 3. monta payloads de venda COM validado_safeweb = true
+      const vendasPayloads = rows.map(r => {
+        const protocolo = (r['protocolo'] ?? r['numero_protocolo'] ?? '').trim()
+        if (!protocolo) return null
+        const doc = cleanDoc(r['documento'] ?? r['cnpj_cpf'] ?? '')
+        return {
+          protocolo_numero:       protocolo,
+          cadastro_base_id:       idByDoc.get(doc) ?? null,
+          tipo_produto:           (r['produto'] ?? '').trim() || null,
+          tipo_emissao:           (r['tipo_de_emissao_realizada'] ?? r['tipo_emissao'] ?? '').trim() || null,
+          valor_venda:            parseNum(r['valor_do_boleto'] ?? r['valor_boleto'] ?? r['valor'] ?? '0'),
+          status:                 'emitido' as StatusVendaCertificado,
+          pago:                   true,
+          validado_safeweb:       true,
+          data_vencimento:        (r['data_fim_validade'] ?? r['data_vencimento'] ?? '').trim() || null,
+          data_inicio_validade:   (r['data_inicio_validade'] ?? r['data_inicio'] ?? '').trim() || null,
+          numero_serie:           (r['numero_de_serie'] ?? r['numero_serie'] ?? '').trim() || null,
+          voucher_codigo:         (r['vouchercod'] ?? r['voucher_codigo'] ?? '').trim() || null,
+          voucher_percentual:     parseNum(r['voucherpercentual'] ?? r['voucher_percentual'] ?? '0') || null,
+          voucher_valor:          parseNum(r['vouchervalor'] ?? r['voucher_valor'] ?? '0') || null,
+          nome_ar:                (r['nome_da_autoridade_de_registro'] ?? r['nome_ar'] ?? '').trim() || null,
+          nome_local_atendimento: (r['nome_do_local_de_atendimento'] ?? r['nome_local'] ?? '').trim() || null,
+          status_certificado:     (r['status_do_certificado'] ?? r['status_certificado'] ?? '').trim() || null,
+          nome_parceiro_safeweb:  (r['nome_do_parceiro'] ?? r['nome_parceiro'] ?? '').trim() || null,
+          observacoes:            (r['observacao'] ?? r['observacoes'] ?? '').trim() || null,
+        }
+      }).filter((x): x is NonNullable<typeof x> => x !== null)
+
+      // 4. verifica quais já existem no CRM (para contar batidos vs novos)
+      const protocolos = vendasPayloads.map(v => v.protocolo_numero)
+      const { data: existentes } = await supabase
+        .from('vendas_certificados').select('protocolo_numero').in('protocolo_numero', protocolos)
+      const existSet = new Set((existentes ?? []).map(e => e.protocolo_numero as string))
+      const novos      = vendasPayloads.filter(v => !existSet.has(v.protocolo_numero)).length
+      const atualizados = vendasPayloads.filter(v =>  existSet.has(v.protocolo_numero)).length
+
+      // 5. upsert vendas
+      for (let i = 0; i < vendasPayloads.length; i += BATCH) {
+        const { error } = await supabase.from('vendas_certificados')
+          .upsert(vendasPayloads.slice(i, i + BATCH), { onConflict: 'protocolo_numero', ignoreDuplicates: false })
+        if (error) { alert('Erro ao importar vendas: ' + error.message); return }
+      }
+
+      // 6. conta divergentes: vendas no CRM sem validado_safeweb que têm protocolo fora da planilha
+      //    (apenas as emitidas — rascunho/agendado não contam)
+      const { count: divergentes } = await supabase
+        .from('vendas_certificados')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'emitido')
+        .is('validado_safeweb', null)
+
+      setResultSafeweb({ clientes: clientesUniq.length, novos, atualizados, divergentes: divergentes ?? 0 })
+    } finally {
+      setImportandoSafeweb(false)
+    }
+  }
+
+  // ── importar clientes (formato sistema antigo) ────────────────
+  async function importarClientes(file: File) {
+    setImportandoClientes(true)
+    setResultClientes(null)
+    try {
+      const rows = await lerPlanilha(file)
+      if (!rows.length) { alert('Planilha sem dados.'); return }
+      const cleanDoc = (v: string) => (v ?? '').replace(/\D/g, '')
+
+      const payloads = rows.map(r => {
+        const doc = cleanDoc(r['cnpj_cpf'] ?? r['cpf_cnpj'] ?? r['documento'] ?? '')
+        const nome = r['nome_razao_social'] ?? r['nome'] ?? ''
+        if (!doc || !nome) return null
+        const tipo: TipoCliente = doc.length === 11 ? 'pessoa_fisica' : 'pessoa_juridica'
+        const ddd = (r['ddd'] ?? '').replace(/\D/g, '')
+        const tel = (r['telefone'] ?? '').replace(/\D/g, '')
+        const telefone = ddd && tel ? `(${ddd}) ${tel}` : (tel || null)
+        return {
+          cpf_cnpj: doc,
+          nome,
+          nome_fantasia:       (r['nome_fantasia'] ?? '').trim() || null,
+          tipo_cliente:        tipo,
+          tipo_cadastro:       'cliente' as const,
+          email:               (r['e_mail'] ?? r['email'] ?? '').trim() || null,
+          telefone,
+          cep:                 (r['cep'] ?? '').replace(/\D/g, '') || null,
+          logradouro:          (r['endereco'] ?? r['logradouro'] ?? '').trim() || null,
+          numero:              (r['numero'] ?? '').trim() || null,
+          complemento:         (r['complemento'] ?? '').trim() || null,
+          bairro:              (r['bairro'] ?? '').trim() || null,
+          cidade:              (r['cidade'] ?? '').trim() || null,
+          uf:                  (r['uf'] ?? '').trim().toUpperCase() || null,
+          inscricao_estadual:  (r['ie'] ?? r['inscricao_estadual'] ?? '').trim() || null,
+          inscricao_municipal: (r['im'] ?? r['inscricao_municipal'] ?? '').trim() || null,
+          iss_retido: false,
+          status: 'ativo' as const,
+          metadata: { contador: (r['contador'] ?? '').trim() || null } as Record<string, unknown>,
+        }
+      }).filter((x): x is NonNullable<typeof x> => x !== null)
+
+      // check existing to count inserts vs updates
+      const docs = payloads.map(p => p.cpf_cnpj)
+      const { data: existing } = await supabase.from('cadastros_base').select('cpf_cnpj').in('cpf_cnpj', docs)
+      const existSet = new Set((existing ?? []).map(e => e.cpf_cnpj as string))
+      const inseridos = payloads.filter(p => !existSet.has(p.cpf_cnpj)).length
+      const atualizados = payloads.filter(p => existSet.has(p.cpf_cnpj)).length
+
+      const BATCH = 100
+      for (let i = 0; i < payloads.length; i += BATCH) {
+        const batch = payloads.slice(i, i + BATCH)
+        const { error } = await supabase.from('cadastros_base')
+          .upsert(batch, { onConflict: 'cpf_cnpj', ignoreDuplicates: false })
+        if (error) { alert('Erro ao importar clientes: ' + error.message); return }
+      }
+
+      setResultClientes({ inseridos, atualizados })
+    } finally {
+      setImportandoClientes(false)
     }
   }
 
@@ -2096,6 +2265,118 @@ export default function Comercial() {
               ))}
             </div>
           </CatalogSection>
+        )}
+
+        {/* ── IMPORTAR ───────────────────────────────────────── */}
+        {tab === 'importar' && (
+          <div className="space-y-6">
+
+            {/* Relatório Safeweb */}
+            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+              <div className="flex items-center gap-3 mb-1">
+                <div className="w-9 h-9 rounded-xl bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
+                  <Upload size={18} className="text-blue-600 dark:text-blue-400" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-gray-800 dark:text-gray-100">Relatório Mensal Safeweb</h3>
+                  <p className="text-xs text-gray-500">Importa clientes e vendas do relatório XLS/XLSX recebido mensalmente da Safeweb.</p>
+                </div>
+              </div>
+
+              <div className="mt-4 bg-gray-50 dark:bg-gray-800 rounded-xl p-4 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                <p className="font-medium text-gray-700 dark:text-gray-300">Colunas esperadas (separadas por ponto-e-vírgula ou tabela XLS):</p>
+                <p>Protocolo · Nome · Documento · Produto · Tipo de Emissão Realizada · Valor do Boleto</p>
+                <p>Data Inicio Validade · Data Fim Validade · Numero de Série · VoucherCodigo · VoucherPercentual · VoucherValor</p>
+                <p>Nome da Autoridade de Registro · Nome do Local de Atendimento · Status do Certificado · Nome do Parceiro</p>
+                <p>E-mail do Titular · Telefone do Titular</p>
+              </div>
+
+              {resultSafeweb && (
+                <div className="mt-4 space-y-3">
+                  <div className="flex items-center gap-2 text-sm font-medium text-green-700 dark:text-green-400">
+                    <Check size={16} /> Batimento concluído
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-3 text-center">
+                      <p className="text-2xl font-bold text-gray-800 dark:text-gray-100">{resultSafeweb.clientes}</p>
+                      <p className="text-xs text-gray-500 mt-1">Clientes processados</p>
+                    </div>
+                    <div className="bg-green-50 dark:bg-green-900/20 rounded-xl p-3 text-center">
+                      <p className="text-2xl font-bold text-green-700 dark:text-green-400">{resultSafeweb.atualizados}</p>
+                      <p className="text-xs text-gray-500 mt-1">Batidos (já no CRM)</p>
+                    </div>
+                    <div className="bg-blue-50 dark:bg-blue-900/20 rounded-xl p-3 text-center">
+                      <p className="text-2xl font-bold text-blue-700 dark:text-blue-400">{resultSafeweb.novos}</p>
+                      <p className="text-xs text-gray-500 mt-1">Novos (só na Safeweb)</p>
+                    </div>
+                    <div className={cn('rounded-xl p-3 text-center', resultSafeweb.divergentes > 0 ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-gray-50 dark:bg-gray-800')}>
+                      <p className={cn('text-2xl font-bold', resultSafeweb.divergentes > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-gray-400')}>{resultSafeweb.divergentes}</p>
+                      <p className="text-xs text-gray-500 mt-1">No CRM sem validação</p>
+                    </div>
+                  </div>
+                  {resultSafeweb.divergentes > 0 && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      Existem <strong>{resultSafeweb.divergentes}</strong> venda(s) com status "emitido" no CRM que não foram encontradas na planilha Safeweb.
+                      Acesse a aba <strong>Lançar Vendas</strong> e filtre por "Não validadas" para revisar e ajustar manualmente.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-5 flex items-center gap-3">
+                <input ref={importSafewebRef} type="file" accept=".xls,.xlsx,.csv,.tsv" className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) void importarRelatorioSafeweb(f); e.target.value = '' }} />
+                <button type="button" onClick={() => importSafewebRef.current?.click()} disabled={importandoSafeweb}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors">
+                  {importandoSafeweb ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+                  {importandoSafeweb ? 'Importando...' : 'Selecionar arquivo'}
+                </button>
+                <span className="text-xs text-gray-400">Suporta XLS, XLSX, CSV</span>
+              </div>
+
+              <p className="mt-4 text-xs text-amber-600 dark:text-amber-400">
+                Antes de importar, aplique a migration <code className="font-mono bg-amber-50 dark:bg-amber-900/20 px-1 rounded">20260522_vendas_safeweb_campos.sql</code> no Supabase.
+              </p>
+            </div>
+
+            {/* Importar Clientes (sistema antigo) */}
+            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+              <div className="flex items-center gap-3 mb-1">
+                <div className="w-9 h-9 rounded-xl bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
+                  <UserCheck size={18} className="text-purple-600 dark:text-purple-400" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-gray-800 dark:text-gray-100">Importar Base de Clientes</h3>
+                  <p className="text-xs text-gray-500">Importa o cadastro de clientes exportado do sistema antigo (CSV/XLS com campos de endereço).</p>
+                </div>
+              </div>
+
+              <div className="mt-4 bg-gray-50 dark:bg-gray-800 rounded-xl p-4 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                <p className="font-medium text-gray-700 dark:text-gray-300">Colunas esperadas:</p>
+                <p>Tipo · CNPJ/CPF · Nome/Razão Social · Nome Fantasia · E-mail · DDD · Telefone</p>
+                <p>CEP · Endereço · Número · Complemento · Bairro · Cidade · UF · IE · IM · Contador</p>
+              </div>
+
+              {resultClientes && (
+                <div className="mt-4 flex items-center gap-3 px-4 py-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl text-sm text-green-700 dark:text-green-400">
+                  <Check size={16} />
+                  <span>Importação concluída: <strong>{resultClientes.inseridos}</strong> novo(s) · <strong>{resultClientes.atualizados}</strong> atualizado(s).</span>
+                </div>
+              )}
+
+              <div className="mt-5 flex items-center gap-3">
+                <input ref={importClientesRef} type="file" accept=".xls,.xlsx,.csv,.tsv" className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) void importarClientes(f); e.target.value = '' }} />
+                <button type="button" onClick={() => importClientesRef.current?.click()} disabled={importandoClientes}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors">
+                  {importandoClientes ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+                  {importandoClientes ? 'Importando...' : 'Selecionar arquivo'}
+                </button>
+                <span className="text-xs text-gray-400">Suporta XLS, XLSX, CSV</span>
+              </div>
+            </div>
+
+          </div>
         )}
 
       </div>

@@ -610,6 +610,16 @@ export interface VendaCertificado {
   protocolo_numero: string | null
   protocolo_status: StatusPedidoProtocolo
   certificadora: string | null
+  numero_serie: string | null
+  data_inicio_validade: string | null
+  voucher_codigo: string | null
+  voucher_percentual: number | null
+  voucher_valor: number | null
+  nome_ar: string | null
+  nome_local_atendimento: string | null
+  status_certificado: string | null
+  nome_parceiro_safeweb: string | null
+  validado_safeweb: boolean | null
   api_payload_pedido: Record<string, unknown>
   api_payload_protocolo: Record<string, unknown>
   // comissão snapshot

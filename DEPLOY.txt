@@ -54,7 +54,7 @@ Secrets necessários no GitHub
   VPS_SSH_KEY  = chave privada em base64
                  (gerada em /tmp/github_actions_key na VPS)
   VITE_SUPABASE_URL      = URL do Supabase
-  VITE_SUPABASE_ANON_KEY = chave anon do Supabase
+  VITE_SUPABASE_PUBLISHABLE_KEY = chave publishable do Supabase
 
 Status atual: em ajuste (ver logs em github.com/mantovanio/certiid/actions)
 
@@ -67,7 +67,8 @@ Localização: /opt/certiid/.env
 
 Conteúdo:
   VITE_SUPABASE_URL=<url do supabase>
-  VITE_SUPABASE_ANON_KEY=<chave anon>
+  VITE_SUPABASE_PUBLISHABLE_KEY=<chave publishable>
+  SUPABASE_SECRET_KEY=<chave secret server-side>
 
 Este arquivo NÃO está no git (está no .gitignore).
 Se a VPS for resetada, recrie-o manualmente.

@@ -32,7 +32,7 @@
 - **Domínio:** `certiid.mantovan.com.br` (sem www — sem registro DNS para www)
 - **Stack:** Docker Swarm + Traefik + Let's Encrypt
 - **Deploy:** push na `main` dispara GitHub Actions → SSH na VPS → `bash /opt/certiid/deploy.sh`
-- **`.env` na VPS** (`/opt/certiid/.env`): manter `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` e `SUPABASE_SERVICE_ROLE_KEY`
+- **`.env` na VPS** (`/opt/certiid/.env`): preferir `VITE_SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`; manter `VITE_SUPABASE_ANON_KEY` e `SUPABASE_SERVICE_ROLE_KEY` apenas como compatibilidade temporária
 - **Edge Functions publicadas:** `chatwoot-webhook`, `notify-new-user`, `admin-users`
 - **Produção confirmada:** frontend recompilado na VPS e site voltou ao ar após deploy manual
 
@@ -95,6 +95,20 @@ Agora a arquitetura de segurança foi organizada em 3 centros:
   - `CORS`
   - `requireAuthenticatedUser`
   - `requireAdmin`
+
+#### 6. Preparação para rotação de chaves Supabase — IMPLEMENTADO
+
+Compatibilidade adicionada:
+- frontend aceita `VITE_SUPABASE_PUBLISHABLE_KEY` com fallback para `VITE_SUPABASE_ANON_KEY`
+- componentes server-side aceitam `SUPABASE_SECRET_KEY` com fallback para `SUPABASE_SERVICE_ROLE_KEY`
+
+Arquivos ajustados:
+- `src/lib/supabase.ts`
+- `mcp-server/index.ts`
+- `query_db.js`
+- `.env.example`
+- `deploy.sh`
+- `Dockerfile`
 
 - consumo inicial refatorado em:
   - `src/App.tsx`

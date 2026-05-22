@@ -14,7 +14,7 @@ for (const line of envText.split('\n')) {
 }
 
 const supabaseUrl = env.VITE_SUPABASE_URL;
-const serviceKey = env.SUPABASE_SERVICE_ROLE_KEY;
+const serviceKey = env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !serviceKey) {
   console.error("Missing credentials in .env");

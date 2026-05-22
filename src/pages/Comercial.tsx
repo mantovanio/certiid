@@ -321,6 +321,7 @@ export default function Comercial() {
   const [formCert, setFormCert]                 = useState<NovoCertificado>(EMPTY_CERTIFICADO)
   const [importando, setImportando]             = useState(false)
   const [selectedCertIds, setSelectedCertIds]   = useState<Set<string>>(new Set())
+  const [selectedItemIds, setSelectedItemIds]   = useState<Set<string>>(new Set())
   const importInputRef                          = useRef<HTMLInputElement>(null)
   const importItensRef                          = useRef<HTMLInputElement>(null)
   // tabelas form
@@ -870,6 +871,17 @@ export default function Comercial() {
     if (!confirm('Remover este item da tabela?')) return
     await supabase.from('tabelas_preco_itens').delete().eq('id', id)
     setTabelaItens(prev => prev.filter(x => x.id !== id))
+    setSelectedItemIds(prev => { const s = new Set(prev); s.delete(id); return s })
+  }
+
+  async function excluirItensSelecionados() {
+    if (!selectedItemIds.size) return
+    if (!confirm(`Remover ${selectedItemIds.size} produto(s) selecionado(s) da tabela?`)) return
+    const ids = [...selectedItemIds]
+    const { error } = await supabase.from('tabelas_preco_itens').delete().in('id', ids)
+    if (error) { alert('Erro: ' + error.message); return }
+    setTabelaItens(prev => prev.filter(x => !selectedItemIds.has(x.id)))
+    setSelectedItemIds(new Set())
   }
   async function toggleItem(item: TabelaPrecoItem) {
     await supabase.from('tabelas_preco_itens').update({ ativo: !item.ativo }).eq('id', item.id)
@@ -1858,9 +1870,15 @@ export default function Comercial() {
 
                   {/* Itens (certificados + preços) */}
                   <div className="space-y-3">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
                       <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">Produtos e Preços</h4>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {selectedItemIds.size > 0 && (
+                          <button type="button" onClick={excluirItensSelecionados}
+                            className="flex items-center gap-1 px-2 py-1.5 bg-red-600 text-white text-xs rounded-lg hover:bg-red-700">
+                            <Trash2 size={12} /> Excluir selecionados ({selectedItemIds.size})
+                          </button>
+                        )}
                         <input ref={importItensRef} type="file" accept=".csv,.tsv,.txt,.xls,.xlsx" className="hidden"
                           onChange={e => { const f = e.target.files?.[0]; if (f) void importarItensTabelaFile(f, selectedTabelaId); e.target.value = '' }} />
                         <button type="button" onClick={() => importItensRef.current?.click()} disabled={importando}
@@ -1892,34 +1910,61 @@ export default function Comercial() {
                       </Panel>
                     )}
 
-                    <DataTable headers={['Cód', 'Certificado', 'Validade', 'Preço Venda', 'Custo', 'Repasse', 'Status', 'Ações']}>
-                      {itens.length === 0
-                        ? <EmptyRow colSpan={8} label="Nenhum produto nesta tabela." />
-                        : itens.map(item => {
-                          const cert = certificadoById.get(item.certificado_id)
-                          return (
-                            <tr key={item.id} className={cn('hover:bg-gray-50 dark:hover:bg-gray-800/50', !item.ativo && 'opacity-50')}>
-                              <td className="px-4 py-3 text-xs text-gray-400">{cert?.codigo ?? '—'}</td>
-                              <td className="px-4 py-3 font-medium text-sm">{cert?.tipo ?? 'Cert. removido'}</td>
-                              <td className="px-4 py-3 text-sm text-gray-500">{cert?.validade ?? '—'}</td>
-                              <td className="px-4 py-3 text-green-600 dark:text-green-400 font-semibold">{formatCurrency(item.valor)}</td>
-                              <td className="px-4 py-3 text-sm text-gray-500">{formatCurrency(item.valor_custo)}</td>
-                              <td className="px-4 py-3 text-sm text-gray-500">{formatCurrency(item.valor_repasse)}</td>
-                              <td className="px-4 py-3"><StatusPill active={item.ativo} /></td>
-                              <td className="px-4 py-3">
-                                <div className="flex items-center gap-1">
-                                  <button type="button" onClick={() => editarItem(item)} title="Editar" className="p-1 text-gray-400 hover:text-blue-600"><Edit3 size={13} /></button>
-                                  <button type="button" onClick={() => toggleItem(item)} title={item.ativo ? 'Inativar' : 'Ativar'} className="p-1 text-gray-400 hover:text-amber-600">
-                                    {item.ativo ? <ToggleRight size={13} /> : <ToggleLeft size={13} />}
-                                  </button>
-                                  <button type="button" onClick={() => excluirItem(item.id)} title="Excluir" className="p-1 text-gray-400 hover:text-red-600"><Trash2 size={13} /></button>
-                                </div>
-                              </td>
-                            </tr>
-                          )
-                        })
-                      }
-                    </DataTable>
+                    {(() => {
+                      const allItemIds = itens.map(i => i.id)
+                      const allItemsSel = allItemIds.length > 0 && allItemIds.every(id => selectedItemIds.has(id))
+                      const toggleAllItems = () => setSelectedItemIds(allItemsSel ? new Set() : new Set(allItemIds))
+                      const toggleOneItem = (id: string) => setSelectedItemIds(prev => {
+                        const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s
+                      })
+                      return (
+                        <DataTable headers={['', 'Cód', 'Certificado', 'Validade', 'Preço Venda', 'Custo', 'Repasse', 'Status', 'Ações']}>
+                          {itens.length === 0
+                            ? <EmptyRow colSpan={9} label="Nenhum produto nesta tabela." />
+                            : (
+                              <>
+                                <tr className="bg-gray-50 dark:bg-gray-800/50">
+                                  <td className="px-4 py-2" colSpan={9}>
+                                    <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-500 select-none">
+                                      <input type="checkbox" checked={allItemsSel} onChange={toggleAllItems}
+                                        className="w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer" />
+                                      {allItemsSel ? 'Desmarcar todos' : `Selecionar todos (${itens.length})`}
+                                    </label>
+                                  </td>
+                                </tr>
+                                {itens.map(item => {
+                                  const cert = certificadoById.get(item.certificado_id)
+                                  return (
+                                    <tr key={item.id} className={cn('hover:bg-gray-50 dark:hover:bg-gray-800/50', !item.ativo && 'opacity-50', selectedItemIds.has(item.id) && 'bg-blue-50 dark:bg-blue-900/10')}>
+                                      <td className="px-4 py-3">
+                                        <input type="checkbox" checked={selectedItemIds.has(item.id)} onChange={() => toggleOneItem(item.id)}
+                                          className="w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer" />
+                                      </td>
+                                      <td className="px-4 py-3 text-xs text-gray-400">{cert?.codigo ?? '—'}</td>
+                                      <td className="px-4 py-3 font-medium text-sm">{cert?.tipo ?? 'Cert. removido'}</td>
+                                      <td className="px-4 py-3 text-sm text-gray-500">{cert?.validade ?? '—'}</td>
+                                      <td className="px-4 py-3 text-green-600 dark:text-green-400 font-semibold">{formatCurrency(item.valor)}</td>
+                                      <td className="px-4 py-3 text-sm text-gray-500">{formatCurrency(item.valor_custo)}</td>
+                                      <td className="px-4 py-3 text-sm text-gray-500">{formatCurrency(item.valor_repasse)}</td>
+                                      <td className="px-4 py-3"><StatusPill active={item.ativo} /></td>
+                                      <td className="px-4 py-3">
+                                        <div className="flex items-center gap-1">
+                                          <button type="button" onClick={() => editarItem(item)} title="Editar" className="p-1 text-gray-400 hover:text-blue-600"><Edit3 size={13} /></button>
+                                          <button type="button" onClick={() => toggleItem(item)} title={item.ativo ? 'Inativar' : 'Ativar'} className="p-1 text-gray-400 hover:text-amber-600">
+                                            {item.ativo ? <ToggleRight size={13} /> : <ToggleLeft size={13} />}
+                                          </button>
+                                          <button type="button" onClick={() => excluirItem(item.id)} title="Excluir" className="p-1 text-gray-400 hover:text-red-600"><Trash2 size={13} /></button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )
+                                })}
+                              </>
+                            )
+                          }
+                        </DataTable>
+                      )
+                    })()}
                   </div>
 
                   {/* Participantes */}

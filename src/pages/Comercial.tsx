@@ -947,6 +947,15 @@ export default function Comercial() {
       if (!rows.length) { alert('Planilha sem dados.'); return }
       const parseNum = (v: string) => parseFloat((v ?? '').replace(/[R$\s.]/g, '').replace(',', '.')) || 0
       const cleanDoc = (v: string) => (v ?? '').replace(/\D/g, '')
+      // converte DD/MM/YYYY ou DD/MM/YYYY HH:MM:SS → YYYY-MM-DD
+      const parseDate = (v: string): string | null => {
+        const s = (v ?? '').trim()
+        if (!s) return null
+        const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/)
+        if (m) return `${m[3]}-${m[2]}-${m[1]}`
+        // já está em ISO ou outro formato que o postgres aceita
+        return s.split(' ')[0] || null
+      }
       const BATCH = 100
 
       // 1. upsert clientes
@@ -995,8 +1004,8 @@ export default function Comercial() {
           status_venda:           'emitido' as StatusVendaCertificado,
           pago:                   true,
           validado_safeweb:       true,
-          data_vencimento:        (r['data_fim_validade'] ?? r['data_vencimento'] ?? '').trim() || null,
-          data_inicio_validade:   (r['data_inicio_validade'] ?? r['data_inicio'] ?? '').trim() || null,
+          data_vencimento:        parseDate(r['data_fim_validade'] ?? r['data_vencimento'] ?? ''),
+          data_inicio_validade:   parseDate(r['data_inicio_validade'] ?? r['data_inicio'] ?? ''),
           numero_serie:           (r['numero_de_serie'] ?? r['numero_serie'] ?? '').trim() || null,
           voucher_codigo:         (r['vouchercod'] ?? r['voucher_codigo'] ?? '').trim() || null,
           voucher_percentual:     parseNum(r['voucherpercentual'] ?? r['voucher_percentual'] ?? '0') || null,

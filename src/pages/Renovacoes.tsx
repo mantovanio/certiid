@@ -9,9 +9,10 @@ import { cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
 import { queueEmailMessage, queueWhatsAppMessage, queueWhatsAppFollowUp, renderTemplate } from '@/lib/communication'
+import { loadActiveWhatsAppIntegration } from '@/lib/whatsappIntegration'
 import { useAuth } from '@/contexts/AuthContext'
 import { hasPerfil, isAdminProfile } from '@/lib/security'
-import ChatPanel, { type ChatwootCfg } from '@/components/ChatPanel'
+import ChatPanel, { type EvolutionCfg } from '@/components/ChatPanel'
 import type { ChatContact } from '@/types'
 import * as XLSX from 'xlsx'
 import type {
@@ -317,8 +318,8 @@ export default function Renovacoes() {
   const listaRef                          = useRef<RenovacaoV2[]>([])
   const autoKanbanRef                     = useRef(false)
 
-  // ── chatwoot chat flutuante ───────────────────────────────────
-  const [chatwoot, setChatwoot]           = useState<ChatwootCfg | null>(null)
+  // ── evolution chat flutuante ──────────────────────────────────
+  const [evolution, setEvolution]         = useState<EvolutionCfg | null>(null)
   const [chatContact, setChatContact]     = useState<ChatContact | null>(null)
 
   // ── toast ────────────────────────────────────────────────────
@@ -470,26 +471,25 @@ export default function Renovacoes() {
     setN8nWebhookUrl((data as { webhook_url: string | null } | null)?.webhook_url ?? null)
   }, [])
 
-  const fetchChatwootConfig = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('external_integrations')
-      .select('base_url, api_token, account_id, inbox_id')
-      .eq('provider', 'chatwoot')
-      .maybeSingle()
-    if (error) { logger.error('Renovacoes', 'erro ao buscar config chatwoot', error.message); return }
-    if (!data) { logger.warn('Renovacoes', 'nenhuma integração chatwoot encontrada'); return }
-    logger.info('Renovacoes', 'config chatwoot carregada', { base_url: data.base_url, account_id: data.account_id, inbox_id: data.inbox_id, tem_token: !!data.api_token })
-    if (data?.base_url && data?.api_token && data?.account_id) {
-      setChatwoot({ base_url: data.base_url as string, api_token: data.api_token as string, account_id: data.account_id as string, inbox_id: (data.inbox_id as string | null) ?? null })
+  const fetchEvolutionConfig = useCallback(async () => {
+    try {
+      const data = await loadActiveWhatsAppIntegration()
+      if (!data) { logger.warn('Renovacoes', 'nenhuma integração WhatsApp ativa encontrada'); return }
+      if (!data.supportsEmbeddedChat) { logger.warn('Renovacoes', 'integração WhatsApp ativa sem chat embutido', data.engine); return }
+      if (data.base_url && data.api_token && data.instance_name) {
+        setEvolution({ base_url: data.base_url, api_token: data.api_token, instance_name: data.instance_name })
+      }
+    } catch (error) {
+      logger.error('Renovacoes', 'erro ao buscar integração WhatsApp', String(error))
     }
   }, [])
 
-  useEffect(() => { void fetchChatwootConfig() }, [fetchChatwootConfig])
+  useEffect(() => { void fetchEvolutionConfig() }, [fetchEvolutionConfig])
 
   function openChat(r: RenovacaoV2) {
-    if (!chatwoot) { showMsg('Chatwoot não configurado. Configure em Configurações → Integrações.', 'err'); return }
+    if (!evolution) { showMsg('Canal WhatsApp com chat embutido não configurado. Revise em Configurações → Integrações.', 'err'); return }
     if (!r.telefone) { showMsg('Cliente sem telefone para chat.', 'err'); return }
-    setChatContact({ id: r.id, nome: r.razao_social ?? r.cliente, telefone: r.telefone, id_conversa_chatwoot: null })
+    setChatContact({ id: r.id, nome: r.razao_social ?? r.cliente, telefone: r.telefone, id_conversa_chatwoot: null, evolution_remote_jid: null, evolution_instance: evolution.instance_name })
   }
 
   // ── template values (for rendering) ─────────────────────────
@@ -1867,10 +1867,10 @@ export default function Renovacoes() {
 
       </div>
 
-      {chatContact && chatwoot && (
+      {chatContact && evolution && (
         <ChatPanel
           contact={chatContact}
-          chatwoot={chatwoot}
+          evolution={evolution}
           onClose={() => setChatContact(null)}
         />
       )}

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import * as XLSX from 'xlsx'
 import { cn } from '@/lib/utils'
+import { generateAgendaSlotsPreview, resolveAgentesElegiveisPorTabela } from '@/lib/agenda'
 import {
   AlertCircle,
   Bell,
@@ -9,9 +10,11 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Copy,
   CreditCard,
   Download,
   Edit3,
+  ExternalLink,
   FileText,
   List,
   Loader2,
@@ -21,6 +24,7 @@ import {
   RefreshCcw,
   Search,
   ShoppingBag,
+  Store,
   Tag,
   ToggleLeft,
   ToggleRight,
@@ -33,13 +37,23 @@ import {
   XCircle,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { queueEmailMessage, queueWhatsAppMessage, renderTemplate } from '@/lib/communication'
+import { useAuth } from '@/contexts/AuthContext'
+import { hasPerfil, isAdminProfile } from '@/lib/security'
+import { buscarCep } from '@/lib/cep'
 import type {
   Agendamento,
+  AgenteTabelaPreco,
+  AgenteDisponibilidade,
+  AgenteIndisponibilidade,
   Certificado,
   FaixaComissao,
-  FormaPagamento,
+  FormaPagamentoV2,
+  DocumentoFinanceiro,
+  LancamentoV2,
+  LojaMarketplace,
+  NfseEmitida,
   NovaFaixaComissao,
-  NovaFormaPagamento,
   NovoAgendamento,
   NovoCertificado,
   StatusAgendamento,
@@ -56,8 +70,11 @@ import type {
   NovaTabelaPrecoParticipante,
   TipoParticipanteTabelaPreco,
   TipoParceiro,
+  OwnerTipoLojaMarketplace,
   PerfilAcesso,
   TipoCliente,
+  AgendamentoValidacao,
+  ParceiroAgentePermitido,
 } from '@/types'
 
 // ── local types ────────────────────────────────────────────────
@@ -112,17 +129,201 @@ type ParceiroSimples = {
   tipo_parceiro: TipoParceiro | null
 }
 
+type PagamentoForm = {
+  nome: string
+  codigo: string
+  gateway: string
+  ativo: boolean
+}
+
+type DisponibilidadeForm = {
+  agente_registro_id: string
+  ponto_atendimento_id: string
+  hora_inicio: string
+  hora_fim: string
+  intervalo_minutos: number
+  capacidade_por_slot: number
+  tipo_atendimento: '' | 'presencial' | 'videoconferencia' | 'auto_atendimento'
+  ativo: boolean
+}
+
+type IndisponibilidadeForm = {
+  agente_registro_id: string
+  ponto_atendimento_id: string
+  inicio_em: string
+  fim_em: string
+  motivo: string
+  ativo: boolean
+}
+
+type AgenteTabelaForm = {
+  tabela_preco_id: string
+  agente_registro_id: string
+  ponto_atendimento_id: string
+  ativo: boolean
+}
+
+type LojaMarketplaceForm = {
+  nome_loja: string
+  slug: string
+  tabela_preco_id: string
+  owner_tipo: OwnerTipoLojaMarketplace
+  owner_profile_id: string
+  owner_parceiro_id: string
+  descricao: string
+  dominio_publico: string
+  modo_exibicao: 'vitrine' | 'link_direto'
+  item_fixo_id: string
+  ativo: boolean
+}
+
+type AgendaItem = {
+  id: string
+  origem: 'agenda_legada' | 'validacao_v2'
+  venda_certificado_id: string | null
+  cliente: string
+  telefone: string | null
+  servico: string
+  data_hora: string
+  status: 'aguardando' | 'confirmado' | 'cancelado' | 'realizado'
+  observacoes: string | null
+  ponto_atendimento_nome: string | null
+  ponto_atendimento_id: string | null
+  tipo_atendimento: string | null
+  protocolo_numero: string | null
+  agente_registro_id: string | null
+}
+
+type AgendamentoV2Form = {
+  agenda_id: string
+  venda_certificado_id: string
+  agente_registro_id: string
+  ponto_atendimento_id: string
+  data_agendada: string
+  tipo_atendimento: '' | 'presencial' | 'videoconferencia' | 'auto_atendimento'
+  observacoes: string
+}
+
+type AgendamentoValidacaoRow = {
+  id: string
+  venda_certificado_id: string
+  created_at?: string | null
+  data_agendada: string | null
+  status_agendamento: 'pendente' | 'confirmado' | 'realizado' | 'cancelado'
+  observacoes: string | null
+  tipo_atendimento: string | null
+  agente_registro_id?: string | null
+  ponto_atendimento_id?: string | null
+  vendas_certificados?: Array<{
+    protocolo_numero?: string | null
+    tipo_produto?: string | null
+    telefone_faturamento?: string | null
+    nome_faturamento?: string | null
+  }> | null
+  cadastros_base?: Array<{ nome?: string | null }> | null
+  pontos_atendimento?: Array<{ nome?: string | null }> | null
+}
+
+type FeatureNotice = {
+  title: string
+  description: string
+  nextStep?: string | null
+} | null
+
+type VendaFinanceiroModal = {
+  venda: VendaRow
+  lancamentos: LancamentoV2[]
+  documentos: DocumentoFinanceiro[]
+} | null
+
+type VendaNfseModal = {
+  venda: VendaRow
+  notas: NfseEmitida[]
+} | null
+
+type PaymentMethodId = 'safe2pay' | 'mercado_pago' | 'itau' | 'inter' | 'c6'
+type PaymentMethodConfig = {
+  id: PaymentMethodId
+  label: string
+  enabled: boolean
+  is_default: boolean
+}
+
+type LojaMarketplaceConfig = {
+  modo_exibicao?: 'vitrine' | 'link_direto'
+  item_fixo_id?: string | null
+}
+
+type PaymentRuntimeConfig = {
+  modo_teste_geral: boolean
+  bloquear_integracoes_reais: boolean
+  aviso_checkout: string
+}
+
+const VENDA_WA_BOLETO_TPL = [
+  'Olá, {{cliente}}.',
+  'Recebemos sua compra do produto {{produto}} no valor de {{valor}}.',
+  'Forma de pagamento: {{forma_pagamento}}.',
+  'Seu pedido está aguardando pagamento.',
+  'Vencimento: {{vencimento}}.',
+  '{{ambiente}}',
+].join('\n')
+
+const VENDA_EMAIL_BOLETO_SUBJECT = 'Seu pedido foi registrado e aguarda pagamento'
+const VENDA_EMAIL_BOLETO_TPL = [
+  'Olá, {{cliente}}.',
+  '',
+  'Recebemos sua compra do produto {{produto}} no valor de {{valor}}.',
+  'Forma de pagamento: {{forma_pagamento}}.',
+  'No momento, o pedido está aguardando pagamento.',
+  'Vencimento: {{vencimento}}.',
+  '',
+  '{{ambiente}}',
+].join('\n')
+
+const VENDA_WA_PAGAMENTO_IMEDIATO_TPL = [
+  'Olá, {{cliente}}.',
+  'Recebemos sua compra do produto {{produto}} no valor de {{valor}}.',
+  'Forma de pagamento: {{forma_pagamento}}.',
+  'Seu pedido foi registrado e o pagamento está em processamento/confirmação.',
+  '{{ambiente}}',
+].join('\n')
+
+const VENDA_EMAIL_PAGAMENTO_IMEDIATO_SUBJECT = 'Recebemos seu pedido'
+const VENDA_EMAIL_PAGAMENTO_IMEDIATO_TPL = [
+  'Olá, {{cliente}}.',
+  '',
+  'Recebemos sua compra do produto {{produto}} no valor de {{valor}}.',
+  'Forma de pagamento: {{forma_pagamento}}.',
+  'Seu pedido foi registrado e o pagamento está em processamento/confirmação.',
+  '',
+  '{{ambiente}}',
+].join('\n')
+
+type PricingMatrixRule = {
+  tabela_preco_id: string
+  tabela_base_id: string
+  ajuste_percentual: number
+}
+
+const DEFAULT_PAYMENT_RUNTIME: PaymentRuntimeConfig = {
+  modo_teste_geral: false,
+  bloquear_integracoes_reais: false,
+  aviso_checkout: 'Ambiente de testes ativo para homologacao comercial.',
+}
+
 // ── tab definition ─────────────────────────────────────────────
-type Tab = 'vendas' | 'agenda' | 'certificados' | 'tabelas' | 'comissoes' | 'pagamento' | 'importar'
+type Tab = 'vendas' | 'agenda' | 'marketplace' | 'certificados' | 'tabelas' | 'comissoes' | 'pagamento' | 'importar'
 
 const TABS: { id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }[] = [
   { id: 'vendas',       label: 'Lançar Vendas',    icon: TrendingUp  },
   { id: 'agenda',       label: 'Agenda',           icon: Calendar    },
+  { id: 'marketplace',  label: 'Marketplace',      icon: Store       },
+  { id: 'pagamento',    label: 'Pagamentos',       icon: CreditCard  },
   { id: 'certificados', label: 'Certificados',     icon: ShoppingBag },
   { id: 'tabelas',      label: 'Tabelas de Preço', icon: Tag         },
-  { id: 'comissoes',    label: 'Faixas Comissão',  icon: TrendingUp  },
-  { id: 'pagamento',    label: 'Forma Pagamento',  icon: CreditCard  },
-  { id: 'importar',     label: 'Importar Safeweb', icon: Upload      },
+  { id: 'comissoes',    label: 'Comissões',        icon: TrendingUp  },
+  { id: 'importar',     label: 'Importações',      icon: Upload      },
 ]
 
 const FALLBACK_CERTS = ['e-CPF A1', 'e-CPF A3', 'e-CNPJ A1', 'e-CNPJ A3', 'NF-e A1', 'SSL']
@@ -179,7 +380,7 @@ const EMPTY_VENDA_V2: LocalFormVenda = {
   tabela_preco_id: '',
   tabela_preco_item_id: '',
   certificado_id: '',
-  tipo_emissao: 'presencial',
+  tipo_emissao: '',
   forma_pagamento: '',
   valor_venda: 0,
   data_vencimento: '',
@@ -252,7 +453,44 @@ const EMPTY_COMISSAO: NovaFaixaComissao = {
   percentual: 0, valor_exemplo: null, ordem: 1, ativo: true,
 }
 
-const EMPTY_PAGAMENTO: NovaFormaPagamento = { nome: '', ordem: 1, ativo: true }
+const EMPTY_PAGAMENTO: PagamentoForm = { nome: '', codigo: '', gateway: '', ativo: true }
+const EMPTY_DISPONIBILIDADE: DisponibilidadeForm = {
+  agente_registro_id: '',
+  ponto_atendimento_id: '',
+  hora_inicio: '09:00',
+  hora_fim: '18:00',
+  intervalo_minutos: 30,
+  capacidade_por_slot: 1,
+  tipo_atendimento: 'presencial',
+  ativo: true,
+}
+const EMPTY_INDISPONIBILIDADE: IndisponibilidadeForm = {
+  agente_registro_id: '',
+  ponto_atendimento_id: '',
+  inicio_em: '',
+  fim_em: '',
+  motivo: '',
+  ativo: true,
+}
+const EMPTY_AGENTE_TABELA: AgenteTabelaForm = {
+  tabela_preco_id: '',
+  agente_registro_id: '',
+  ponto_atendimento_id: '',
+  ativo: true,
+}
+const EMPTY_LOJA_MARKETPLACE: LojaMarketplaceForm = {
+  nome_loja: '',
+  slug: '',
+  tabela_preco_id: '',
+  owner_tipo: 'institucional',
+  owner_profile_id: '',
+  owner_parceiro_id: '',
+  descricao: '',
+  dominio_publico: '',
+  modo_exibicao: 'vitrine',
+  item_fixo_id: '',
+  ativo: true,
+}
 
 type VendaFilters = {
   filtroData:   string
@@ -276,7 +514,28 @@ const EMPTY_VENDA_FILTERS: VendaFilters = {
   pa:           '',
 }
 
+const DIAS_SEMANA_OPTIONS = [
+  { value: 0, label: 'Dom' },
+  { value: 1, label: 'Seg' },
+  { value: 2, label: 'Ter' },
+  { value: 3, label: 'Qua' },
+  { value: 4, label: 'Qui' },
+  { value: 5, label: 'Sex' },
+  { value: 6, label: 'Sáb' },
+] as const
+
+const OWNER_LOJA_OPTIONS: { value: OwnerTipoLojaMarketplace; label: string }[] = [
+  { value: 'institucional', label: 'Institucional' },
+  { value: 'vendedor', label: 'Vendedor' },
+  { value: 'contador', label: 'Contador' },
+  { value: 'parceiro', label: 'Parceiro' },
+  { value: 'revendedor', label: 'Revendedor' },
+] 
+
 export default function Comercial() {
+  const { profile } = useAuth()
+  const isAdmin = isAdminProfile(profile)
+  const canManageAgenda = hasPerfil(profile, 'admin', 'agente_registro')
   const [tab, setTab] = useState<Tab>('vendas')
 
   // ── V2 vendas state ──────────────────────────────────────────
@@ -289,6 +548,7 @@ export default function Comercial() {
   const [showFormV, setShowFormV]       = useState(false)
   const [formV2, setFormV2]             = useState<LocalFormVenda>(EMPTY_VENDA_V2)
   const [contadorSearch, setContadorSearch] = useState('')
+  const [contadorStepHandled, setContadorStepHandled] = useState(false)
   const [showClienteForm, setShowClienteForm] = useState(false)
   const [editingClienteId, setEditingClienteId] = useState<string | null>(null)
   const [clienteSearch, setClienteSearch]     = useState('')
@@ -305,22 +565,48 @@ export default function Comercial() {
   const [paginaAtual, setPaginaAtual]           = useState(1)
 
   // ── agenda state ─────────────────────────────────────────────
-  const [agenda, setAgenda]             = useState<Agendamento[]>([])
+  const [agenda, setAgenda]             = useState<AgendaItem[]>([])
   const [loadingA, setLoadingA]         = useState(true)
   const [showFormA, setShowFormA]       = useState(false)
   const [formA, setFormA]               = useState<NovoAgendamento>(EMPTY_AGENDA)
   const [salvandoA, setSalvandoA]       = useState(false)
+  const [showAgendaV2Panel, setShowAgendaV2Panel] = useState(false)
+  const [formAgendaV2, setFormAgendaV2] = useState<AgendamentoV2Form | null>(null)
+  const [salvandoAgendaV2, setSalvandoAgendaV2] = useState(false)
+  const [agentesRegistro, setAgentesRegistro] = useState<Array<{ id: string; nome: string }>>([])
+  const [disponibilidades, setDisponibilidades] = useState<AgenteDisponibilidade[]>([])
+  const [indisponibilidades, setIndisponibilidades] = useState<AgenteIndisponibilidade[]>([])
+  const [showFormDisp, setShowFormDisp] = useState(false)
+  const [formDisp, setFormDisp] = useState<DisponibilidadeForm>(EMPTY_DISPONIBILIDADE)
+  const [diasSelecionadosDisp, setDiasSelecionadosDisp] = useState<number[]>([1])
+  const [filtroDataAgenda, setFiltroDataAgenda] = useState(() => new Date().toISOString().split('T')[0])
+  const [filtroStatusAgenda, setFiltroStatusAgenda] = useState('')
+  const [erroAgendaV2, setErroAgendaV2] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null)
+  const [showFormIndisp, setShowFormIndisp] = useState(false)
+  const [formIndisp, setFormIndisp] = useState<IndisponibilidadeForm>(EMPTY_INDISPONIBILIDADE)
+  const [salvandoDisp, setSalvandoDisp] = useState(false)
+  const [salvandoIndisp, setSalvandoIndisp] = useState(false)
 
   // ── catalog state ────────────────────────────────────────────
   const [certificados, setCertificados]       = useState<Certificado[]>([])
   const [tabelasPreco, setTabelasPreco]       = useState<TabelaPreco[]>([])
   const [tabelaItens, setTabelaItens]         = useState<TabelaPrecoItem[]>([])
   const [tabelaParticipantes, setTabelaParticipantes] = useState<TabelaPrecoParticipante[]>([])
+  const [agentesTabelaPreco, setAgentesTabelaPreco] = useState<AgenteTabelaPreco[]>([])
+  const [lojasMarketplace, setLojasMarketplace] = useState<LojaMarketplace[]>([])
+  const [parceirosAgentesPermitidos, setParceirosAgentesPermitidos] = useState<ParceiroAgentePermitido[]>([])
   const [parceiros, setParceiros]             = useState<ParceiroSimples[]>([])
+  const [marketplaceOwners, setMarketplaceOwners] = useState<Array<{ id: string; nome: string; perfil: PerfilAcesso }>>([])
   const [comissoes, setComissoes]             = useState<FaixaComissao[]>([])
-  const [pagamentos, setPagamentos]           = useState<FormaPagamento[]>([])
+  const [pagamentos, setPagamentos]           = useState<FormaPagamentoV2[]>([])
+  const [paymentMethods, setPaymentMethods]   = useState<PaymentMethodConfig[]>([])
+  const [paymentRuntime, setPaymentRuntime]   = useState<PaymentRuntimeConfig>(DEFAULT_PAYMENT_RUNTIME)
+  const [pricingMatrixRules, setPricingMatrixRules] = useState<PricingMatrixRule[]>([])
   const [loadingCatalogo, setLoadingCatalogo] = useState(true)
   const [catalogoErro, setCatalogoErro]       = useState<string | null>(null)
+  const [marketplaceSchemaWarning, setMarketplaceSchemaWarning] = useState<string | null>(null)
+  const [agendaSchemaWarning, setAgendaSchemaWarning] = useState<string | null>(null)
   const [salvandoCatalogo, setSalvandoCatalogo] = useState(false)
   // certificados form
   const [showFormCert, setShowFormCert]         = useState(false)
@@ -334,6 +620,8 @@ export default function Comercial() {
   const importItensRef                          = useRef<HTMLInputElement>(null)
   const importSafewebRef                        = useRef<HTMLInputElement>(null)
   const importClientesRef                       = useRef<HTMLInputElement>(null)
+  const tabelaProdutosSectionRef                = useRef<HTMLDivElement | null>(null)
+  const tabelaAgentesSectionRef                 = useRef<HTMLDivElement | null>(null)
   const [importandoSafeweb, setImportandoSafeweb] = useState(false)
   const [importandoClientes, setImportandoClientes] = useState(false)
   const [resultSafeweb, setResultSafeweb] = useState<{ clientes: number; novos: number; atualizados: number; divergentes: number } | null>(null)
@@ -351,13 +639,30 @@ export default function Comercial() {
   const [formItem, setFormItem]                     = useState<NovaTabelaPrecoItem>(EMPTY_ITEM)
   const [showFormParticipante, setShowFormParticipante] = useState(false)
   const [formParticipante, setFormParticipante]         = useState<NovaTabelaPrecoParticipante>(EMPTY_PARTICIPANTE)
+  const [showFormAgenteTabela, setShowFormAgenteTabela] = useState(false)
+  const [formAgenteTabela, setFormAgenteTabela]         = useState<AgenteTabelaForm>(EMPTY_AGENTE_TABELA)
+  const [showFormLoja, setShowFormLoja] = useState(false)
+  const [editingLojaId, setEditingLojaId] = useState<string | null>(null)
+  const [formLoja, setFormLoja] = useState<LojaMarketplaceForm>(EMPTY_LOJA_MARKETPLACE)
+  const [slotPreviewParceiroId, setSlotPreviewParceiroId] = useState<string>('')
+  const [pricingMatrixForm, setPricingMatrixForm] = useState<{ tabela_base_id: string; ajuste_percentual: number }>({
+    tabela_base_id: '',
+    ajuste_percentual: 0,
+  })
   // comissoes / pagamentos form
   const [showFormComissao, setShowFormComissao]   = useState(false)
   const [editingComissaoId, setEditingComissaoId] = useState<string | null>(null)
   const [formComissao, setFormComissao]           = useState<NovaFaixaComissao>(EMPTY_COMISSAO)
   const [showFormPagamento, setShowFormPagamento]   = useState(false)
   const [editingPagamentoId, setEditingPagamentoId] = useState<string | null>(null)
-  const [formPagamento, setFormPagamento]           = useState<NovaFormaPagamento>(EMPTY_PAGAMENTO)
+  const [formPagamento, setFormPagamento]           = useState<PagamentoForm>(EMPTY_PAGAMENTO)
+  const [selectedBaseCertIds, setSelectedBaseCertIds] = useState<Set<string>>(new Set())
+  const [showCatalogoBasePopup, setShowCatalogoBasePopup] = useState(false)
+  const [featureNotice, setFeatureNotice]           = useState<FeatureNotice>(null)
+  const [loadingVendaFinanceiro, setLoadingVendaFinanceiro] = useState(false)
+  const [vendaFinanceiroModal, setVendaFinanceiroModal]     = useState<VendaFinanceiroModal>(null)
+  const [loadingVendaNfse, setLoadingVendaNfse]             = useState(false)
+  const [vendaNfseModal, setVendaNfseModal]                 = useState<VendaNfseModal>(null)
   // protocolo modal
   const [showProtocolo, setShowProtocolo]         = useState(false)
   const [protocoloVenda, setProtocoloVenda]       = useState<VendaRow | null>(null)
@@ -369,25 +674,125 @@ export default function Comercial() {
   // ── derived ──────────────────────────────────────────────────
   const certificadosAtivos = useMemo(() => certificados.filter(c => c.ativo), [certificados])
   const pagamentosAtivos   = useMemo(() => pagamentos.filter(p => p.ativo), [pagamentos])
-  const formasPagamento    = pagamentosAtivos.length > 0 ? pagamentosAtivos.map(p => p.nome) : ['PIX', 'Cartão de Crédito', 'Dinheiro', 'Boleto']
+  const formasPagamento    = useMemo(() => {
+    const catalogo = pagamentosAtivos.map(p => p.nome)
+    const meiosHabilitados = paymentMethods.filter(p => p.enabled).map(p => p.label)
+    const fallback = ['PIX', 'Cartão de Crédito', 'Dinheiro', 'Boleto']
+    return Array.from(new Set((catalogo.length || meiosHabilitados.length) ? [...catalogo, ...meiosHabilitados] : fallback))
+  }, [pagamentosAtivos, paymentMethods])
   const certificadoById    = useMemo(() => new Map(certificados.map(c => [c.id, c])), [certificados])
   const tabelasAtivas      = useMemo(() => tabelasPreco.filter(t => t.ativo), [tabelasPreco])
   const pontosAtivos       = useMemo(() => pontos.filter(p => p.status === 'ativo'), [pontos])
   const tabelaById         = useMemo(() => new Map(tabelasPreco.map(t => [t.id, t])), [tabelasPreco])
+  const itensLojaSelecionada = useMemo(() => {
+    if (!formLoja.tabela_preco_id) return [] as TabelaPrecoItem[]
+    return tabelaItens.filter(item => item.tabela_preco_id === formLoja.tabela_preco_id)
+  }, [formLoja.tabela_preco_id, tabelaItens])
+  const opcoesItensLojaSelecionada = useMemo(() => (
+    itensLojaSelecionada.map(item => {
+      const cert = certificadoById.get(item.certificado_id)
+      const nome = cert?.tipo ?? 'Produto sem certificado'
+      const validade = cert?.validade ? ` · ${cert.validade}` : ''
+      const status = item.ativo ? '' : ' · inativo'
+      return { value: item.id, label: `${nome}${validade}${status}` }
+    })
+  ), [itensLojaSelecionada, certificadoById])
+  const vendaAgendaAtual = useMemo(
+    () => formAgendaV2 ? vendasV2.find(v => v.id === formAgendaV2.venda_certificado_id) ?? null : null,
+    [formAgendaV2, vendasV2]
+  )
+  const agentesElegiveisAgendaAtual = useMemo(() => {
+    if (!vendaAgendaAtual?.tabela_preco_id) return [] as AgenteTabelaPreco[]
+    return resolveAgentesElegiveisPorTabela({
+      tabelaPrecoId: vendaAgendaAtual.tabela_preco_id,
+      vinculados: agentesTabelaPreco.filter(item => item.ativo),
+      parceiroId: vendaAgendaAtual.contador_id ?? null,
+      parceirosAgentesPermitidos,
+    })
+  }, [vendaAgendaAtual, agentesTabelaPreco, parceirosAgentesPermitidos])
+  const pontosElegiveisAgendaAtual = useMemo(() => {
+    const pontoIds = new Set(
+      agentesElegiveisAgendaAtual
+        .filter(item => item.agente_registro_id === formAgendaV2?.agente_registro_id)
+        .map(item => item.ponto_atendimento_id)
+        .filter((id): id is string => !!id)
+    )
 
-  // itens da tabela selecionada no form de venda
-  const itensTabela = useMemo(() =>
-    tabelaItens.filter(i => i.tabela_preco_id === formV2.tabela_preco_id && i.ativo),
-    [tabelaItens, formV2.tabela_preco_id]
+    if (pontoIds.size === 0) {
+      return pontosAtivos
+    }
+
+    return pontosAtivos.filter(p => pontoIds.has(p.id))
+  }, [agentesElegiveisAgendaAtual, formAgendaV2?.agente_registro_id, pontosAtivos])
+  const pricingRuleByTabelaId = useMemo(
+    () => new Map(pricingMatrixRules.map(rule => [rule.tabela_preco_id, rule])),
+    [pricingMatrixRules]
   )
 
-  // certificados disponíveis na tabela selecionada
-  const certsDaTabela = useMemo(() =>
+  // itens da tabela selecionada no form de venda
+  const itensTabelaTodos = useMemo(() =>
+    tabelaItens.filter(i => i.tabela_preco_id === formV2.tabela_preco_id),
+    [tabelaItens, formV2.tabela_preco_id]
+  )
+  const itensTabela = useMemo(() =>
+    itensTabelaTodos.filter(i => i.ativo),
+    [itensTabelaTodos]
+  )
+
+  const certsDaTabelaBruta = useMemo(() =>
     itensTabela.map(item => {
       const cert = certificadoById.get(item.certificado_id)
       return cert ? { item, cert } : null
     }).filter(Boolean) as { item: TabelaPrecoItem; cert: Certificado }[],
     [itensTabela, certificadoById]
+  )
+  const certsDaTabela = useMemo(() => {
+    const tipoEmissaoSelecionado = normalizeTipoEmissao(formV2.tipo_emissao)
+    return certsDaTabelaBruta.filter(({ cert }) => {
+      const tipoPadrao = normalizeTipoEmissao(cert.tipo_emissao_padrao)
+      if (!tipoEmissaoSelecionado) return true
+      if (!tipoPadrao) return true
+      return tipoPadrao === tipoEmissaoSelecionado
+    })
+  }, [certsDaTabelaBruta, formV2.tipo_emissao])
+  const motivoSemCertificados = useMemo(() => {
+    if (!formV2.tabela_preco_id) return 'Selecione primeiro uma tabela de venda.'
+    if (itensTabelaTodos.length === 0) return 'Esta tabela ainda não possui produtos vinculados em Produtos e Preços.'
+    if (itensTabela.length === 0) return 'Esta tabela possui produtos vinculados, mas todos estão inativos.'
+    if (certsDaTabela.length === 0) return `Nenhum certificado desta tabela está compatível com o tipo de emissão "${capitalize(formV2.tipo_emissao)}".`
+    return null
+  }, [formV2.tabela_preco_id, formV2.tipo_emissao, itensTabelaTodos.length, itensTabela.length, certsDaTabela.length])
+  const vendaStepStatus = useMemo(() => {
+    const clienteOk = !!formV2.cadastro_base_id
+    const contadorOk = clienteOk && (contadorStepHandled || !!formV2.contador_id)
+    const tabelaOk = contadorOk && !!formV2.tabela_preco_id
+    const emissaoOk = tabelaOk && !!formV2.tipo_emissao
+    const certificadoOk = emissaoOk && !!formV2.certificado_id && !!formV2.tabela_preco_item_id
+    const pagamentoOk = certificadoOk && !!formV2.forma_pagamento && formV2.valor_venda > 0
+    const vencimentoOk = pagamentoOk && !!formV2.data_vencimento
+    const pontoOk = vencimentoOk && !!formV2.ponto_atendimento_id
+    return { clienteOk, contadorOk, tabelaOk, emissaoOk, certificadoOk, pagamentoOk, vencimentoOk, pontoOk }
+  }, [contadorStepHandled, formV2.cadastro_base_id, formV2.contador_id, formV2.tabela_preco_id, formV2.tipo_emissao, formV2.certificado_id, formV2.tabela_preco_item_id, formV2.forma_pagamento, formV2.valor_venda, formV2.data_vencimento, formV2.ponto_atendimento_id])
+  const vendaSteps = useMemo(() => {
+    const steps = [
+      { key: 'cliente', label: '1. Cliente', done: vendaStepStatus.clienteOk, helper: 'Selecione o cliente' },
+      { key: 'contador', label: '2. Contador/Parceiro', done: vendaStepStatus.contadorOk, helper: 'Informe a indicação ou siga sem ela' },
+      { key: 'tabela', label: '3. Tabela de vendas', done: vendaStepStatus.tabelaOk, helper: 'Escolha a tabela de venda' },
+      { key: 'emissao', label: '4. Tipo de emissão', done: vendaStepStatus.emissaoOk, helper: 'Defina como será a emissão' },
+      { key: 'certificado', label: '5. Certificado', done: vendaStepStatus.certificadoOk, helper: 'Escolha o produto compatível' },
+      { key: 'pagamento', label: '6. Forma de pagamento', done: vendaStepStatus.pagamentoOk, helper: 'Defina valor e pagamento' },
+      { key: 'vencimento', label: '7. Vencimento', done: vendaStepStatus.vencimentoOk, helper: 'Escolha a data de vencimento' },
+      { key: 'ponto', label: '8. Ponto de atendimento', done: vendaStepStatus.pontoOk, helper: 'Defina onde será a validação' },
+    ] as const
+    const currentStepIndex = steps.findIndex(step => !step.done)
+    return {
+      steps,
+      currentStepIndex: currentStepIndex === -1 ? steps.length - 1 : currentStepIndex,
+    }
+  }, [vendaStepStatus])
+  const itemSelecionadoMarketplace = useMemo(
+    () => formV2.tabela_preco_item_id ? tabelaItens.find(item => item.id === formV2.tabela_preco_item_id) ?? null : null,
+    [formV2.tabela_preco_item_id, tabelaItens]
   )
 
   // parceiros filtrados para busca de contador
@@ -400,12 +805,160 @@ export default function Comercial() {
     ).slice(0, 10)
   }, [parceiros, contadorSearch])
 
+  function showMsg(msg: string, type: 'ok' | 'err' = 'err') {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 4000)
+  }
+
   function validadeEmMeses(val: string): number | null {
     const anos = val.match(/(\d+)\s*[Aa]no/)
     if (anos) return parseInt(anos[1]) * 12
     const meses = val.match(/(\d+)\s*[Mm](?:ês|es)?/)
     if (meses) return parseInt(meses[1])
     return null
+  }
+
+  function normalizeTipoEmissao(value: string | null | undefined) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+
+    if (!normalized) return ''
+    if (
+      ['video_conferencia', 'videoconferencia', 'videochamada', 'video_chamada'].includes(normalized)
+      || normalized.includes('videoconferencia')
+      || normalized.includes('video_conferencia')
+      || normalized.includes('video')
+    ) {
+      return 'videoconferencia'
+    }
+    if (
+      ['auto_atendimento', 'autoatendimento', 'auto_atend', 'autoatend'].includes(normalized)
+      || normalized.includes('auto_atendimento')
+      || normalized.includes('autoatendimento')
+    ) {
+      return 'auto_atendimento'
+    }
+    if (
+      ['presencial', 'presenca'].includes(normalized)
+      || normalized.includes('presencial')
+    ) {
+      return 'presencial'
+    }
+    if (
+      ['online', 'on_line', 'remoto'].includes(normalized)
+      || normalized.includes('online')
+      || normalized.includes('remoto')
+    ) {
+      return 'online'
+    }
+
+    return normalized
+  }
+
+  function resolveFormaPagamentoSelection(nomeForma: string) {
+    const nomeNormalizado = nomeForma.trim().toLowerCase()
+    if (!nomeNormalizado) {
+      return {
+        formaPagamentoId: null as string | null,
+        paymentMethod: null as PaymentMethodConfig | null,
+      }
+    }
+
+    const formaCatalogo = pagamentosAtivos.find(item => item.nome.trim().toLowerCase() === nomeNormalizado) ?? null
+    const paymentMethod = paymentMethods.find(item => item.label.trim().toLowerCase() === nomeNormalizado) ?? null
+
+    return {
+      formaPagamentoId: formaCatalogo?.id ?? null,
+      paymentMethod,
+    }
+  }
+
+  function classifyPaymentFlow(formaPagamento: string) {
+    const normalized = String(formaPagamento ?? '')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+
+    if (normalized.includes('boleto')) return 'boleto'
+    if (normalized.includes('pix')) return 'pix'
+    if (normalized.includes('cartao') || normalized.includes('credito') || normalized.includes('debito')) return 'cartao'
+    return 'outro'
+  }
+
+  async function dispararComunicacaoAutomaticaVenda(input: {
+    vendaId: string
+    clienteNome: string | null
+    produtoNome: string
+    valorVenda: number
+    formaPagamento: string
+    vencimento: string | null
+    telefone: string | null
+    email: string | null
+  }) {
+    const paymentFlow = classifyPaymentFlow(input.formaPagamento)
+    const ambiente = paymentRuntime.modo_teste_geral
+      ? 'Ambiente de testes ativo. Esta comunicação se refere a uma operação de homologação.'
+      : 'Em breve você receberá as próximas atualizações do pedido.'
+    const values = {
+      cliente: input.clienteNome ?? 'Cliente',
+      produto: input.produtoNome || 'Produto',
+      valor: formatCurrency(input.valorVenda ?? 0),
+      forma_pagamento: input.formaPagamento || 'Não informada',
+      vencimento: input.vencimento ? new Date(`${input.vencimento}T00:00:00`).toLocaleDateString('pt-BR') : 'Não informado',
+      ambiente,
+    }
+
+    const isBoleto = paymentFlow === 'boleto'
+    const waBody = renderTemplate(
+      isBoleto ? VENDA_WA_BOLETO_TPL : VENDA_WA_PAGAMENTO_IMEDIATO_TPL,
+      values
+    )
+    const emailSubject = renderTemplate(
+      isBoleto ? VENDA_EMAIL_BOLETO_SUBJECT : VENDA_EMAIL_PAGAMENTO_IMEDIATO_SUBJECT,
+      values
+    )
+    const emailBody = renderTemplate(
+      isBoleto ? VENDA_EMAIL_BOLETO_TPL : VENDA_EMAIL_PAGAMENTO_IMEDIATO_TPL,
+      values
+    )
+
+    const ops: Promise<{ error: string | null }>[] = []
+    if (input.telefone?.trim()) {
+      ops.push(queueWhatsAppMessage({
+        to: input.telefone.trim(),
+        body: waBody,
+        payload: {
+          venda_id: input.vendaId,
+          tipo: 'venda_pos_compra',
+          payment_flow: paymentFlow,
+        },
+      }))
+    }
+    if (input.email?.trim()) {
+      ops.push(queueEmailMessage({
+        to: input.email.trim(),
+        subject: emailSubject,
+        body: emailBody,
+        payload: {
+          venda_id: input.vendaId,
+          tipo: 'venda_pos_compra',
+          payment_flow: paymentFlow,
+        },
+      }))
+    }
+
+    if (!ops.length) return { sent: 0, failed: 0 }
+    const results = await Promise.all(ops)
+    return {
+      sent: results.filter(item => !item.error).length,
+      failed: results.filter(item => !!item.error).length,
+    }
   }
 
   const vendasFiltradas = useMemo(() => {
@@ -473,6 +1026,17 @@ export default function Comercial() {
     setPontos((data ?? []) as PontoAtendimento[])
   }, [])
 
+  const fetchAgentesRegistro = useCallback(async () => {
+    const { data } = await supabase
+      .from('profiles')
+      .select('id, nome, perfil, status')
+      .eq('perfil', 'agente_registro')
+      .eq('status', 'ativo')
+      .order('nome', { ascending: true })
+
+    setAgentesRegistro(((data ?? []) as Array<{ id: string; nome: string }>))
+  }, [])
+
   async function buscarClientes(term: string) {
     const t = term.trim()
     if (t.length < 3) { setClienteResultados([]); setClienteDropdownOpen(false); return }
@@ -491,38 +1055,173 @@ export default function Comercial() {
 
   const fetchAgenda = useCallback(async () => {
     setLoadingA(true)
-    const hoje = new Date().toISOString().split('T')[0]
-    const { data } = await supabase
-      .from('agendamentos')
-      .select('*')
-      .gte('data_hora', hoje)
-      .order('data_hora', { ascending: true })
-      .limit(50)
-    setAgenda((data ?? []) as Agendamento[])
+    const dataBase = filtroDataAgenda || new Date().toISOString().split('T')[0]
+    const isAgente = profile?.perfil === 'agente_registro'
+    const agenteId = isAgente ? profile?.id ?? null : null
+    const agendaLegadaPromise = isAgente
+      ? Promise.resolve({ data: [], error: null } as { data: Agendamento[]; error: null })
+      : supabase
+          .from('agendamentos')
+          .select('*')
+          .gte('data_hora', dataBase)
+          .order('data_hora', { ascending: true })
+          .limit(100)
+
+    let agendaV2Query = supabase
+      .from('agendamentos_validacao')
+      .select('id, created_at, data_agendada, status_agendamento, observacoes, tipo_atendimento, venda_certificado_id, ponto_atendimento_id, agente_registro_id, vendas_certificados(protocolo_numero, tipo_produto, telefone_faturamento, nome_faturamento), cadastros_base(nome), pontos_atendimento(nome)')
+      .or(`data_agendada.gte.${dataBase},data_agendada.is.null`)
+      .order('data_agendada', { ascending: true })
+      .limit(100)
+
+    if (agenteId) agendaV2Query = agendaV2Query.eq('agente_registro_id', agenteId)
+    if (filtroStatusAgenda) {
+      const statusV2 = filtroStatusAgenda === 'aguardando' ? 'pendente' : filtroStatusAgenda
+      agendaV2Query = agendaV2Query.eq('status_agendamento', statusV2)
+    }
+
+    const [
+      { data: agendaLegada },
+      { data: agendaV2 },
+    ] = await Promise.all([
+      agendaLegadaPromise,
+      agendaV2Query,
+    ])
+
+    const agendaNormalizada: AgendaItem[] = [
+      ...((agendaLegada ?? []) as Agendamento[]).map(item => ({
+        id: item.id,
+        origem: 'agenda_legada' as const,
+        venda_certificado_id: null,
+        cliente: item.cliente,
+        telefone: item.telefone,
+        servico: item.servico,
+        data_hora: item.data_hora,
+        status: item.status,
+        observacoes: item.observacoes,
+        ponto_atendimento_nome: null,
+        ponto_atendimento_id: null,
+        tipo_atendimento: null,
+        protocolo_numero: null,
+        agente_registro_id: null,
+      })),
+      ...((agendaV2 ?? []) as unknown as AgendamentoValidacaoRow[]).map(item => {
+        const venda = item.vendas_certificados?.[0] ?? null
+        const cadastro = item.cadastros_base?.[0] ?? null
+        const ponto = item.pontos_atendimento?.[0] ?? null
+        return {
+        id: item.id,
+        origem: 'validacao_v2' as const,
+        venda_certificado_id: item.venda_certificado_id ?? null,
+        cliente: cadastro?.nome ?? venda?.nome_faturamento ?? 'Cliente não identificado',
+        telefone: venda?.telefone_faturamento ?? null,
+        servico: venda?.tipo_produto ?? 'Validação',
+        data_hora: item.data_agendada ?? item.created_at ?? new Date().toISOString(),
+        status: (item.status_agendamento === 'pendente' ? 'aguardando' : item.status_agendamento) as AgendaItem['status'],
+        observacoes: item.observacoes,
+        ponto_atendimento_nome: ponto?.nome ?? null,
+        ponto_atendimento_id: item.ponto_atendimento_id ?? null,
+        tipo_atendimento: item.tipo_atendimento ?? null,
+        protocolo_numero: venda?.protocolo_numero ?? null,
+        agente_registro_id: item.agente_registro_id ?? null,
+      }}),
+    ].sort((a, b) => new Date(a.data_hora).getTime() - new Date(b.data_hora).getTime())
+
+    setAgenda(agendaNormalizada)
     setLoadingA(false)
-  }, [])
+  }, [profile?.id, profile?.perfil, filtroDataAgenda, filtroStatusAgenda])
+
+  const fetchDisponibilidades = useCallback(async () => {
+    if (!canManageAgenda) return
+
+    let query = supabase
+      .from('agentes_disponibilidade')
+      .select('*')
+      .order('dia_semana', { ascending: true })
+      .order('hora_inicio', { ascending: true })
+
+    if (!isAdmin && profile?.id) query = query.eq('agente_registro_id', profile.id)
+
+    const { data } = await query
+    setDisponibilidades((data ?? []) as AgenteDisponibilidade[])
+  }, [canManageAgenda, isAdmin, profile?.id])
+
+  const fetchIndisponibilidades = useCallback(async () => {
+    if (!canManageAgenda) return
+
+    let query = supabase
+      .from('agentes_indisponibilidades')
+      .select('*')
+      .eq('ativo', true)
+      .order('inicio_em', { ascending: true })
+      .limit(100)
+
+    if (!isAdmin && profile?.id) query = query.eq('agente_registro_id', profile.id)
+
+    const { data } = await query
+    setIndisponibilidades((data ?? []) as AgenteIndisponibilidade[])
+  }, [canManageAgenda, isAdmin, profile?.id])
 
   const fetchCatalogo = useCallback(async () => {
     setLoadingCatalogo(true)
     setCatalogoErro(null)
-    const [certsRes, tabelasRes, itensRes, partRes, comissoesRes, pagamentosRes, parcRes] = await Promise.all([
+    setMarketplaceSchemaWarning(null)
+    setAgendaSchemaWarning(null)
+    const [certsRes, tabelasRes, itensRes, partRes, agentesTabelaRes, lojasRes, parceirosAgentesRes, comissoesRes, pagamentosRes, parcRes, ownersRes, paymentMethodsRes, paymentRuntimeRes, pricingMatrixRes] = await Promise.all([
       supabase.from('certificados').select('*').order('tipo', { ascending: true }),
       supabase.from('tabelas_preco').select('*').order('nome', { ascending: true }),
       supabase.from('tabelas_preco_itens').select('*').order('created_at', { ascending: true }),
       supabase.from('tabelas_preco_participantes').select('*'),
+      supabase.from('agentes_tabelas_preco').select('*').order('created_at', { ascending: true }),
+      supabase.from('lojas_marketplace').select('*').order('created_at', { ascending: true }),
+      supabase.from('parceiros_agentes_permitidos').select('*').order('created_at', { ascending: true }),
       supabase.from('faixas_comissao').select('*').order('ordem', { ascending: true }),
-      supabase.from('formas_pagamento').select('*').order('ordem', { ascending: true }),
+      supabase.from('formas_pagamento_v2').select('*').order('nome', { ascending: true }),
       supabase.from('parceiros').select('id, cpf_cnpj, nome, nome_fantasia, tipo_parceiro').eq('status', 'ativo').order('nome'),
+      supabase.from('profiles').select('id, nome, perfil').in('perfil', ['admin', 'vendedor']).eq('status', 'ativo').order('nome'),
+      supabase.from('app_settings').select('value').eq('key', 'payment_methods').maybeSingle(),
+      supabase.from('app_settings').select('value').eq('key', 'payment_runtime').maybeSingle(),
+      supabase.from('app_settings').select('value').eq('key', 'pricing_matrix_rules').maybeSingle(),
     ])
-    const error = certsRes.error ?? tabelasRes.error ?? comissoesRes.error ?? pagamentosRes.error
+    const lojasMarketplaceAusente = !!lojasRes.error?.message?.includes("public.lojas_marketplace")
+    const parceirosAgentesAusente = !!parceirosAgentesRes.error?.message?.includes("public.parceiros_agentes_permitidos")
+    const error = certsRes.error ?? tabelasRes.error ?? comissoesRes.error ?? pagamentosRes.error ?? ownersRes.error
     if (error) { setCatalogoErro(error.message); setLoadingCatalogo(false); return }
     setCertificados((certsRes.data ?? []) as Certificado[])
     setTabelasPreco((tabelasRes.data ?? []) as TabelaPreco[])
     setTabelaItens((itensRes.data ?? []) as TabelaPrecoItem[])
     setTabelaParticipantes((partRes.data ?? []) as TabelaPrecoParticipante[])
+    setAgentesTabelaPreco((agentesTabelaRes.data ?? []) as AgenteTabelaPreco[])
+    setLojasMarketplace(lojasMarketplaceAusente ? [] : ((lojasRes.data ?? []) as LojaMarketplace[]))
+    setParceirosAgentesPermitidos(parceirosAgentesAusente ? [] : ((parceirosAgentesRes.data ?? []) as ParceiroAgentePermitido[]))
     setComissoes((comissoesRes.data ?? []) as FaixaComissao[])
-    setPagamentos((pagamentosRes.data ?? []) as FormaPagamento[])
+    setPagamentos((pagamentosRes.data ?? []) as FormaPagamentoV2[])
     setParceiros((parcRes.data ?? []) as ParceiroSimples[])
+    setMarketplaceOwners((ownersRes.data ?? []) as Array<{ id: string; nome: string; perfil: PerfilAcesso }>)
+    const savedMethods = Array.isArray(paymentMethodsRes.data?.value?.methods)
+      ? (paymentMethodsRes.data?.value.methods as PaymentMethodConfig[])
+      : []
+    setPaymentMethods(savedMethods)
+    const runtimeValue = paymentRuntimeRes.data?.value
+    setPaymentRuntime({
+      modo_teste_geral: runtimeValue?.modo_teste_geral ?? DEFAULT_PAYMENT_RUNTIME.modo_teste_geral,
+      bloquear_integracoes_reais: runtimeValue?.bloquear_integracoes_reais ?? DEFAULT_PAYMENT_RUNTIME.bloquear_integracoes_reais,
+      aviso_checkout: runtimeValue?.aviso_checkout ?? DEFAULT_PAYMENT_RUNTIME.aviso_checkout,
+    })
+    const savedPricingRules = Array.isArray(pricingMatrixRes.data?.value?.rules)
+      ? (pricingMatrixRes.data?.value.rules as PricingMatrixRule[])
+      : []
+    setPricingMatrixRules(savedPricingRules)
+    if (lojasMarketplaceAusente) {
+      setMarketplaceSchemaWarning('A tabela de lojas do marketplace ainda nao existe no Supabase. O restante do comercial segue liberado para testes.')
+    } else if (lojasRes.error) {
+      setMarketplaceSchemaWarning(lojasRes.error.message)
+    }
+    if (parceirosAgentesAusente) {
+      setAgendaSchemaWarning('A tabela parceiros_agentes_permitidos ainda nao existe no Supabase. Regras avancadas de agenda por parceiro ficam desativadas ate aplicar o SQL da agenda online V2.')
+    } else if (parceirosAgentesRes.error) {
+      setAgendaSchemaWarning(parceirosAgentesRes.error.message)
+    }
     setLoadingCatalogo(false)
   }, [])
 
@@ -530,7 +1229,10 @@ export default function Comercial() {
   useEffect(() => { void fetchVendasV2() }, [fetchVendasV2])
   useEffect(() => { void fetchClientes()  }, [fetchClientes])
   useEffect(() => { void fetchPontos()    }, [fetchPontos])
+  useEffect(() => { void fetchAgentesRegistro() }, [fetchAgentesRegistro])
   useEffect(() => { void fetchAgenda()    }, [fetchAgenda])
+  useEffect(() => { void fetchDisponibilidades() }, [fetchDisponibilidades])
+  useEffect(() => { void fetchIndisponibilidades() }, [fetchIndisponibilidades])
   useEffect(() => { void fetchCatalogo()  }, [fetchCatalogo])
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setCurrentUserId(data.user?.id ?? null))
@@ -542,6 +1244,95 @@ export default function Comercial() {
     }
   }, [pontosAtivos, formV2.ponto_atendimento_id])
 
+  useEffect(() => {
+    if (!formV2.certificado_id) return
+    const certificadoAindaCompativel = certsDaTabela.some(({ cert }) => cert.id === formV2.certificado_id)
+    if (!certificadoAindaCompativel) {
+      setFormV2(prev => ({ ...prev, certificado_id: '', tabela_preco_item_id: '', valor_venda: 0 }))
+    }
+  }, [formV2.certificado_id, certsDaTabela])
+
+  useEffect(() => {
+    if (!showFormLoja) return
+    const itemValido = !formLoja.item_fixo_id || itensLojaSelecionada.some(item => item.id === formLoja.item_fixo_id)
+    if (formLoja.modo_exibicao !== 'link_direto' && formLoja.item_fixo_id) {
+      setFormLoja(prev => ({ ...prev, item_fixo_id: '' }))
+      return
+    }
+    if (!itemValido) {
+      setFormLoja(prev => ({ ...prev, item_fixo_id: '' }))
+    }
+  }, [showFormLoja, formLoja.modo_exibicao, formLoja.item_fixo_id, itensLojaSelecionada])
+
+  useEffect(() => {
+    if (canManageAgenda) {
+      setFormDisp(prev => ({
+        ...prev,
+        agente_registro_id: prev.agente_registro_id || (isAdmin ? '' : (profile?.id ?? '')),
+        ponto_atendimento_id: prev.ponto_atendimento_id || (pontosAtivos[0]?.id ?? ''),
+      }))
+      setFormIndisp(prev => ({
+        ...prev,
+        agente_registro_id: prev.agente_registro_id || (isAdmin ? '' : (profile?.id ?? '')),
+      }))
+    }
+  }, [canManageAgenda, isAdmin, profile?.id, pontosAtivos])
+
+  useEffect(() => {
+    if (!showFormDisp) return
+    setDiasSelecionadosDisp(prev => prev.length > 0 ? prev : [1])
+  }, [showFormDisp])
+
+  useEffect(() => {
+    if (!showFormIndisp) return
+    const now = new Date()
+    const plusOneHour = new Date(now.getTime() + 60 * 60 * 1000)
+    const toLocalInput = (value: Date) => {
+      const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000)
+      return local.toISOString().slice(0, 16)
+    }
+    setFormIndisp(prev => ({
+      ...prev,
+      agente_registro_id: prev.agente_registro_id || (isAdmin ? '' : (profile?.id ?? '')),
+      inicio_em: prev.inicio_em || toLocalInput(now),
+      fim_em: prev.fim_em || toLocalInput(plusOneHour),
+    }))
+  }, [showFormIndisp, isAdmin, profile?.id])
+
+  useEffect(() => {
+    setSlotPreviewParceiroId('')
+  }, [selectedTabelaId])
+
+  useEffect(() => {
+    setSelectedBaseCertIds(new Set())
+    setShowCatalogoBasePopup(false)
+  }, [selectedTabelaId])
+
+  useEffect(() => {
+    if (!selectedTabelaId) {
+      setPricingMatrixForm({ tabela_base_id: '', ajuste_percentual: 0 })
+      return
+    }
+    const currentRule = pricingRuleByTabelaId.get(selectedTabelaId)
+    setPricingMatrixForm({
+      tabela_base_id: currentRule?.tabela_base_id ?? '',
+      ajuste_percentual: currentRule?.ajuste_percentual ?? 0,
+    })
+  }, [selectedTabelaId, pricingRuleByTabelaId])
+
+  useEffect(() => {
+    if (!formAgendaV2) return
+    const agenteValido = agentesElegiveisAgendaAtual.some(item => item.agente_registro_id === formAgendaV2.agente_registro_id)
+    if (!agenteValido && formAgendaV2.agente_registro_id) {
+      setFormAgendaV2(prev => prev ? { ...prev, agente_registro_id: '', ponto_atendimento_id: '' } : prev)
+      return
+    }
+
+    if (formAgendaV2.ponto_atendimento_id && !pontosElegiveisAgendaAtual.some(p => p.id === formAgendaV2.ponto_atendimento_id)) {
+      setFormAgendaV2(prev => prev ? { ...prev, ponto_atendimento_id: '' } : prev)
+    }
+  }, [formAgendaV2, agentesElegiveisAgendaAtual, pontosElegiveisAgendaAtual])
+
   // pre-fill protocolo CPF when client changes
   useEffect(() => {
     if (clienteSelecionadoObj) {
@@ -551,16 +1342,23 @@ export default function Comercial() {
 
   // ── V2 mutations ─────────────────────────────────────────────
   async function salvarVendaV2() {
-    if (!formV2.cadastro_base_id) { alert('Selecione um cliente.'); return }
-    if (!formV2.tabela_preco_id) { alert('Selecione uma tabela de venda.'); return }
-    if (!formV2.certificado_id) { alert('Selecione o certificado.'); return }
-    if (formV2.valor_venda <= 0) { alert('Informe o valor da venda.'); return }
-    if (!currentUserId) { alert('Usuário não autenticado.'); return }
+    if (!formV2.cadastro_base_id) { showMsg('Selecione um cliente.'); return }
+    if (!vendaStepStatus.contadorOk) { showMsg('Confirme a etapa de contador/parceiro antes de seguir.'); return }
+    if (!formV2.tabela_preco_id) { showMsg('Selecione uma tabela de venda.'); return }
+    if (!formV2.tipo_emissao) { showMsg('Selecione o tipo de emissão.'); return }
+    if (!formV2.certificado_id) { showMsg('Selecione o certificado.'); return }
+    if (formV2.valor_venda <= 0) { showMsg('Informe o valor da venda.'); return }
+    if (!formV2.forma_pagamento) { showMsg('Selecione a forma de pagamento.'); return }
+    if (!formV2.data_vencimento) { showMsg('Selecione o vencimento da forma de pagamento.'); return }
+    if (!formV2.ponto_atendimento_id && !pontosAtivos[0]?.id) { showMsg('Cadastre e selecione um ponto de atendimento antes de lançar a venda.'); return }
+    if (!currentUserId) { showMsg('Usuário não autenticado.'); return }
     setSalvandoV(true)
 
     const cli = clienteSelecionadoObj
     const cert = certificadoById.get(formV2.certificado_id)
     const tabela = tabelaById.get(formV2.tabela_preco_id)
+    const pagamentoSelecionado = resolveFormaPagamentoSelection(formV2.forma_pagamento)
+    const pontoAtendimentoId = formV2.ponto_atendimento_id || pontosAtivos[0]?.id || ''
 
     const payload = {
       cadastro_base_id:        formV2.cadastro_base_id,
@@ -573,7 +1371,7 @@ export default function Comercial() {
       tipo_venda:              formV2.tipo_venda,
       tipo_emissao:            formV2.tipo_emissao,
       tabela_preco:            tabela?.nome ?? null,
-      forma_pagamento_id:      null,
+      forma_pagamento_id:      pagamentoSelecionado.formaPagamentoId,
       valor_venda:             formV2.valor_venda,
       valor_custo:             null,
       pago:                    false,
@@ -596,7 +1394,7 @@ export default function Comercial() {
       iss_retido:              cli?.iss_retido ?? false,
       vendedor_id:             currentUserId,
       agente_registro_id:      null,
-      ponto_atendimento_id:    (formV2.ponto_atendimento_id || pontosAtivos[0]?.id) ?? '',
+      ponto_atendimento_id:    pontoAtendimentoId,
       pedido_numero:           null,
       pedido_status:           'nao_gerado',
       protocolo_numero:        null,
@@ -610,17 +1408,82 @@ export default function Comercial() {
       comissao_agente_valor:   null,
       status_venda:            'vendido' as const,
       observacoes:             formV2.observacoes,
-      metadata:                { forma_pagamento: formV2.forma_pagamento },
+      metadata:                {
+        forma_pagamento: formV2.forma_pagamento,
+        payment_method_id: pagamentoSelecionado.paymentMethod?.id ?? null,
+        payment_method_label: pagamentoSelecionado.paymentMethod?.label ?? null,
+        payment_runtime: paymentRuntime,
+        ambiente_teste: paymentRuntime.modo_teste_geral,
+      },
     }
 
-    const { error } = await supabase.from('vendas_certificados').insert([payload])
+    const { data: vendaCriada, error } = await supabase
+      .from('vendas_certificados')
+      .insert([payload])
+      .select('*')
+      .single()
     setSalvandoV(false)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
+
+    let comunicacaoResumo = 'sem contato do cliente para disparo automático'
+    if (vendaCriada) {
+      const pontoSelecionado = pontos.find(item => item.id === pontoAtendimentoId) ?? null
+      const vendaParaLista: VendaRow = {
+        ...(vendaCriada as VendaCertificado),
+        cadastros_base: cli ? { nome: cli.nome, cpf_cnpj: cli.cpf_cnpj } : null,
+        pontos_atendimento: pontoSelecionado ? { nome: pontoSelecionado.nome } : null,
+      }
+      setVendasV2(prev => [vendaParaLista, ...prev.filter(item => item.id !== vendaParaLista.id)])
+      setPaginaAtual(1)
+
+      const comunicacaoResult = await dispararComunicacaoAutomaticaVenda({
+        vendaId: vendaCriada.id,
+        clienteNome: cli?.nome ?? vendaCriada.nome_faturamento ?? null,
+        produtoNome: cert?.tipo ?? vendaCriada.tipo_produto ?? 'Produto',
+        valorVenda: formV2.valor_venda,
+        formaPagamento: formV2.forma_pagamento,
+        vencimento: formV2.data_vencimento || null,
+        telefone: cli?.telefone ?? vendaCriada.telefone_faturamento ?? null,
+        email: cli?.email ?? vendaCriada.email_faturamento ?? null,
+      })
+      comunicacaoResumo = comunicacaoResult.sent > 0
+        ? `${comunicacaoResult.sent} comunicação(ões) enfileirada(s)`
+        : 'sem contato do cliente para disparo automático'
+
+      const agendamentoPayload = {
+        venda_certificado_id: vendaCriada.id,
+        cadastro_base_id: vendaCriada.cadastro_base_id,
+        empresa_id: vendaCriada.empresa_id,
+        titular_id: vendaCriada.titular_id,
+        contador_id: vendaCriada.contador_id,
+        agente_registro_id: null,
+        ponto_atendimento_id: null,
+        data_agendada: null,
+        tipo_atendimento: null,
+        status_agendamento: 'pendente' as const,
+        observacoes: vendaCriada.observacoes ?? null,
+        metadata: {
+          origem: 'venda_comercial',
+          status_inicial: 'aguardando_agendamento',
+        },
+      }
+
+      const { error: agendaErr } = await supabase.from('agendamentos_validacao').insert([agendamentoPayload])
+      if (agendaErr) {
+        showMsg(`Venda salva, mas o agendamento pendente não foi criado: ${agendaErr.message}`)
+      }
+    }
+
     setShowFormV(false)
     setFormV2({ ...EMPTY_VENDA_V2, ponto_atendimento_id: pontosAtivos[0]?.id ?? '' })
+    setContadorStepHandled(false)
     setClienteSelecionadoObj(null)
     setClienteSearch('')
+    setVendaFilters(EMPTY_VENDA_FILTERS)
+    setSelectedIds(new Set())
+    showMsg(`Venda salva, adicionada ao painel e ${comunicacaoResumo}.`, 'ok')
     void fetchVendasV2()
+    void fetchAgenda()
   }
 
   async function salvarCliente() {
@@ -639,7 +1502,7 @@ export default function Comercial() {
       : supabase.from('cadastros_base').insert([payload]).select('id').single()
     const { data, error } = await query
     setSalvandoCliente(false)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
     setFormCliente({ ...EMPTY_CLIENTE_BASE })
     setShowClienteForm(false)
     setEditingClienteId(null)
@@ -682,6 +1545,7 @@ export default function Comercial() {
       status: cliente.status,
       metadata: cliente.metadata ?? {},
     })
+    setContadorStepHandled(false)
     setShowFormV(true)
     setShowClienteForm(true)
   }
@@ -690,26 +1554,157 @@ export default function Comercial() {
     setFormV2(p => ({ ...p, cadastro_base_id: cadastroId }))
     const c = clientes.find(x => x.id === cadastroId)
     setClienteSelecionadoObj(c ?? null)
+    setContadorStepHandled(false)
     setShowFormV(true)
     setShowClienteForm(false)
   }
 
-  function prepararAgendamento(venda: VendaRow) {
-    setFormA({
-      cliente: (venda.cadastros_base as { nome?: string } | null)?.nome ?? venda.nome_faturamento ?? '',
-      telefone: venda.telefone_faturamento ?? null,
-      servico: venda.tipo_produto,
-      data_hora: '',
-      status: 'aguardando',
+  async function garantirAgendamentoPendente(venda: VendaRow) {
+    const { data: existente, error: buscaErr } = await supabase
+      .from('agendamentos_validacao')
+      .select('id, venda_certificado_id, data_agendada, agente_registro_id, ponto_atendimento_id, tipo_atendimento, observacoes')
+      .eq('venda_certificado_id', venda.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (buscaErr) {
+      showMsg(`Não foi possível localizar o agendamento desta venda: ${buscaErr.message}`)
+      return null
+    }
+
+    if (existente) return existente
+
+    const payload = {
+      venda_certificado_id: venda.id,
+      cadastro_base_id: venda.cadastro_base_id,
+      empresa_id: venda.empresa_id,
+      titular_id: venda.titular_id,
+      contador_id: venda.contador_id,
+      agente_registro_id: null,
+      ponto_atendimento_id: null,
+      data_agendada: null,
+      tipo_atendimento: null,
+      status_agendamento: 'pendente' as const,
       observacoes: venda.observacoes ?? null,
+      metadata: {
+        origem: 'acao_manual_venda',
+        status_inicial: 'aguardando_agendamento',
+      },
+    }
+
+    const { data: criado, error: insertErr } = await supabase
+      .from('agendamentos_validacao')
+      .insert([payload])
+      .select('id, venda_certificado_id, data_agendada, agente_registro_id, ponto_atendimento_id, tipo_atendimento, observacoes')
+      .single()
+
+    if (insertErr) {
+      showMsg(`A venda existe, mas não foi possível criar o agendamento pendente: ${insertErr.message}`)
+      return null
+    }
+
+    return criado
+  }
+
+  async function prepararAgendamento(venda: VendaRow) {
+    const agendamento = await garantirAgendamentoPendente(venda)
+    if (!agendamento) return
+
+    setFormAgendaV2({
+      agenda_id: agendamento.id,
+      venda_certificado_id: venda.id,
+      agente_registro_id: agendamento.agente_registro_id ?? '',
+      ponto_atendimento_id: agendamento.ponto_atendimento_id ?? '',
+      data_agendada: agendamento.data_agendada
+        ? new Date(new Date(agendamento.data_agendada).getTime() - new Date(agendamento.data_agendada).getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
+        : '',
+      tipo_atendimento: (agendamento.tipo_atendimento ?? '') as AgendamentoV2Form['tipo_atendimento'],
+      observacoes: agendamento.observacoes ?? venda.observacoes ?? '',
     })
+    setShowAgendaV2Panel(true)
     setTab('agenda')
-    setShowFormA(true)
+    void fetchAgenda()
   }
 
   async function atualizarStatusVendaV2(id: string, status: StatusVendaCertificado) {
     await supabase.from('vendas_certificados').update({ status_venda: status }).eq('id', id)
     setVendasV2(prev => prev.map(v => v.id === id ? { ...v, status_venda: status } : v))
+  }
+
+  async function salvarAgendamentoValidacaoV2() {
+    if (!formAgendaV2) return
+    if (!formAgendaV2.data_agendada || !formAgendaV2.agente_registro_id || !formAgendaV2.ponto_atendimento_id) {
+      setErroAgendaV2('Preencha data/hora, agente e ponto para confirmar o agendamento.')
+      return
+    }
+    setErroAgendaV2(null)
+    setSalvandoAgendaV2(true)
+    const dataAgendada = new Date(formAgendaV2.data_agendada)
+    const payload = {
+      agente_registro_id: formAgendaV2.agente_registro_id,
+      ponto_atendimento_id: formAgendaV2.ponto_atendimento_id,
+      data_agendada: dataAgendada.toISOString(),
+      tipo_atendimento: formAgendaV2.tipo_atendimento || null,
+      observacoes: formAgendaV2.observacoes.trim() || null,
+      status_agendamento: 'confirmado' as const,
+    }
+
+    const [{ error: agendaErr }, { error: vendaErr }] = await Promise.all([
+      supabase.from('agendamentos_validacao').update(payload).eq('id', formAgendaV2.agenda_id),
+      supabase.from('vendas_certificados').update({
+        agente_registro_id: formAgendaV2.agente_registro_id,
+        ponto_atendimento_id: formAgendaV2.ponto_atendimento_id,
+        status_venda: 'agendado',
+      }).eq('id', formAgendaV2.venda_certificado_id),
+    ])
+    setSalvandoAgendaV2(false)
+
+    if (agendaErr ?? vendaErr) {
+      setErroAgendaV2(`Erro ao salvar: ${(agendaErr ?? vendaErr)?.message ?? 'desconhecido'}`)
+      setSalvandoAgendaV2(false)
+      return
+    }
+
+    setShowAgendaV2Panel(false)
+    setFormAgendaV2(null)
+    setErroAgendaV2(null)
+    void fetchAgenda()
+    void fetchVendasV2()
+  }
+
+  async function abrirPainelAgendamentoV2(item: AgendaItem) {
+    if (item.origem !== 'validacao_v2' || !item.venda_certificado_id) return
+    let venda = vendasV2.find(v => v.id === item.venda_certificado_id) ?? null
+    if (!venda) {
+      const { data } = await supabase
+        .from('vendas_certificados')
+        .select('*')
+        .eq('id', item.venda_certificado_id)
+        .single()
+      if (data) {
+        venda = { ...(data as VendaCertificado), cadastros_base: null, pontos_atendimento: null }
+        setVendasV2(prev => [...prev, venda!])
+      }
+    }
+    if (!venda) {
+      setErroAgendaV2('Venda vinculada não encontrada no sistema.')
+      return
+    }
+    setErroAgendaV2(null)
+
+    setFormAgendaV2({
+      agenda_id: item.id,
+      venda_certificado_id: item.venda_certificado_id,
+      agente_registro_id: item.agente_registro_id ?? '',
+      ponto_atendimento_id: item.ponto_atendimento_id ?? '',
+      data_agendada: item.data_hora
+        ? new Date(new Date(item.data_hora).getTime() - new Date(item.data_hora).getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
+        : '',
+      tipo_atendimento: (item.tipo_atendimento ?? '') as AgendamentoV2Form['tipo_atendimento'],
+      observacoes: item.observacoes ?? venda.observacoes ?? '',
+    })
+    setShowAgendaV2Panel(true)
   }
 
   // ── agenda mutations ─────────────────────────────────────────
@@ -718,15 +1713,273 @@ export default function Comercial() {
     setSalvandoA(true)
     const { error } = await supabase.from('agendamentos').insert([formA])
     setSalvandoA(false)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
     setShowFormA(false)
     setFormA({ ...EMPTY_AGENDA, servico: certificados[0]?.tipo ?? 'e-CPF A1' })
     void fetchAgenda()
   }
 
   async function atualizarStatusAgenda(id: string, status: StatusAgendamento) {
-    await supabase.from('agendamentos').update({ status }).eq('id', id)
+    const item = agenda.find(a => a.id === id)
+    if (!item) return
+
+    if (item.origem === 'validacao_v2') {
+      const statusV2 = status === 'aguardando' ? 'pendente' : status
+      await supabase.from('agendamentos_validacao').update({ status_agendamento: statusV2 }).eq('id', id)
+    } else {
+      await supabase.from('agendamentos').update({ status }).eq('id', id)
+    }
+
     setAgenda(prev => prev.map(a => a.id === id ? { ...a, status } : a))
+  }
+
+  async function salvarDisponibilidade() {
+    const agenteId = isAdmin ? formDisp.agente_registro_id : (profile?.id ?? '')
+    if (!agenteId || !formDisp.ponto_atendimento_id || !formDisp.hora_inicio || !formDisp.hora_fim) {
+      showMsg('Preencha agente, ponto e faixa de horário.')
+      return
+    }
+    if (diasSelecionadosDisp.length === 0) {
+      showMsg('Selecione pelo menos um dia da semana.')
+      return
+    }
+
+    setSalvandoDisp(true)
+    const payload = diasSelecionadosDisp.map(dia => ({
+      agente_registro_id: agenteId,
+      ponto_atendimento_id: formDisp.ponto_atendimento_id,
+      dia_semana: dia,
+      hora_inicio: formDisp.hora_inicio,
+      hora_fim: formDisp.hora_fim,
+      intervalo_minutos: formDisp.intervalo_minutos,
+      capacidade_por_slot: formDisp.capacidade_por_slot,
+      tipo_atendimento: formDisp.tipo_atendimento || null,
+      ativo: formDisp.ativo,
+      metadata: {},
+    }))
+
+    const { error } = await supabase.from('agentes_disponibilidade').insert(payload)
+    setSalvandoDisp(false)
+    if (error) { showMsg('Erro ao salvar disponibilidade: ' + error.message); return }
+
+    setShowFormDisp(false)
+    setFormDisp({
+      ...EMPTY_DISPONIBILIDADE,
+      agente_registro_id: isAdmin ? '' : (profile?.id ?? ''),
+      ponto_atendimento_id: pontosAtivos[0]?.id ?? '',
+    })
+    setDiasSelecionadosDisp([1])
+    void fetchDisponibilidades()
+  }
+
+  async function toggleDisponibilidade(item: AgenteDisponibilidade) {
+    await supabase.from('agentes_disponibilidade').update({ ativo: !item.ativo }).eq('id', item.id)
+    setDisponibilidades(prev => prev.map(d => d.id === item.id ? { ...d, ativo: !d.ativo } : d))
+  }
+
+  async function salvarIndisponibilidade() {
+    const agenteId = isAdmin ? formIndisp.agente_registro_id : (profile?.id ?? '')
+    if (!agenteId || !formIndisp.inicio_em || !formIndisp.fim_em) {
+      showMsg('Preencha agente, início e fim do bloqueio.')
+      return
+    }
+
+    const inicio = new Date(formIndisp.inicio_em)
+    const fim = new Date(formIndisp.fim_em)
+    if (Number.isNaN(inicio.getTime()) || Number.isNaN(fim.getTime()) || fim <= inicio) {
+      showMsg('Informe um período válido para o bloqueio.')
+      return
+    }
+
+    setSalvandoIndisp(true)
+    const payload = {
+      agente_registro_id: agenteId,
+      ponto_atendimento_id: formIndisp.ponto_atendimento_id || null,
+      inicio_em: inicio.toISOString(),
+      fim_em: fim.toISOString(),
+      motivo: formIndisp.motivo.trim() || null,
+      ativo: formIndisp.ativo,
+      metadata: {},
+    }
+
+    const { error } = await supabase.from('agentes_indisponibilidades').insert([payload])
+    setSalvandoIndisp(false)
+    if (error) { showMsg('Erro ao salvar bloqueio: ' + error.message); return }
+
+    setShowFormIndisp(false)
+    setFormIndisp({
+      ...EMPTY_INDISPONIBILIDADE,
+      agente_registro_id: isAdmin ? '' : (profile?.id ?? ''),
+    })
+    void fetchIndisponibilidades()
+  }
+
+  async function toggleIndisponibilidade(item: AgenteIndisponibilidade) {
+    await supabase.from('agentes_indisponibilidades').update({ ativo: !item.ativo }).eq('id', item.id)
+    setIndisponibilidades(prev => prev.map(d => d.id === item.id ? { ...d, ativo: !d.ativo } : d))
+  }
+
+  function abrirNovoAgenteTabela(tabelaId: string) {
+    setFormAgenteTabela({
+      ...EMPTY_AGENTE_TABELA,
+      tabela_preco_id: tabelaId,
+      ponto_atendimento_id: pontosAtivos[0]?.id ?? '',
+    })
+    setShowFormAgenteTabela(true)
+  }
+
+  async function salvarAgenteTabela() {
+    if (!formAgenteTabela.tabela_preco_id || !formAgenteTabela.agente_registro_id) {
+      showMsg('Selecione a tabela e o agente.')
+      return
+    }
+
+    setSalvandoCatalogo(true)
+    const payload = {
+      tabela_preco_id: formAgenteTabela.tabela_preco_id,
+      agente_registro_id: formAgenteTabela.agente_registro_id,
+      ponto_atendimento_id: formAgenteTabela.ponto_atendimento_id || null,
+      ativo: formAgenteTabela.ativo,
+      metadata: {},
+    }
+    const { error } = await supabase.from('agentes_tabelas_preco').insert([payload])
+    setSalvandoCatalogo(false)
+    if (error) { showMsg('Erro ao vincular agente à tabela: ' + error.message); return }
+    setShowFormAgenteTabela(false)
+    setFormAgenteTabela(EMPTY_AGENTE_TABELA)
+    void fetchCatalogo()
+  }
+
+  async function toggleAgenteTabela(item: AgenteTabelaPreco) {
+    await supabase.from('agentes_tabelas_preco').update({ ativo: !item.ativo }).eq('id', item.id)
+    setAgentesTabelaPreco(prev => prev.map(v => v.id === item.id ? { ...v, ativo: !v.ativo } : v))
+  }
+
+  async function excluirAgenteTabela(id: string) {
+    await supabase.from('agentes_tabelas_preco').delete().eq('id', id)
+    setAgentesTabelaPreco(prev => prev.filter(v => v.id !== id))
+  }
+
+  function slugifyLoja(value: string) {
+    return value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+  }
+
+  function normalizeLojaMarketplaceConfig(configuracoes: Record<string, unknown> | null | undefined): { modo_exibicao: 'vitrine' | 'link_direto'; item_fixo_id: string } {
+    const modo = configuracoes?.modo_exibicao === 'link_direto' ? 'link_direto' : 'vitrine'
+    const itemFixo = typeof configuracoes?.item_fixo_id === 'string' ? configuracoes.item_fixo_id : ''
+    return { modo_exibicao: modo, item_fixo_id: itemFixo }
+  }
+
+  function resolveLojaBaseUrl(loja: Pick<LojaMarketplace, 'slug' | 'dominio_publico'>) {
+    const path = `/loja/${loja.slug}`
+    const dominio = loja.dominio_publico?.trim()
+    if (dominio) return `${dominio.replace(/\/$/, '')}${path}`
+    if (typeof window !== 'undefined' && window.location.origin) return `${window.location.origin}${path}`
+    return path
+  }
+
+  function buildLojaProdutoUrl(loja: Pick<LojaMarketplace, 'slug' | 'dominio_publico'>, itemId?: string | null) {
+    const baseUrl = resolveLojaBaseUrl(loja)
+    if (!itemId) return baseUrl
+    return `${baseUrl}?produto=${encodeURIComponent(itemId)}`
+  }
+
+  function abrirNovaLojaMarketplace() {
+    setEditingLojaId(null)
+    setFormLoja({
+      ...EMPTY_LOJA_MARKETPLACE,
+      tabela_preco_id: tabelasAtivas[0]?.id ?? '',
+    })
+    setShowFormLoja(true)
+  }
+
+  function editarLojaMarketplace(loja: LojaMarketplace) {
+    const config = normalizeLojaMarketplaceConfig(loja.configuracoes)
+    setEditingLojaId(loja.id)
+    setFormLoja({
+      nome_loja: loja.nome_loja,
+      slug: loja.slug,
+      tabela_preco_id: loja.tabela_preco_id,
+      owner_tipo: loja.owner_tipo,
+      owner_profile_id: loja.owner_profile_id ?? '',
+      owner_parceiro_id: loja.owner_parceiro_id ?? '',
+      descricao: loja.descricao ?? '',
+      dominio_publico: loja.dominio_publico ?? '',
+      modo_exibicao: config.modo_exibicao,
+      item_fixo_id: config.item_fixo_id,
+      ativo: loja.ativo,
+    })
+    setShowFormLoja(true)
+  }
+
+  async function salvarLojaMarketplace() {
+    if (!formLoja.nome_loja.trim() || !formLoja.tabela_preco_id) {
+      showMsg('Preencha nome da loja e tabela de preço.')
+      return
+    }
+
+    const slug = slugifyLoja(formLoja.slug || formLoja.nome_loja)
+    if (!slug) {
+      showMsg('Informe um nome ou slug válido para a loja.')
+      return
+    }
+
+    if (formLoja.owner_tipo === 'vendedor' && !formLoja.owner_profile_id) {
+      showMsg('Selecione o vendedor responsável por esta loja.')
+      return
+    }
+
+    if (['contador', 'parceiro', 'revendedor'].includes(formLoja.owner_tipo) && !formLoja.owner_parceiro_id) {
+      showMsg('Selecione o parceiro responsável por esta loja.')
+      return
+    }
+
+    const itemDaTabela = formLoja.item_fixo_id
+      ? tabelaItens.find(item => item.id === formLoja.item_fixo_id && item.tabela_preco_id === formLoja.tabela_preco_id)
+      : null
+
+    if (formLoja.modo_exibicao === 'link_direto' && !itemDaTabela) {
+      showMsg('Selecione o produto fixo para a loja em modo link direto.')
+      return
+    }
+
+    const payload = {
+      nome_loja: formLoja.nome_loja.trim(),
+      slug,
+      tabela_preco_id: formLoja.tabela_preco_id,
+      owner_tipo: formLoja.owner_tipo,
+      owner_profile_id: formLoja.owner_tipo === 'vendedor' ? formLoja.owner_profile_id || null : null,
+      owner_parceiro_id: ['contador', 'parceiro', 'revendedor'].includes(formLoja.owner_tipo) ? formLoja.owner_parceiro_id || null : null,
+      descricao: formLoja.descricao.trim() || null,
+      dominio_publico: formLoja.dominio_publico.trim() || null,
+      ativo: formLoja.ativo,
+      configuracoes: {
+        modo_exibicao: formLoja.modo_exibicao,
+        item_fixo_id: formLoja.modo_exibicao === 'link_direto' ? itemDaTabela?.id ?? null : null,
+      },
+    }
+
+    setSalvandoCatalogo(true)
+    const { error } = editingLojaId
+      ? await supabase.from('lojas_marketplace').update(payload).eq('id', editingLojaId)
+      : await supabase.from('lojas_marketplace').insert([payload])
+    setSalvandoCatalogo(false)
+    if (error) { showMsg('Erro ao salvar loja do marketplace: ' + error.message); return }
+
+    setShowFormLoja(false)
+    setEditingLojaId(null)
+    setFormLoja({ ...EMPTY_LOJA_MARKETPLACE })
+    void fetchCatalogo()
+  }
+
+  async function toggleLojaMarketplace(loja: LojaMarketplace) {
+    await supabase.from('lojas_marketplace').update({ ativo: !loja.ativo }).eq('id', loja.id)
+    setLojasMarketplace(prev => prev.map(item => item.id === loja.id ? { ...item, ativo: !item.ativo } : item))
   }
 
   // ── catalog mutations ────────────────────────────────────────
@@ -752,7 +2005,7 @@ export default function Comercial() {
       ? await supabase.from('certificados').update(payload).eq('id', editingCertId)
       : await supabase.from('certificados').insert([payload])
     setSalvandoCatalogo(false)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
     setShowFormCert(false); setEditingCertId(null); setFormCert({ ...EMPTY_CERTIFICADO }); void fetchCatalogo()
   }
 
@@ -764,7 +2017,7 @@ export default function Comercial() {
   async function excluirCertificado(id: string) {
     if (!confirm('Excluir este certificado do catálogo? Esta ação não pode ser desfeita.')) return
     const { error } = await supabase.from('certificados').delete().eq('id', id)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
     setCertificados(prev => prev.filter(c => c.id !== id))
     setSelectedCertIds(prev => { const s = new Set(prev); s.delete(id); return s })
   }
@@ -774,7 +2027,7 @@ export default function Comercial() {
     if (!confirm(`Excluir ${selectedCertIds.size} certificado(s) selecionado(s)? Esta ação não pode ser desfeita.`)) return
     const ids = [...selectedCertIds]
     const { error } = await supabase.from('certificados').delete().in('id', ids)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
     setCertificados(prev => prev.filter(c => !selectedCertIds.has(c.id)))
     setSelectedCertIds(new Set())
   }
@@ -807,7 +2060,7 @@ export default function Comercial() {
     setImportando(true)
     try {
       const rows = await lerPlanilha(file)
-      if (!rows.length) { alert('Planilha sem dados.'); return }
+      if (!rows.length) { showMsg('Planilha sem dados.'); return }
       const parseNum = (v: string) => parseFloat((v ?? '').replace(/[R$\s]/g, '').replace(',', '.')) || 0
       const records = rows.filter(r => Object.values(r).some(v => v)).map(row => ({
         codigo:               row['codigo'] ? parseInt(row['codigo']) : null,
@@ -839,8 +2092,8 @@ export default function Comercial() {
       for (const { id, ...p } of toUpdate) ops.push(supabase.from('certificados').update(p).eq('id', id) as any)
       const results = await Promise.all(ops)
       const err = results.find(r => r.error)
-      if (err?.error) { alert('Erro: ' + err.error.message); return }
-      alert(`${records.length} certificado(s) importado(s)/atualizado(s).`)
+      if (err?.error) { showMsg('Erro: ' + err.error.message); return }
+      showMsg(`${records.length} certificado(s) importado(s)/atualizado(s).`, 'ok')
       void fetchCatalogo()
     } finally {
       setImportando(false)
@@ -859,6 +2112,38 @@ export default function Comercial() {
     })
     setShowFormTabela(true)
   }
+
+  async function criarVinculosBaseDaTabela(tabelaId: string, certificadosFonte?: Certificado[]) {
+    const certificadosSelecionados = (certificadosFonte ?? certificados).filter(cert => cert.ativo)
+    if (!certificadosSelecionados.length) return { inserted: 0, error: null as string | null }
+
+    const certificadosJaVinculados = new Set(
+      tabelaItens
+        .filter(item => item.tabela_preco_id === tabelaId)
+        .map(item => item.certificado_id)
+    )
+
+    const records: NovaTabelaPrecoItem[] = certificadosSelecionados
+      .filter(cert => !certificadosJaVinculados.has(cert.id))
+      .map(cert => ({
+        tabela_preco_id: tabelaId,
+        certificado_id: cert.id,
+        valor: cert.preco_venda ?? 0,
+        valor_custo: cert.valor_custo ?? 0,
+        valor_repasse: 0,
+        link_safeweb: null,
+        ativo: true,
+      }))
+
+    if (!records.length) return { inserted: 0, error: null as string | null }
+
+    const { error } = await supabase.from('tabelas_preco_itens').insert(records)
+    return {
+      inserted: records.length,
+      error: error?.message ?? null,
+    }
+  }
+
   async function salvarTabela() {
     if (!formTabela.nome.trim()) return
     setSalvandoCatalogo(true)
@@ -866,15 +2151,234 @@ export default function Comercial() {
     const { data, error } = editingTabelaId
       ? await supabase.from('tabelas_preco').update(payload).eq('id', editingTabelaId).select().single()
       : await supabase.from('tabelas_preco').insert([payload]).select().single()
+    if (error) { setSalvandoCatalogo(false); showMsg('Erro: ' + error.message); return }
+    let produtosAutoVinculados = 0
+    if (!editingTabelaId && data?.id) {
+      const autoLinkRes = await criarVinculosBaseDaTabela(data.id, certificadosAtivos)
+      if (autoLinkRes.error) {
+        setSalvandoCatalogo(false)
+        showMsg('Tabela criada, mas houve erro ao vincular os produtos automaticamente: ' + autoLinkRes.error)
+        return
+      }
+      produtosAutoVinculados = autoLinkRes.inserted
+    }
     setSalvandoCatalogo(false)
-    if (error) { alert('Erro: ' + error.message); return }
     setShowFormTabela(false); setEditingTabelaId(null)
     if (!editingTabelaId && data) setSelectedTabelaId(data.id)
+    if (!editingTabelaId && data) {
+      showMsg(`Tabela criada com ${produtosAutoVinculados} produto(s) vinculados automaticamente. Agora você pode editar preços e excluir em lote o que não quiser.`, 'ok')
+    }
     void fetchCatalogo()
   }
   async function toggleTabela(t: TabelaPreco) {
     await supabase.from('tabelas_preco').update({ ativo: !t.ativo }).eq('id', t.id)
     setTabelasPreco(prev => prev.map(x => x.id === t.id ? { ...x, ativo: !x.ativo } : x))
+  }
+
+  async function excluirTabela(tabela: TabelaPreco) {
+    if (!confirm(`Excluir a tabela "${tabela.nome}" e todos os vinculos de produtos/participantes relacionados?`)) return
+    const { error } = await supabase.from('tabelas_preco').delete().eq('id', tabela.id)
+    if (error) { showMsg('Erro ao excluir tabela: ' + error.message); return }
+    setTabelasPreco(prev => prev.filter(item => item.id !== tabela.id))
+    setTabelaItens(prev => prev.filter(item => item.tabela_preco_id !== tabela.id))
+    setTabelaParticipantes(prev => prev.filter(item => item.tabela_preco_id !== tabela.id))
+    setAgentesTabelaPreco(prev => prev.filter(item => item.tabela_preco_id !== tabela.id))
+    if (selectedTabelaId === tabela.id) setSelectedTabelaId(null)
+    showMsg('Tabela excluída com sucesso.', 'ok')
+  }
+
+  async function vincularCertificadosBaseNaTabela(tabelaId: string) {
+    const certificadosSelecionados = certificados
+      .filter(cert => selectedBaseCertIds.has(cert.id))
+      .filter(cert => cert.ativo)
+
+    if (!certificadosSelecionados.length) {
+      showMsg('Selecione pelo menos um certificado do catálogo base.')
+      return
+    }
+
+    setSalvandoCatalogo(true)
+    const result = await criarVinculosBaseDaTabela(tabelaId, certificadosSelecionados)
+    setSalvandoCatalogo(false)
+
+    if (result.error) {
+      showMsg('Erro ao vincular produtos na tabela: ' + result.error)
+      return
+    }
+
+    if (!result.inserted) {
+      showMsg('Os certificados selecionados já estão vinculados nesta tabela.')
+      return
+    }
+
+    setSelectedBaseCertIds(new Set())
+    showMsg(`${result.inserted} produto(s) vinculado(s) à tabela.`, 'ok')
+    void fetchCatalogo()
+  }
+
+  async function vincularTodosCertificadosBaseNaTabela(tabelaId: string) {
+    setSalvandoCatalogo(true)
+    const result = await criarVinculosBaseDaTabela(tabelaId, certificadosAtivos)
+    setSalvandoCatalogo(false)
+
+    if (result.error) {
+      showMsg('Erro ao repor os produtos do catálogo base: ' + result.error)
+      return
+    }
+
+    if (!result.inserted) {
+      showMsg('Todos os produtos ativos do catálogo base já estão vinculados nesta tabela.')
+      return
+    }
+
+    showMsg(`${result.inserted} produto(s) foram recolocados automaticamente nesta tabela.`, 'ok')
+    void fetchCatalogo()
+  }
+
+  function scrollToSection(ref: { current: HTMLDivElement | null }) {
+    setTimeout(() => {
+      ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 80)
+  }
+
+  function abrirEdicaoPrecosTabela(tabelaId: string) {
+    setSelectedTabelaId(tabelaId)
+    scrollToSection(tabelaProdutosSectionRef)
+  }
+
+  function abrirAssociacaoAgenteTabela(tabelaId: string) {
+    setSelectedTabelaId(tabelaId)
+    abrirNovoAgenteTabela(tabelaId)
+    scrollToSection(tabelaAgentesSectionRef)
+  }
+
+  function abrirProdutosDaTabela(tabelaId: string) {
+    setSelectedTabelaId(tabelaId)
+    setShowFormV(false)
+    setTab('tabelas')
+    scrollToSection(tabelaProdutosSectionRef)
+  }
+
+  async function salvarPricingMatrixRule(tabelaId: string) {
+    if (!pricingMatrixForm.tabela_base_id) {
+      showMsg('Selecione a tabela matriz para salvar a regra.')
+      return
+    }
+    if (pricingMatrixForm.tabela_base_id === tabelaId) {
+      showMsg('A tabela matriz precisa ser diferente da tabela atual.')
+      return
+    }
+
+    const nextRules = [
+      ...pricingMatrixRules.filter(rule => rule.tabela_preco_id !== tabelaId),
+      {
+        tabela_preco_id: tabelaId,
+        tabela_base_id: pricingMatrixForm.tabela_base_id,
+        ajuste_percentual: pricingMatrixForm.ajuste_percentual,
+      },
+    ]
+
+    setSalvandoCatalogo(true)
+    const { error } = await supabase
+      .from('app_settings')
+      .upsert({
+        key: 'pricing_matrix_rules',
+        value: { rules: nextRules },
+        updated_by: profile?.id ?? null,
+      }, { onConflict: 'key' })
+    setSalvandoCatalogo(false)
+
+    if (error) {
+      showMsg('Erro ao salvar regra da tabela matriz: ' + error.message)
+      return
+    }
+
+    setPricingMatrixRules(nextRules)
+    showMsg('Regra de preço em relação à matriz salva com sucesso.', 'ok')
+  }
+
+  async function aplicarPricingMatrixRule(tabelaId: string) {
+    if (!pricingMatrixForm.tabela_base_id) {
+      showMsg('Selecione a tabela matriz antes de aplicar a regra.')
+      return
+    }
+    if (pricingMatrixForm.tabela_base_id === tabelaId) {
+      showMsg('A tabela matriz precisa ser diferente da tabela atual.')
+      return
+    }
+
+    const itensBase = tabelaItens.filter(item => item.tabela_preco_id === pricingMatrixForm.tabela_base_id)
+    const itensDestino = tabelaItens.filter(item => item.tabela_preco_id === tabelaId)
+    if (!itensBase.length) {
+      showMsg('A tabela matriz escolhida não possui produtos para servir de base.')
+      return
+    }
+    if (!itensDestino.length) {
+      showMsg('A tabela atual ainda não possui produtos vinculados para receber o reajuste.')
+      return
+    }
+
+    const baseByCertificado = new Map(itensBase.map(item => [item.certificado_id, item]))
+    const percentual = Number(pricingMatrixForm.ajuste_percentual) || 0
+    const fator = 1 + percentual / 100
+    const updates = itensDestino
+      .map(item => {
+        const itemBase = baseByCertificado.get(item.certificado_id)
+        if (!itemBase) return null
+        const novoValor = Math.round((Number(itemBase.valor) * fator + Number.EPSILON) * 100) / 100
+        return {
+          id: item.id,
+          valor: novoValor,
+        }
+      })
+      .filter((item): item is { id: string; valor: number } => item !== null)
+
+    if (!updates.length) {
+      showMsg('Nenhum produto da tabela atual encontrou correspondência na tabela matriz.')
+      return
+    }
+
+    setSalvandoCatalogo(true)
+    const saveRulePromise = supabase
+      .from('app_settings')
+      .upsert({
+        key: 'pricing_matrix_rules',
+        value: {
+          rules: [
+            ...pricingMatrixRules.filter(rule => rule.tabela_preco_id !== tabelaId),
+            {
+              tabela_preco_id: tabelaId,
+              tabela_base_id: pricingMatrixForm.tabela_base_id,
+              ajuste_percentual: percentual,
+            },
+          ],
+        },
+        updated_by: profile?.id ?? null,
+      }, { onConflict: 'key' })
+
+    const updateOps = updates.map(item =>
+      supabase.from('tabelas_preco_itens').update({ valor: item.valor }).eq('id', item.id)
+    )
+
+    const [saveRuleRes, ...updateResults] = await Promise.all([saveRulePromise, ...updateOps])
+    setSalvandoCatalogo(false)
+
+    const updateError = updateResults.find(result => result.error)?.error
+    if (saveRuleRes.error || updateError) {
+      showMsg('Erro ao aplicar a regra da matriz: ' + (saveRuleRes.error?.message ?? updateError?.message ?? 'Erro desconhecido.'))
+      return
+    }
+
+    setPricingMatrixRules(prev => [
+      ...prev.filter(rule => rule.tabela_preco_id !== tabelaId),
+      {
+        tabela_preco_id: tabelaId,
+        tabela_base_id: pricingMatrixForm.tabela_base_id,
+        ajuste_percentual: percentual,
+      },
+    ])
+    showMsg(`${updates.length} produto(s) atualizados com base na tabela matriz.`, 'ok')
+    void fetchCatalogo()
   }
 
   // tabela itens
@@ -899,7 +2403,7 @@ export default function Comercial() {
       ? await supabase.from('tabelas_preco_itens').update(formItem).eq('id', editingItemId)
       : await supabase.from('tabelas_preco_itens').insert([formItem])
     setSalvandoCatalogo(false)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
     setShowFormItem(false); setEditingItemId(null); void fetchCatalogo()
   }
   async function excluirItem(id: string) {
@@ -914,7 +2418,7 @@ export default function Comercial() {
     if (!confirm(`Remover ${selectedItemIds.size} produto(s) selecionado(s) da tabela?`)) return
     const ids = [...selectedItemIds]
     const { error } = await supabase.from('tabelas_preco_itens').delete().in('id', ids)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
     setTabelaItens(prev => prev.filter(x => !selectedItemIds.has(x.id)))
     setSelectedItemIds(new Set())
   }
@@ -927,16 +2431,106 @@ export default function Comercial() {
     setImportando(true)
     try {
       const rows = await lerPlanilha(file)
-      if (!rows.length) { alert('Planilha sem dados.'); return }
+      if (!rows.length) { showMsg('Planilha sem dados.'); return }
       const parseVal = (v: string) => parseFloat((v ?? '0').replace(/[R$\s]/g, '').replace(',', '.')) || 0
-      const certsAll = await supabase.from('certificados').select('id, codigo, tipo')
-      const certByCode = new Map((certsAll.data ?? []).filter(c => c.codigo != null).map(c => [c.codigo as number, c.id as string]))
-      const certByName = new Map((certsAll.data ?? []).map(c => [(c.tipo as string).toLowerCase().trim(), c.id as string]))
+      const normalizeText = (value: string) =>
+        String(value ?? '')
+          .trim()
+          .toUpperCase()
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/\s+/g, ' ')
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim()
+      const normalizeCode = (value: string) =>
+        String(value ?? '')
+          .trim()
+          .toUpperCase()
+          .replace(/\s+/g, '')
+      const firstFilled = (row: Record<string, string>, keys: string[]) =>
+        keys.map(key => row[key]).find(value => String(value ?? '').trim().length > 0) ?? ''
+      const certsAll = await supabase.from('certificados').select('id, codigo, tipo, validade, categoria, descricao_produto, hash')
+      const certById = new Map((certsAll.data ?? []).map(c => [String(c.id), c.id as string]))
+      const certByHash = new Map(
+        (certsAll.data ?? [])
+          .filter(c => c.hash)
+          .map(c => [String(c.hash).trim(), c.id as string])
+      )
+      const certByCode = new Map<string, Array<{ id: string; tipo: string; validade: string | null; categoria: string | null; descricao_produto: string | null }>>()
+      for (const cert of (certsAll.data ?? [])) {
+        const codigoNormalizado = normalizeCode(String(cert.codigo ?? ''))
+        if (!codigoNormalizado) continue
+        const arr = certByCode.get(codigoNormalizado) ?? []
+        arr.push({
+          id: cert.id as string,
+          tipo: cert.tipo as string,
+          validade: cert.validade as string | null,
+          categoria: cert.categoria as string | null,
+          descricao_produto: cert.descricao_produto as string | null,
+        })
+        certByCode.set(codigoNormalizado, arr)
+      }
+      const certByName = new Map((certsAll.data ?? []).map(c => [normalizeText(c.tipo as string), c.id as string]))
+      const certByDescricaoProduto = new Map(
+        (certsAll.data ?? [])
+          .filter(c => c.descricao_produto)
+          .map(c => [normalizeText(c.descricao_produto as string), c.id as string])
+      )
+      const unresolvedRows: number[] = []
       const records = rows.filter(r => Object.values(r).some(v => v)).map(row => {
-        const codigoRaw = row['codigo'] ?? row['cod'] ?? ''
-        const nomeRaw   = (row['nome'] ?? row['produto'] ?? '').toLowerCase().trim()
-        const certId = codigoRaw ? certByCode.get(parseInt(codigoRaw)) : certByName.get(nomeRaw)
-        if (!certId) return null
+        const uuidRaw = firstFilled(row, ['certificado_id', 'uuid', 'id', 'produto_id'])
+        const codigoRaw = firstFilled(row, ['codigo', 'cod', 'codigo_voucher'])
+        const nomeRaw = firstFilled(row, ['nome', 'produto', 'descricao'])
+        const descricaoProdutoRaw = firstFilled(row, ['descricao_produto', 'produto_ac', 'produto_vinculado_ac', 'titulo'])
+        const validadeRaw = firstFilled(row, ['validade', 'meses', 'prazo'])
+        const categoriaRaw = firstFilled(row, ['categoria', 'tipo'])
+        let certId = ''
+
+        if (uuidRaw && certById.has(uuidRaw.trim())) {
+          certId = certById.get(uuidRaw.trim()) ?? ''
+        }
+        if (!certId && uuidRaw && certByHash.has(uuidRaw.trim())) {
+          certId = certByHash.get(uuidRaw.trim()) ?? ''
+        }
+
+        if (!certId && codigoRaw) {
+          const codigoNormalizado = normalizeCode(codigoRaw)
+          const candidatos = certByCode.get(codigoNormalizado) ?? []
+          if (candidatos.length === 1) {
+            certId = candidatos[0].id
+          } else if (candidatos.length > 1) {
+            const nomeNormalizado = normalizeText(nomeRaw)
+            const descricaoNormalizada = normalizeText(descricaoProdutoRaw)
+            const validadeNormalizada = normalizeText(validadeRaw)
+            const categoriaNormalizada = normalizeText(categoriaRaw)
+            const melhorCandidato = candidatos.find(cert =>
+              !!descricaoNormalizada && normalizeText(cert.descricao_produto ?? '') === descricaoNormalizada
+            ) ?? candidatos.find(cert =>
+              !!nomeNormalizado && normalizeText(cert.tipo) === nomeNormalizado
+            ) ?? candidatos.find(cert => {
+              const tipoOk = nomeNormalizado && normalizeText(cert.tipo).includes(nomeNormalizado)
+              const descricaoOk = descricaoNormalizada && normalizeText(cert.descricao_produto ?? '').includes(descricaoNormalizada)
+              const validadeOk = validadeNormalizada && normalizeText(cert.validade ?? '').includes(validadeNormalizada)
+              const categoriaOk = categoriaNormalizada && normalizeText(cert.categoria ?? '').includes(categoriaNormalizada)
+              return !!descricaoOk || !!tipoOk || (!!validadeOk && !!categoriaOk)
+            })
+            certId = melhorCandidato?.id ?? ''
+          }
+        }
+
+        if (!certId && descricaoProdutoRaw) {
+          certId = certByDescricaoProduto.get(normalizeText(descricaoProdutoRaw)) ?? ''
+        }
+
+        if (!certId && nomeRaw) {
+          certId = certByName.get(normalizeText(nomeRaw)) ?? ''
+        }
+
+        if (!certId) {
+          unresolvedRows.push(unresolvedRows.length + 1)
+          return null
+        }
         return {
           tabela_preco_id: tabelaId,
           certificado_id:  certId,
@@ -947,7 +2541,7 @@ export default function Comercial() {
           ativo:           true,
         }
       }).filter((r): r is NovaTabelaPrecoItem => r !== null)
-      if (!records.length) { alert('Nenhum item reconhecido. Verifique as colunas: Código (ou Nome), Preço Venda, Valor Custo, Valor Repasse.'); return }
+      if (!records.length) { showMsg('Nenhum item reconhecido. Verifique as colunas: Código (ou Nome), Preço Venda, Valor Custo, Valor Repasse.'); return }
       const existing = await supabase.from('tabelas_preco_itens').select('id, certificado_id').eq('tabela_preco_id', tabelaId)
       const existMap = new Map((existing.data ?? []).map(e => [e.certificado_id as string, e.id as string]))
       const toInsert = records.filter(r => !existMap.has(r.certificado_id))
@@ -957,8 +2551,12 @@ export default function Comercial() {
       for (const { id, ...p } of toUpdate) ops.push(supabase.from('tabelas_preco_itens').update(p).eq('id', id) as any)
       const results = await Promise.all(ops)
       const err = results.find(r => r.error)
-      if (err?.error) { alert('Erro: ' + err.error.message); return }
-      alert(`${records.length} produto(s) importado(s)/atualizado(s) na tabela.`)
+      if (err?.error) { showMsg('Erro: ' + err.error.message); return }
+      if (unresolvedRows.length > 0) {
+        showMsg(`${records.length} produto(s) importado(s)/atualizado(s). ${unresolvedRows.length} linha(s) ficaram sem vínculo automático e precisam de conferência.` , 'ok')
+      } else {
+        showMsg(`${records.length} produto(s) importado(s)/atualizado(s) na tabela.`, 'ok')
+      }
       void fetchCatalogo()
     } finally {
       setImportando(false)
@@ -971,7 +2569,7 @@ export default function Comercial() {
     setResultSafeweb(null)
     try {
       const rows = await lerPlanilha(file)
-      if (!rows.length) { alert('Planilha sem dados.'); return }
+      if (!rows.length) { showMsg('Planilha sem dados.'); return }
       const parseNum = (v: string) => parseFloat((v ?? '').replace(/[R$\s.]/g, '').replace(',', '.')) || 0
       const cleanDoc = (v: string) => (v ?? '').replace(/\D/g, '')
       // converte DD/MM/YYYY ou DD/MM/YYYY HH:MM:SS → YYYY-MM-DD
@@ -1008,7 +2606,7 @@ export default function Comercial() {
       for (let i = 0; i < clientesUniq.length; i += BATCH) {
         const { error } = await supabase.from('cadastros_base')
           .upsert(clientesUniq.slice(i, i + BATCH), { onConflict: 'cpf_cnpj', ignoreDuplicates: false })
-        if (error) { alert('Erro ao importar clientes: ' + error.message); return }
+        if (error) { showMsg('Erro ao importar clientes: ' + error.message); return }
       }
 
       // 2. busca IDs de clientes para vincular às vendas
@@ -1061,7 +2659,7 @@ export default function Comercial() {
         )
         const results = await Promise.all(ops)
         const err = results.find(r => r.error)
-        if (err?.error) { alert('Erro ao importar vendas: ' + err.error.message); return }
+        if (err?.error) { showMsg('Erro ao importar vendas: ' + err.error.message); return }
       }
 
       // 6. conta divergentes: vendas no CRM sem validado_safeweb que têm protocolo fora da planilha
@@ -1084,7 +2682,7 @@ export default function Comercial() {
     setResultClientes(null)
     try {
       const rows = await lerPlanilha(file)
-      if (!rows.length) { alert('Planilha sem dados.'); return }
+      if (!rows.length) { showMsg('Planilha sem dados.'); return }
       const cleanDoc = (v: string) => (v ?? '').replace(/\D/g, '')
 
       const payloads = rows.map(r => {
@@ -1130,7 +2728,7 @@ export default function Comercial() {
         const batch = payloads.slice(i, i + BATCH)
         const { error } = await supabase.from('cadastros_base')
           .upsert(batch, { onConflict: 'cpf_cnpj', ignoreDuplicates: false })
-        if (error) { alert('Erro ao importar clientes: ' + error.message); return }
+        if (error) { showMsg('Erro ao importar clientes: ' + error.message); return }
       }
 
       setResultClientes({ inseridos, atualizados })
@@ -1167,7 +2765,7 @@ export default function Comercial() {
     setSalvandoCatalogo(true)
     const { error } = await supabase.from('tabelas_preco_participantes').insert([payload])
     setSalvandoCatalogo(false)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
     setShowFormParticipante(false); void fetchCatalogo()
   }
   async function excluirParticipante(id: string) {
@@ -1191,7 +2789,7 @@ export default function Comercial() {
       ? await supabase.from('faixas_comissao').update(payload).eq('id', editingComissaoId)
       : await supabase.from('faixas_comissao').insert([payload])
     setSalvandoCatalogo(false)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
     setShowFormComissao(false); setEditingComissaoId(null); setFormComissao({ ...EMPTY_COMISSAO }); void fetchCatalogo()
   }
 
@@ -1200,29 +2798,168 @@ export default function Comercial() {
     setComissoes(prev => prev.map(c => c.id === comissao.id ? { ...c, ativo: !c.ativo } : c))
   }
 
-  function abrirNovoPagamento() { setEditingPagamentoId(null); setFormPagamento({ ...EMPTY_PAGAMENTO, ordem: pagamentos.length + 1 }); setShowFormPagamento(true) }
+  function abrirNovoPagamento() {
+    setEditingPagamentoId(null)
+    setFormPagamento({ ...EMPTY_PAGAMENTO })
+    setShowFormPagamento(true)
+  }
 
-  function editarPagamento(pagamento: FormaPagamento) {
+  function editarPagamento(pagamento: FormaPagamentoV2) {
     setEditingPagamentoId(pagamento.id)
-    setFormPagamento({ nome: pagamento.nome, ordem: pagamento.ordem, ativo: pagamento.ativo })
+    setFormPagamento({
+      nome: pagamento.nome,
+      codigo: pagamento.codigo ?? '',
+      gateway: pagamento.gateway ?? '',
+      ativo: pagamento.ativo,
+    })
     setShowFormPagamento(true)
   }
 
   async function salvarPagamento() {
     if (!formPagamento.nome.trim()) return
     setSalvandoCatalogo(true)
-    const payload = { ...formPagamento, nome: formPagamento.nome.trim() }
+    const payload = {
+      nome: formPagamento.nome.trim(),
+      codigo: formPagamento.codigo.trim() || null,
+      gateway: formPagamento.gateway.trim() || null,
+      ativo: formPagamento.ativo,
+    }
     const { error } = editingPagamentoId
-      ? await supabase.from('formas_pagamento').update(payload).eq('id', editingPagamentoId)
-      : await supabase.from('formas_pagamento').insert([payload])
+      ? await supabase.from('formas_pagamento_v2').update(payload).eq('id', editingPagamentoId)
+      : await supabase.from('formas_pagamento_v2').insert([payload])
     setSalvandoCatalogo(false)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
     setShowFormPagamento(false); setEditingPagamentoId(null); setFormPagamento({ ...EMPTY_PAGAMENTO }); void fetchCatalogo()
   }
 
-  async function togglePagamento(pagamento: FormaPagamento) {
-    await supabase.from('formas_pagamento').update({ ativo: !pagamento.ativo }).eq('id', pagamento.id)
+  async function togglePagamento(pagamento: FormaPagamentoV2) {
+    await supabase.from('formas_pagamento_v2').update({ ativo: !pagamento.ativo }).eq('id', pagamento.id)
     setPagamentos(prev => prev.map(p => p.id === pagamento.id ? { ...p, ativo: !p.ativo } : p))
+  }
+
+  function openFeatureNotice(title: string, description: string, nextStep?: string | null) {
+    setFeatureNotice({ title, description, nextStep: nextStep ?? null })
+  }
+
+  function resolveMarketplaceLink(link?: string | null) {
+    const finalLink = link?.trim()
+    return finalLink || null
+  }
+
+  async function copiarMarketplaceLink(link?: string | null, contexto = 'Link do marketplace') {
+    const finalLink = resolveMarketplaceLink(link)
+    if (!finalLink) {
+      openFeatureNotice(
+        'Marketplace próprio pendente',
+        'Este produto ainda não possui link de compra configurado no seu sistema. O exemplo de marketplace externo foi removido para não depender de plataforma de terceiros.',
+        'Próximo passo: cadastrar a URL do seu marketplace próprio em Configurações ou por produto/tabela.'
+      )
+      return
+    }
+    await navigator.clipboard.writeText(finalLink)
+    showMsg(`${contexto} copiado!`, 'ok')
+  }
+
+  function abrirMarketplaceLink(link?: string | null) {
+    const finalLink = resolveMarketplaceLink(link)
+    if (!finalLink) {
+      openFeatureNotice(
+        'Marketplace próprio pendente',
+        'Ainda não existe URL de compra configurada para este produto no seu sistema.',
+        'Quando o seu marketplace próprio estiver pronto, este botão abrirá o link correto.'
+      )
+      return
+    }
+    window.open(finalLink, '_blank', 'noopener,noreferrer')
+  }
+
+  async function abrirFaturaVenda(venda: VendaRow) {
+    setLoadingVendaFinanceiro(true)
+    setVendaFinanceiroModal(null)
+
+    const [{ data: lancamentos, error: lancErr }, { data: documentos, error: docsErr }] = await Promise.all([
+      supabase
+        .from('lancamentos_financeiros')
+        .select('*')
+        .eq('venda_certificado_id', venda.id)
+        .order('vencimento', { ascending: true }),
+      supabase
+        .from('documentos_financeiros')
+        .select('*')
+        .eq('venda_certificado_id', venda.id)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false }),
+    ])
+
+    setLoadingVendaFinanceiro(false)
+
+    if (lancErr ?? docsErr) {
+      openFeatureNotice(
+        'Fatura da venda',
+        `Não foi possível carregar os dados financeiros desta venda: ${(lancErr ?? docsErr)?.message ?? 'erro desconhecido'}.`,
+        'Verifique permissões/RLS das tabelas `lancamentos_financeiros` e `documentos_financeiros`.'
+      )
+      return
+    }
+
+    setVendaFinanceiroModal({
+      venda,
+      lancamentos: (lancamentos ?? []) as LancamentoV2[],
+      documentos: (documentos ?? []) as DocumentoFinanceiro[],
+    })
+  }
+
+  async function abrirNfseVenda(venda: VendaRow) {
+    setLoadingVendaNfse(true)
+    setVendaNfseModal(null)
+
+    const { data, error } = await supabase
+      .from('nfse_emitidas')
+      .select('*')
+      .eq('venda_certificado_id', venda.id)
+      .order('created_at', { ascending: false })
+
+    setLoadingVendaNfse(false)
+
+    if (error) {
+      openFeatureNotice(
+        'Visualização de NFS-e',
+        `Não foi possível consultar as NFS-e desta venda: ${error.message}.`,
+        'Verifique permissões/RLS da tabela `nfse_emitidas`.'
+      )
+      return
+    }
+
+    setVendaNfseModal({
+      venda,
+      notas: (data ?? []) as NfseEmitida[],
+    })
+  }
+
+  async function emitirNfseMock(venda: VendaRow) {
+    const numeroMock = 'MOCK-' + Date.now().toString(36).toUpperCase()
+    const { data: nova, error: err } = await supabase.from('nfse_emitidas').insert([{
+      venda_certificado_id: venda.id,
+      status_nf: 'pendente',
+      numero_nf: numeroMock,
+      valor_servico: venda.valor_venda ?? 0,
+      data_emissao: new Date().toISOString(),
+      payload_envio: { modo: 'mock' },
+      payload_retorno: {},
+      metadata: { modo: 'mock' },
+    }]).select('*').single()
+    if (err) { showMsg('Erro ao criar NFS-e: ' + err.message, 'err'); return }
+    showMsg(`NFS-e ${numeroMock} registrada (modo mock).`, 'ok')
+    setVendaNfseModal(prev => prev
+      ? { ...prev, notas: [nova as NfseEmitida, ...prev.notas] }
+      : prev)
+  }
+
+  function obterLinkMarketplaceDaVenda(venda: VendaRow) {
+    const item = venda.tabela_preco_item_id
+      ? tabelaItens.find(row => row.id === venda.tabela_preco_item_id)
+      : null
+    return resolveMarketplaceLink(item?.link_safeweb)
   }
 
   // ── paginação: reset ao mudar filtros ────────────────────────
@@ -1277,7 +3014,7 @@ export default function Comercial() {
   }
 
   function abrirProtocolo(v: VendaRow) {
-    if (v.protocolo_numero) { alert('Esta venda já possui protocolo: ' + v.protocolo_numero); return }
+    if (v.protocolo_numero) { showMsg('Esta venda já possui protocolo: ' + v.protocolo_numero); return }
     const cpfComprador = (v.cadastros_base as { cpf_cnpj?: string } | null)?.cpf_cnpj ?? ''
     setProtocoloVenda(v)
     setFormProtocolo({ ...EMPTY_PROTOCOLO, cpf: cpfComprador })
@@ -1287,7 +3024,7 @@ export default function Comercial() {
 
   async function validarTitular() {
     if (!formProtocolo.cpf.trim() || !formProtocolo.data_nascimento) {
-      alert('Preencha CPF e data de nascimento do titular.')
+      showMsg('Preencha CPF e data de nascimento do titular.')
       return
     }
     setValidandoProtocolo(true)
@@ -1312,7 +3049,7 @@ export default function Comercial() {
   async function confirmarProtocolo() {
     if (!protocoloVenda) return
     if (!formProtocolo.nome.trim() || !formProtocolo.cpf.trim()) {
-      alert('Preencha nome e CPF do titular.')
+      showMsg('Preencha nome e CPF do titular.')
       return
     }
     setEmitindoProtocolo(true)
@@ -1338,7 +3075,7 @@ export default function Comercial() {
       .single()
 
     if (titularErr || !titularData) {
-      alert('Erro ao salvar titular: ' + (titularErr?.message ?? 'desconhecido'))
+      showMsg('Erro ao salvar titular: ' + (titularErr?.message ?? 'desconhecido'))
       setEmitindoProtocolo(false)
       return
     }
@@ -1362,7 +3099,7 @@ export default function Comercial() {
     }).eq('id', protocoloVenda.id)
 
     setEmitindoProtocolo(false)
-    if (vendaErr) { alert('Erro: ' + vendaErr.message); return }
+    if (vendaErr) { showMsg('Erro: ' + vendaErr.message); return }
 
     if (item?.link_safeweb) {
       // Abre o link da Safeweb em nova aba
@@ -1373,12 +3110,12 @@ export default function Comercial() {
     setVendasV2(prev => prev.map(r =>
       r.id === protocoloVenda.id ? { ...r, protocolo_numero: proto, protocolo_status: 'gerado' } : r
     ))
-    alert(`Protocolo ${proto} emitido. Titular cadastrado.`)
+    showMsg(`Protocolo ${proto} emitido. Titular cadastrado.`, 'ok')
   }
 
   async function liberarEmissao(v: VendaRow) {
     const { error } = await supabase.from('vendas_certificados').update({ status_venda: 'emitido' }).eq('id', v.id)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsg('Erro: ' + error.message); return }
     setVendasV2(prev => prev.map(r => r.id === v.id ? { ...r, status_venda: 'emitido' } : r))
   }
 
@@ -1413,6 +3150,15 @@ export default function Comercial() {
         {/* ── VENDAS ─────────────────────────────────────────── */}
         {tab === 'vendas' && (
           <div className="space-y-4">
+            {paymentRuntime.modo_teste_geral && (
+              <div className="flex items-start gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <div>
+                  <p className="font-medium">Ambiente de testes ativo</p>
+                  <p className="text-xs mt-1">{paymentRuntime.aviso_checkout}</p>
+                </div>
+              </div>
+            )}
 
             {pontosAtivos.length === 0 && (
               <div className="flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
@@ -1422,7 +3168,30 @@ export default function Comercial() {
             )}
 
             {showFormV && (
-              <Panel title="Lançar Venda" onClose={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch('') }}>
+              <Panel title="Lançar Venda" onClose={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorStepHandled(false) }}>
+                <div className="grid grid-cols-1 md:grid-cols-4 xl:grid-cols-8 gap-2 mb-4">
+                  {vendaSteps.steps.map((step, index) => (
+                    <div key={step.key} className={cn(
+                      'rounded-xl border px-3 py-2',
+                      step.done
+                        ? 'border-green-200 bg-green-50 dark:border-green-900/30 dark:bg-green-950/20'
+                        : index === vendaSteps.currentStepIndex
+                          ? 'border-red-300 bg-red-50 dark:border-red-900/40 dark:bg-red-950/20'
+                          : 'border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40'
+                    )}>
+                      <p className={cn(
+                        'text-xs font-semibold',
+                        step.done
+                          ? 'text-green-700 dark:text-green-300'
+                          : index === vendaSteps.currentStepIndex
+                            ? 'text-red-700 dark:text-red-300'
+                            : 'text-gray-700 dark:text-gray-300'
+                      )}>{step.label}</p>
+                      <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">{step.helper}</p>
+                    </div>
+                  ))}
+                </div>
+
                 {/* linha 1: Tipo Venda + Cliente + Novo Cliente */}
                 <div className="grid grid-cols-1 md:grid-cols-[160px_1fr_auto] gap-3 mb-3">
                   <SelectInput label="Tipo Venda" value={formV2.tipo_venda}
@@ -1508,7 +3277,7 @@ export default function Comercial() {
                 </div>
 
                 {/* linha 2: Contador */}
-                <div className="mb-3">
+                <div className={cn('mb-3', !vendaStepStatus.clienteOk && 'opacity-60 pointer-events-none')}>
                   <label className="block text-xs text-blue-600 dark:text-blue-400 font-medium mb-1">Se for indicação de Contador/Parceiro, selecione abaixo:</label>
                   <div className="relative">
                     <input
@@ -1518,6 +3287,7 @@ export default function Comercial() {
                       onChange={e => {
                         const v = e.target.value
                         setContadorSearch(v)
+                        setContadorStepHandled(false)
                         if (!v) setFormV2(p => ({ ...p, contador_id: null }))
                       }}
                       placeholder="Nenhum selecionado"
@@ -1527,7 +3297,11 @@ export default function Comercial() {
                       <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-48 overflow-y-auto">
                         {parceirosParaContador.map(p => (
                           <button key={p.id} type="button"
-                            onClick={() => { setFormV2(prev => ({ ...prev, contador_id: p.id })); setContadorSearch('') }}
+                            onClick={() => {
+                              setFormV2(prev => ({ ...prev, contador_id: p.id }))
+                              setContadorStepHandled(true)
+                              setContadorSearch('')
+                            }}
                             className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800">
                             {p.cpf_cnpj ?? ''} - {(p.tipo_parceiro ?? '').toUpperCase()} - {p.nome}{p.nome_fantasia ? ` - ${p.nome_fantasia}` : ''}
                           </button>
@@ -1535,14 +3309,33 @@ export default function Comercial() {
                       </div>
                     )}
                     {formV2.contador_id && (
-                      <button type="button" onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch('') }}
+                      <button type="button" onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorStepHandled(false) }}
                         className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><X size={14} /></button>
+                    )}
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorStepHandled(true) }}
+                      className={cn(
+                        'px-3 py-2 text-xs rounded-lg border transition-colors',
+                        vendaStepStatus.contadorOk && !formV2.contador_id
+                          ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/30 dark:bg-green-950/20 dark:text-green-300'
+                          : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'
+                      )}
+                    >
+                      Seguir sem contador/parceiro
+                    </button>
+                    {!vendaStepStatus.contadorOk && (
+                      <p className="text-[11px] text-red-600 dark:text-red-400">
+                        Confirme esta etapa escolhendo um parceiro ou seguindo sem indicação.
+                      </p>
                     )}
                   </div>
                 </div>
 
                 {/* linha 3: Tabela de Venda */}
-                <div className="mb-3">
+                <div className={cn('mb-3', !vendaStepStatus.contadorOk && 'opacity-60 pointer-events-none')}>
                   <label className="block text-xs text-gray-500 mb-1">Selecione a tabela de Venda *</label>
                   <select value={formV2.tabela_preco_id}
                     onChange={e => {
@@ -1553,13 +3346,21 @@ export default function Comercial() {
                     <option value="">Selecione uma tabela</option>
                     {tabelasAtivas.map(t => <option key={t.id} value={t.id}>{t.nome}</option>)}
                   </select>
+                  {!vendaStepStatus.contadorOk && <p className="mt-1 text-[11px] text-gray-400">Confirme antes a etapa de contador/parceiro.</p>}
                 </div>
 
-                {/* linha 4: Tipo Emissão + Certificado + Validade */}
-                <div className="grid grid-cols-1 md:grid-cols-[200px_1fr_120px] gap-3 mb-3">
+                {/* linha 4: Tipo Emissão */}
+                <div className={cn('mb-3', !vendaStepStatus.tabelaOk && 'opacity-60 pointer-events-none')}>
                   <SelectInput label="Tipo Emissão" value={formV2.tipo_emissao}
-                    onChange={v => setFormV2(p => ({ ...p, tipo_emissao: v }))}
-                    options={TIPO_EMISSAO_OPTIONS} />
+                    onChange={v => setFormV2(p => ({ ...p, tipo_emissao: v, certificado_id: '', tabela_preco_item_id: '', valor_venda: 0 }))}
+                    options={[{ value: '', label: 'Selecione' }, ...TIPO_EMISSAO_OPTIONS]} />
+                  {!vendaStepStatus.tabelaOk && (
+                    <p className="mt-1 text-[11px] text-gray-400">Escolha a tabela para liberar o tipo de emissão.</p>
+                  )}
+                </div>
+
+                {/* linha 5: Certificado + Validade */}
+                <div className={cn('grid grid-cols-1 md:grid-cols-[1fr_120px] gap-3 mb-3', !vendaStepStatus.emissaoOk && 'opacity-60 pointer-events-none')}>
                   <div>
                     <label className="block text-xs text-gray-500 mb-1">Certificado *</label>
                     <select value={formV2.certificado_id}
@@ -1575,7 +3376,7 @@ export default function Comercial() {
                       }}
                       disabled={!formV2.tabela_preco_id}
                       className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50">
-                      <option value="">Selecione o Certificado</option>
+                      <option value="">{motivoSemCertificados ?? 'Selecione o Certificado'}</option>
                       {certsDaTabela.map(({ cert, item }) => (
                         <option key={cert.id} value={cert.id}>
                           {cert.tipo}{cert.descricao ? ` - ${cert.descricao}` : ''}
@@ -1583,6 +3384,23 @@ export default function Comercial() {
                         </option>
                       ))}
                     </select>
+                    {motivoSemCertificados && (
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <p className="text-[11px] text-amber-600 dark:text-amber-400">{motivoSemCertificados}</p>
+                        {formV2.tabela_preco_id && (itensTabelaTodos.length === 0 || itensTabela.length === 0) && (
+                          <button
+                            type="button"
+                            onClick={() => abrirProdutosDaTabela(formV2.tabela_preco_id)}
+                            className="px-2.5 py-1 text-[11px] rounded-lg border border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/20 transition-colors"
+                          >
+                            Abrir Produtos e Preços desta tabela
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {!vendaStepStatus.emissaoOk && (
+                      <p className="mt-1 text-[11px] text-gray-400">Defina antes o tipo de emissão para liberar os certificados.</p>
+                    )}
                   </div>
                   <label className="flex flex-col gap-1">
                     <span className="text-xs text-gray-500">Validade (Meses)</span>
@@ -1592,8 +3410,8 @@ export default function Comercial() {
                   </label>
                 </div>
 
-                {/* linha 5: Valor + Forma Pagamento + Vencimento */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+                {/* linha 6: Valor + Forma Pagamento */}
+                <div className={cn('grid grid-cols-1 md:grid-cols-2 gap-3 mb-3', !vendaStepStatus.certificadoOk && 'opacity-60 pointer-events-none')}>
                   <label className="flex flex-col gap-1">
                     <span className="text-xs text-green-600 dark:text-green-400 font-medium">Valor Venda (R$) *</span>
                     <input type="number" min="0" step="0.01" value={formV2.valor_venda}
@@ -1603,8 +3421,68 @@ export default function Comercial() {
                   <SelectInput label="Forma de Pagamento" value={formV2.forma_pagamento}
                     onChange={v => setFormV2(p => ({ ...p, forma_pagamento: v }))}
                     options={[{ value: '', label: 'Selecione' }, ...formasPagamento.map(n => ({ value: n, label: n }))]} />
-                  <TextInput label="Vencimento" type="date" value={formV2.data_vencimento}
+                </div>
+
+                {/* linha 7: Vencimento */}
+                <div className={cn('grid grid-cols-1 md:grid-cols-2 gap-3 mb-3', !vendaStepStatus.pagamentoOk && 'opacity-60 pointer-events-none')}>
+                  <TextInput label="Vencimento da forma de pagamento *" type="date" value={formV2.data_vencimento}
                     onChange={v => setFormV2(p => ({ ...p, data_vencimento: v }))} />
+                  <div className="rounded-xl border border-blue-100 dark:border-blue-900/20 bg-blue-50/60 dark:bg-blue-950/10 px-4 py-3">
+                    <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">Conexão da venda</p>
+                    <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                      A venda ficará vinculada à tabela, ao produto, ao ponto de atendimento e à forma de pagamento escolhida.
+                    </p>
+                  </div>
+                </div>
+
+                {/* linha 8: Ponto */}
+                <div className={cn('grid grid-cols-1 md:grid-cols-2 gap-3 mb-3', !vendaStepStatus.vencimentoOk && 'opacity-60 pointer-events-none')}>
+                  <SelectInput
+                    label="Ponto de Atendimento *"
+                    value={formV2.ponto_atendimento_id}
+                    onChange={v => setFormV2(p => ({ ...p, ponto_atendimento_id: v }))}
+                    options={[
+                      { value: '', label: pontosAtivos.length ? 'Selecione' : 'Cadastre um ponto primeiro' },
+                      ...pontosAtivos.map(ponto => ({
+                        value: ponto.id,
+                        label: [ponto.nome, ponto.cidade, ponto.uf].filter(Boolean).join(' · '),
+                      })),
+                    ]}
+                  />
+                  <div className="rounded-xl border border-red-100 dark:border-red-900/20 bg-red-50/60 dark:bg-red-950/10 px-4 py-3">
+                    <p className="text-xs font-semibold text-red-700 dark:text-red-300">Última etapa operacional</p>
+                    <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                      Escolha o ponto de atendimento para concluir o fluxo de validação.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mb-4 rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/70 dark:bg-emerald-950/20 px-4 py-3">
+                  <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">Link de compra para cliente, AGR ou revendedor</p>
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1 break-all">
+                    {resolveMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb) ?? 'Marketplace próprio ainda não configurado'}
+                  </p>
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
+                    {itemSelecionadoMarketplace?.link_safeweb?.trim()
+                      ? 'Este produto possui link específico configurado na tabela.'
+                      : 'Sem link específico neste item. O sistema ficará aguardando o seu marketplace próprio.'}
+                  </p>
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    <button
+                      type="button"
+                      onClick={() => abrirMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb)}
+                      className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors"
+                    >
+                      <ExternalLink size={13} /> Abrir link de compra
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void copiarMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb, 'Link de compra') }}
+                      className="flex items-center gap-1.5 px-3 py-2 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-medium rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors"
+                    >
+                      <Copy size={13} /> Copiar para enviar
+                    </button>
+                  </div>
                 </div>
 
                 {/* linha 6: Observações */}
@@ -1642,7 +3520,18 @@ export default function Comercial() {
                       <TextInput label="Telefone" value={formCliente.telefone ?? ''}
                         onChange={v => setFormCliente(p => ({ ...p, telefone: v || null }))} />
                       <TextInput label="CEP" value={formCliente.cep ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, cep: v || null }))} />
+                        onChange={v => setFormCliente(p => ({ ...p, cep: v || null }))}
+                        onBlur={async () => {
+                          const r = await buscarCep(formCliente.cep ?? '')
+                          if (!r) return
+                          setFormCliente(p => ({
+                            ...p,
+                            logradouro: r.logradouro || p.logradouro,
+                            bairro:     r.bairro     || p.bairro,
+                            cidade:     r.localidade || p.cidade,
+                            uf:         r.uf         || p.uf,
+                          }))
+                        }} />
                       <TextInput label="Cidade" value={formCliente.cidade ?? ''}
                         onChange={v => setFormCliente(p => ({ ...p, cidade: v || null }))} />
                       <TextInput label="UF" value={formCliente.uf ?? ''}
@@ -1682,9 +3571,9 @@ export default function Comercial() {
 
                 <FormActions
                   onSave={salvarVendaV2}
-                  onCancel={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch('') }}
+                  onCancel={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorStepHandled(false) }}
                   saving={salvandoV}
-                  disabled={!formV2.cadastro_base_id || !formV2.tabela_preco_id || !formV2.certificado_id}
+                  disabled={!vendaStepStatus.pontoOk}
                 />
               </Panel>
             )}
@@ -1710,6 +3599,14 @@ export default function Comercial() {
                 <TextInput label="PA/Emissor" value={vendaFilters.pa}
                   onChange={v => setVendaFilters(p => ({ ...p, pa: v }))} className="flex-1 min-w-[180px]" />
                 <div className="flex gap-2 ml-auto">
+                  <button type="button" onClick={() => abrirMarketplaceLink()}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition-colors">
+                    <ExternalLink size={14} /> Marketplace
+                  </button>
+                  <button type="button" onClick={() => { void copiarMarketplaceLink(undefined, 'Link geral do marketplace') }}
+                    className="flex items-center gap-1.5 px-4 py-2 border border-emerald-300 text-emerald-700 dark:text-emerald-300 text-sm font-medium rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors">
+                    <Copy size={14} /> Copiar link
+                  </button>
                   <button type="button" onClick={() => setTab('agenda')}
                     className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors">
                     <Calendar size={14} /> Agenda
@@ -1740,14 +3637,30 @@ export default function Comercial() {
               </div>
               {/* Linha 3: botões de ação */}
               <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100 dark:border-gray-800">
-                <VendaActionBtn icon={FileText}   label="Emitir NFS-e"        onClick={() => alert('Integração com NFS-e em desenvolvimento.')} />
-                <VendaActionBtn icon={RefreshCcw} label="Atualizar Faturas"   onClick={() => alert('Integração com faturas em desenvolvimento.')} />
-                <VendaActionBtn icon={List}        label="Protocolos em Lote"  onClick={() => alert('Processamento em lote em desenvolvimento.')} />
-                <VendaActionBtn icon={UserCheck}  label="Consulta CPF PSBio"  onClick={() => alert('Integração com PSBio em desenvolvimento.')} />
+                <VendaActionBtn icon={FileText}   label="Emitir NFS-e"        onClick={() => openFeatureNotice('Emissão de NFS-e', 'A estrutura fiscal já existe na V2, mas a emissão automática ainda depende do fluxo final de pagamento e da integração municipal.', 'Próximo bloco: ligar `nfse_configuracoes` + `nfse_emitidas` ao pós-pagamento.')} />
+                <VendaActionBtn icon={RefreshCcw} label="Atualizar Faturas"   onClick={() => openFeatureNotice('Atualização de faturas', 'O módulo de cobrança ainda não está fechado ponta a ponta. Esta ação será conectada quando o fluxo de pagamentos/webhook estiver pronto.', 'Próximo bloco: criar cobrança + webhook + conciliação.')} />
+                <VendaActionBtn icon={List}       label="Protocolos em Lote"  onClick={() => openFeatureNotice('Protocolos em lote', 'A emissão unitária já existe, mas o processamento em lote ainda precisa de regras de validação e fila operacional.', 'Próximo bloco: desenhar fila segura para operações em massa.')} />
+                <VendaActionBtn icon={UserCheck}  label="Consulta CPF PSBio"  onClick={() => openFeatureNotice('Consulta CPF PSBio', 'Essa ação depende de integração externa específica. O botão foi mantido como referência operacional do fluxo.', 'Entrará na fase de integrações externas reais.')} />
                 <VendaActionBtn icon={Download}   label="Exportar CSV"        onClick={exportarCSV} />
-                <button type="button" onClick={() => setShowFormV(v => !v)}
-                  className="flex items-center gap-1.5 px-3 py-2 bg-gray-900 dark:bg-white text-white dark:text-gray-900 text-xs font-semibold rounded-lg hover:opacity-90 transition-opacity ml-auto">
-                  <PlusCircle size={13} /> Nova Venda
+                <button type="button" onClick={() => {
+                  if (showFormV) {
+                    setShowFormV(false)
+                    setClienteSelecionadoObj(null)
+                    setClienteSearch('')
+                    setContadorSearch('')
+                    setContadorStepHandled(false)
+                    return
+                  }
+                  setFormV2({ ...EMPTY_VENDA_V2, ponto_atendimento_id: pontosAtivos[0]?.id ?? '' })
+                  setClienteSelecionadoObj(null)
+                  setClienteSearch('')
+                  setContadorSearch('')
+                  setContadorStepHandled(false)
+                  setShowClienteForm(false)
+                  setShowFormV(true)
+                }}
+                  className="ml-auto flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-xl shadow-md shadow-blue-600/20 hover:shadow-lg hover:shadow-blue-600/30 transition-all">
+                  <PlusCircle size={16} /> Nova Venda
                 </button>
               </div>
             </div>
@@ -1799,14 +3712,16 @@ export default function Comercial() {
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-0.5">
-                            <VendaIconBtn title="Notifica Eventos"  icon={Bell}          color="blue"    onClick={() => alert('Em desenvolvimento.')} />
+                            <VendaIconBtn title="Notifica Eventos"  icon={Bell}          color="blue"    onClick={() => openFeatureNotice('Notificações de eventos', 'A central de notificações dessa venda ainda não foi conectada aos eventos operacionais.', 'Pode ser ligada depois ao histórico de contato e automações.')} />
                             <VendaIconBtn title="Emitir Protocolo"  icon={ClipboardList} color="purple"  onClick={() => abrirProtocolo(v)} />
                             <VendaIconBtn title="Agendar"           icon={Calendar}      color="emerald" onClick={() => prepararAgendamento(v)} />
-                            <VendaIconBtn title="Upload Documentos" icon={Upload}        color="orange"  onClick={() => alert('Em desenvolvimento.')} />
-                            <VendaIconBtn title="Fatura"            icon={Receipt}       color="teal"    onClick={() => alert('Em desenvolvimento.')} />
+                            <VendaIconBtn title="Abrir marketplace" icon={ExternalLink}  color="teal"    onClick={() => abrirMarketplaceLink(obterLinkMarketplaceDaVenda(v))} />
+                            <VendaIconBtn title="Copiar link do marketplace" icon={Copy} color="gray"    onClick={() => { void copiarMarketplaceLink(obterLinkMarketplaceDaVenda(v), 'Link da venda no marketplace') }} />
+                            <VendaIconBtn title="Upload Documentos" icon={Upload}        color="orange"  onClick={() => openFeatureNotice('Upload de documentos', 'A estrutura de documentos financeiros existe, mas o fluxo de upload desta tela ainda não foi conectado.', 'Próximo bloco: ligar `documentos_financeiros` a esta venda.')} />
+                            <VendaIconBtn title="Fatura"            icon={Receipt}       color="teal"    onClick={() => void abrirFaturaVenda(v)} />
                             <VendaIconBtn title="Excluir"           icon={Trash2}        color="red"     onClick={() => void excluirVenda(v.id)} />
-                            <VendaIconBtn title="Ver NF-e"          icon={FileText}      color="gray"    onClick={() => alert('Em desenvolvimento.')} />
-                            <VendaIconBtn title="Cancelar NF-e"     icon={XCircle}       color="red"     onClick={() => alert('Em desenvolvimento.')} />
+                            <VendaIconBtn title="Ver NF-e"          icon={FileText}      color="gray"    onClick={() => void abrirNfseVenda(v)} />
+                            <VendaIconBtn title="Cancelar NF-e"     icon={XCircle}       color="red"     onClick={() => openFeatureNotice('Cancelamento de NFS-e', 'O cancelamento fiscal ainda não foi implementado porque depende da integração municipal final.', 'Entrará na fase fiscal após homologação da emissão.')} />
                             <VendaIconBtn title="Liberar Emissão"   icon={Unlock}        color="green"   onClick={() => void liberarEmissao(v)} />
                           </div>
                         </td>
@@ -1902,14 +3817,29 @@ export default function Comercial() {
           <div className="space-y-5">
             <SectionHeader
               title={`Agenda - ${new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' })}`}
-              actionLabel="Novo Agendamento"
-              onAction={() => setShowFormA(v => !v)}
+              actionLabel={profile?.perfil === 'agente_registro' ? 'Minha disponibilidade' : 'Novo Agendamento'}
+              onAction={() => profile?.perfil === 'agente_registro' ? setShowFormDisp(v => !v) : setShowFormA(v => !v)}
             />
 
-            {showFormA && (
+            <div className="rounded-xl border border-blue-100 dark:border-blue-900/20 bg-blue-50/50 dark:bg-blue-950/10 px-4 py-3">
+              <p className="text-sm font-medium text-blue-700 dark:text-blue-300">
+                {isAdmin
+                  ? 'Visão administrativa: você enxerga a agenda operacional completa e pode preparar a disponibilidade dos agentes.'
+                  : profile?.perfil === 'agente_registro'
+                    ? 'Visão do agente: você enxerga apenas seus agendamentos V2 e pode ajustar seus horários de atendimento.'
+                    : 'Visão comercial: você enxerga a agenda operacional e pode preparar agendamentos legados.'}
+              </p>
+            </div>
+
+            {showFormA && profile?.perfil !== 'agente_registro' && (
               <Panel title="Novo Agendamento" onClose={() => setShowFormA(false)}>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  <TextInput label="Cliente *" value={formA.cliente} onChange={v => setFormA(p => ({ ...p, cliente: v }))} className="col-span-2" />
+                  <ClienteSearchInput
+                    value={formA.cliente}
+                    onChange={v => setFormA(p => ({ ...p, cliente: v }))}
+                    onSelect={(nome, tel) => setFormA(p => ({ ...p, cliente: nome, telefone: tel ?? p.telefone }))}
+                    className="col-span-2"
+                  />
                   <TextInput label="Telefone" value={formA.telefone ?? ''} onChange={v => setFormA(p => ({ ...p, telefone: v || null }))} />
                   <SelectInput label="Serviço" value={formA.servico} onChange={v => setFormA(p => ({ ...p, servico: v }))}
                     options={certificados.map(c => ({ value: c.tipo, label: c.tipo }))} />
@@ -1919,12 +3849,294 @@ export default function Comercial() {
               </Panel>
             )}
 
+            {showAgendaV2Panel && formAgendaV2 && (
+              <Panel title="Agendar Validação da Venda" onClose={() => { setShowAgendaV2Panel(false); setFormAgendaV2(null); setErroAgendaV2(null) }}>
+                {erroAgendaV2 && (
+                  <div className="mb-4 rounded-xl border border-red-200 dark:border-red-900/40 bg-red-50/80 dark:bg-red-950/20 px-4 py-3">
+                    <p className="text-sm text-red-700 dark:text-red-300">{erroAgendaV2}</p>
+                  </div>
+                )}
+                <div className="mb-4 rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/80 dark:bg-emerald-950/20 px-4 py-3">
+                  <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
+                    Este agendamento já nasce vinculado à venda.
+                  </p>
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
+                    O agente e o ponto abaixo já respeitam a tabela de preço e, quando existir, a restrição do parceiro/contador da venda.
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <TextInput
+                    label="Data e Hora *"
+                    type="datetime-local"
+                    value={formAgendaV2.data_agendada}
+                    onChange={v => setFormAgendaV2(prev => prev ? { ...prev, data_agendada: v } : prev)}
+                  />
+                  <SelectInput
+                    label="Agente *"
+                    value={formAgendaV2.agente_registro_id}
+                    onChange={v => setFormAgendaV2(prev => prev ? { ...prev, agente_registro_id: v, ponto_atendimento_id: '' } : prev)}
+                    options={[
+                      { value: '', label: 'Selecione' },
+                      ...agentesRegistro
+                        .filter(agente => agentesElegiveisAgendaAtual.some(item => item.agente_registro_id === agente.id))
+                        .map(agente => ({ value: agente.id, label: agente.nome })),
+                    ]}
+                  />
+                  <SelectInput
+                    label="Ponto *"
+                    value={formAgendaV2.ponto_atendimento_id}
+                    onChange={v => setFormAgendaV2(prev => prev ? { ...prev, ponto_atendimento_id: v } : prev)}
+                    options={[
+                      { value: '', label: 'Selecione' },
+                      ...pontosElegiveisAgendaAtual.map(ponto => ({ value: ponto.id, label: ponto.nome })),
+                    ]}
+                  />
+                  <SelectInput
+                    label="Tipo de atendimento"
+                    value={formAgendaV2.tipo_atendimento}
+                    onChange={v => setFormAgendaV2(prev => prev ? { ...prev, tipo_atendimento: v as AgendamentoV2Form['tipo_atendimento'] } : prev)}
+                    options={[
+                      { value: '', label: 'Selecione' },
+                      { value: 'presencial', label: 'Presencial' },
+                      { value: 'videoconferencia', label: 'Videoconferência' },
+                      { value: 'auto_atendimento', label: 'Auto Atendimento' },
+                    ]}
+                  />
+                  <TextInput
+                    label="Observações"
+                    value={formAgendaV2.observacoes}
+                    onChange={v => setFormAgendaV2(prev => prev ? { ...prev, observacoes: v } : prev)}
+                    className="md:col-span-2"
+                  />
+                </div>
+                <FormActions
+                  onSave={salvarAgendamentoValidacaoV2}
+                  onCancel={() => { setShowAgendaV2Panel(false); setFormAgendaV2(null) }}
+                  saving={salvandoAgendaV2}
+                />
+              </Panel>
+            )}
+
+            {canManageAgenda && showFormDisp && (
+              <Panel title="Disponibilidade do Agente" onClose={() => setShowFormDisp(false)}>
+                <div className="mb-4 rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50/80 dark:bg-blue-950/20 px-4 py-3">
+                  <p className="text-sm font-medium text-blue-700 dark:text-blue-300">
+                    Manhã e tarde são cadastradas em blocos separados.
+                  </p>
+                  <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                    Exemplo: crie um horário de `08:00 às 12:00` e depois outro de `13:00 às 18:00` para respeitar o almoço.
+                  </p>
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    <button
+                      type="button"
+                      onClick={() => setFormDisp(p => ({ ...p, hora_inicio: '08:00', hora_fim: '12:00' }))}
+                      className="px-3 py-1.5 text-xs font-medium rounded-lg border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 hover:bg-white/80 dark:hover:bg-blue-900/20"
+                    >
+                      Preencher manhã
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormDisp(p => ({ ...p, hora_inicio: '13:00', hora_fim: '18:00' }))}
+                      className="px-3 py-1.5 text-xs font-medium rounded-lg border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 hover:bg-white/80 dark:hover:bg-blue-900/20"
+                    >
+                      Preencher tarde
+                    </button>
+                  </div>
+                </div>
+                <div className="mb-4 rounded-xl border border-gray-200 dark:border-gray-800 px-4 py-3 bg-gray-50/70 dark:bg-gray-800/30">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                      <p className="text-sm font-medium text-gray-700 dark:text-gray-200">Dias da semana</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Selecione todos os dias que devem receber este mesmo bloco de horário.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDiasSelecionadosDisp([1, 2, 3, 4, 5])}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-white dark:hover:bg-gray-900"
+                      >
+                        Seg a Sex
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDiasSelecionadosDisp([0, 1, 2, 3, 4, 5, 6])}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-white dark:hover:bg-gray-900"
+                      >
+                        Todos
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDiasSelecionadosDisp([])}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-white dark:hover:bg-gray-900"
+                      >
+                        Limpar
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {DIAS_SEMANA_OPTIONS.map(dia => {
+                      const ativo = diasSelecionadosDisp.includes(dia.value)
+                      return (
+                        <button
+                          key={dia.value}
+                          type="button"
+                          onClick={() => setDiasSelecionadosDisp(prev =>
+                            prev.includes(dia.value)
+                              ? prev.filter(item => item !== dia.value)
+                              : [...prev, dia.value].sort((a, b) => a - b)
+                          )}
+                          className={cn(
+                            'px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors',
+                            ativo
+                              ? 'bg-blue-600 text-white border-blue-600'
+                              : 'border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-900',
+                          )}
+                        >
+                          {dia.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  {isAdmin && (
+                    <SelectInput
+                      label="Agente *"
+                      value={formDisp.agente_registro_id}
+                      onChange={v => setFormDisp(p => ({ ...p, agente_registro_id: v }))}
+                      options={[{ value: '', label: 'Selecione' }, ...agentesRegistro.map(a => ({ value: a.id, label: a.nome }))]}
+                    />
+                  )}
+                  <SelectInput
+                    label="Ponto *"
+                    value={formDisp.ponto_atendimento_id}
+                    onChange={v => setFormDisp(p => ({ ...p, ponto_atendimento_id: v }))}
+                    options={[{ value: '', label: 'Selecione' }, ...pontosAtivos.map(p => ({ value: p.id, label: p.nome }))]}
+                  />
+                  <SelectInput
+                    label="Tipo"
+                    value={formDisp.tipo_atendimento}
+                    onChange={v => setFormDisp(p => ({ ...p, tipo_atendimento: v as DisponibilidadeForm['tipo_atendimento'] }))}
+                    options={[
+                      { value: '', label: 'Todos' },
+                      { value: 'presencial', label: 'Presencial' },
+                      { value: 'videoconferencia', label: 'Videoconferência' },
+                      { value: 'auto_atendimento', label: 'Auto Atendimento' },
+                    ]}
+                  />
+                  <TextInput label="Início" type="time" value={formDisp.hora_inicio} onChange={v => setFormDisp(p => ({ ...p, hora_inicio: v }))} />
+                  <TextInput label="Fim" type="time" value={formDisp.hora_fim} onChange={v => setFormDisp(p => ({ ...p, hora_fim: v }))} />
+                  <NumberInput label="Intervalo (min)" value={formDisp.intervalo_minutos} onChange={v => setFormDisp(p => ({ ...p, intervalo_minutos: v }))} step={1} />
+                  <NumberInput label="Capacidade" value={formDisp.capacidade_por_slot} onChange={v => setFormDisp(p => ({ ...p, capacidade_por_slot: v }))} step={1} />
+                </div>
+                <FormActions onSave={salvarDisponibilidade} onCancel={() => setShowFormDisp(false)} saving={salvandoDisp} />
+              </Panel>
+            )}
+
+            {canManageAgenda && showFormIndisp && (
+              <Panel title="Bloqueio e Indisponibilidade" onClose={() => setShowFormIndisp(false)}>
+                <div className="mb-4 rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50/80 dark:bg-amber-950/20 px-4 py-3">
+                  <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                    Use este bloco para exceções da agenda.
+                  </p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                    Exemplos: almoço especial, ausência, reunião interna, férias, feriado ou treinamento.
+                  </p>
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    <button
+                      type="button"
+                      onClick={() => setFormIndisp(p => ({ ...p, motivo: 'Almoço / pausa operacional' }))}
+                      className="px-3 py-1.5 text-xs font-medium rounded-lg border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 hover:bg-white/80 dark:hover:bg-amber-900/20"
+                    >
+                      Almoço
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormIndisp(p => ({ ...p, motivo: 'Férias' }))}
+                      className="px-3 py-1.5 text-xs font-medium rounded-lg border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 hover:bg-white/80 dark:hover:bg-amber-900/20"
+                    >
+                      Férias
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormIndisp(p => ({ ...p, motivo: 'Ausência / compromisso externo' }))}
+                      className="px-3 py-1.5 text-xs font-medium rounded-lg border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 hover:bg-white/80 dark:hover:bg-amber-900/20"
+                    >
+                      Ausência
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {isAdmin && (
+                    <SelectInput
+                      label="Agente *"
+                      value={formIndisp.agente_registro_id}
+                      onChange={v => setFormIndisp(p => ({ ...p, agente_registro_id: v }))}
+                      options={[{ value: '', label: 'Selecione' }, ...agentesRegistro.map(a => ({ value: a.id, label: a.nome }))]}
+                    />
+                  )}
+                  <SelectInput
+                    label="Ponto opcional"
+                    value={formIndisp.ponto_atendimento_id}
+                    onChange={v => setFormIndisp(p => ({ ...p, ponto_atendimento_id: v }))}
+                    options={[{ value: '', label: 'Todos os pontos do agente' }, ...pontosAtivos.map(p => ({ value: p.id, label: p.nome }))]}
+                  />
+                  <ActiveSelect value={formIndisp.ativo} onChange={v => setFormIndisp(p => ({ ...p, ativo: v }))} />
+                  <TextInput label="Início *" type="datetime-local" value={formIndisp.inicio_em} onChange={v => setFormIndisp(p => ({ ...p, inicio_em: v }))} />
+                  <TextInput label="Fim *" type="datetime-local" value={formIndisp.fim_em} onChange={v => setFormIndisp(p => ({ ...p, fim_em: v }))} />
+                  <TextInput label="Motivo" value={formIndisp.motivo} onChange={v => setFormIndisp(p => ({ ...p, motivo: v }))} className="md:col-span-1" />
+                </div>
+                <FormActions onSave={salvarIndisponibilidade} onCancel={() => setShowFormIndisp(false)} saving={salvandoIndisp} />
+              </Panel>
+            )}
+
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">A partir de</label>
+                <input
+                  type="date"
+                  value={filtroDataAgenda}
+                  onChange={e => setFiltroDataAgenda(e.target.value)}
+                  className="h-9 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 text-sm text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Status</label>
+                <select
+                  value={filtroStatusAgenda}
+                  onChange={e => setFiltroStatusAgenda(e.target.value)}
+                  className="h-9 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 text-sm text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Todos os status</option>
+                  <option value="aguardando">Aguardando</option>
+                  <option value="confirmado">Confirmado</option>
+                  <option value="realizado">Realizado</option>
+                  <option value="cancelado">Cancelado</option>
+                </select>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setFiltroDataAgenda(new Date().toISOString().split('T')[0]); setFiltroStatusAgenda('') }}
+                className="h-9 px-4 text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Hoje
+              </button>
+            </div>
+
             {loadingA ? (
               <p className="text-gray-400 animate-pulse text-sm">Carregando...</p>
             ) : agenda.length === 0 ? (
-              <p className="text-gray-400 text-sm">Nenhum agendamento encontrado.</p>
+              <p className="text-gray-400 text-sm">Nenhum agendamento encontrado para este filtro.</p>
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <InfoCardMini label="Total na agenda" value={String(agenda.length)} />
+                  <InfoCardMini label="Aguardando" value={String(agenda.filter(a => a.status === 'aguardando').length)} />
+                  <InfoCardMini label="Confirmados" value={String(agenda.filter(a => a.status === 'confirmado').length)} />
+                  <InfoCardMini label="Validação V2" value={String(agenda.filter(a => a.origem === 'validacao_v2').length)} />
+                </div>
+
+                <div className="space-y-2">
                 {agenda.map(a => {
                   const dt = new Date(a.data_hora)
                   return (
@@ -1935,8 +4147,26 @@ export default function Comercial() {
                       </div>
                       <div className="flex-1">
                         <p className="font-medium text-sm">{a.cliente}</p>
-                        <p className="text-xs text-gray-500 dark:text-gray-400">{a.servico}{a.telefone ? ` · ${a.telefone}` : ''}</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          {a.servico}
+                          {a.telefone ? ` · ${a.telefone}` : ''}
+                          {a.ponto_atendimento_nome ? ` · ${a.ponto_atendimento_nome}` : ''}
+                        </p>
+                        <p className="text-[11px] text-gray-400 mt-1">
+                          {a.origem === 'validacao_v2' ? 'Agenda V2' : 'Agenda legada'}
+                          {a.tipo_atendimento ? ` · ${capitalize(a.tipo_atendimento.replace(/_/g, ' '))}` : ''}
+                          {a.protocolo_numero ? ` · Protocolo ${a.protocolo_numero}` : ''}
+                        </p>
                       </div>
+                      {a.origem === 'validacao_v2' && a.venda_certificado_id && (
+                        <button
+                          type="button"
+                          onClick={() => void abrirPainelAgendamentoV2(a)}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium"
+                        >
+                          {a.status === 'confirmado' ? 'Reagendar' : 'Agendar validação'}
+                        </button>
+                      )}
                       <select
                         title="Status do agendamento"
                         value={a.status}
@@ -1949,9 +4179,278 @@ export default function Comercial() {
                     </div>
                   )
                 })}
+                </div>
+              </div>
+            )}
+
+            {canManageAgenda && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Disponibilidade configurada</h3>
+                    <p className="text-xs text-gray-400 mt-0.5">Você pode cadastrar mais de um bloco no mesmo dia, como manhã e tarde.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowFormDisp(v => !v)}
+                    className="px-3 py-2 text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  >
+                    {showFormDisp ? 'Fechar cadastro' : 'Adicionar horário'}
+                  </button>
+                </div>
+                {disponibilidades.length === 0 ? (
+                  <p className="text-sm text-gray-400">Nenhuma disponibilidade cadastrada ainda.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {disponibilidades.map(item => {
+                      const agenteNome = agentesRegistro.find(a => a.id === item.agente_registro_id)?.nome ?? 'Agente'
+                      const pontoNome = pontos.find(p => p.id === item.ponto_atendimento_id)?.nome ?? 'Ponto'
+                      const diaNome = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'][item.dia_semana] ?? 'Dia'
+                      return (
+                        <div key={item.id} className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4 flex items-center justify-between gap-4">
+                          <div>
+                            <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{agenteNome} · {pontoNome}</p>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              {diaNome} · {item.hora_inicio.slice(0, 5)} às {item.hora_fim.slice(0, 5)} · {item.intervalo_minutos} min · capacidade {item.capacidade_por_slot}
+                              {item.tipo_atendimento ? ` · ${capitalize(item.tipo_atendimento.replace(/_/g, ' '))}` : ''}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <StatusPill active={item.ativo} />
+                            <button type="button" title={item.ativo ? 'Desativar' : 'Ativar'} onClick={() => void toggleDisponibilidade(item)}
+                              className={cn('w-8 h-8 rounded-lg flex items-center justify-center transition-colors',
+                                item.ativo ? 'text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800')}>
+                              {item.ativo ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {canManageAgenda && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Bloqueios e exceções</h3>
+                    <p className="text-xs text-gray-400 mt-0.5">Aqui entram férias, almoço especial, ausências, feriados e outros períodos sem atendimento.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowFormIndisp(v => !v)}
+                    className="px-3 py-2 text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  >
+                    {showFormIndisp ? 'Fechar bloqueio' : 'Novo bloqueio'}
+                  </button>
+                </div>
+                {indisponibilidades.length === 0 ? (
+                  <p className="text-sm text-gray-400">Nenhum bloqueio cadastrado ainda.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {indisponibilidades.map(item => {
+                      const agenteNome = agentesRegistro.find(a => a.id === item.agente_registro_id)?.nome ?? 'Agente'
+                      const pontoNome = item.ponto_atendimento_id
+                        ? (pontos.find(p => p.id === item.ponto_atendimento_id)?.nome ?? 'Ponto')
+                        : 'Todos os pontos'
+                      return (
+                        <div key={item.id} className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4 flex items-center justify-between gap-4">
+                          <div>
+                            <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{agenteNome} · {pontoNome}</p>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              {new Date(item.inicio_em).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                              {' até '}
+                              {new Date(item.fim_em).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                            <p className="text-[11px] text-gray-400 mt-1">{item.motivo ?? 'Sem motivo informado'}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <StatusPill active={item.ativo} />
+                            <button type="button" title={item.ativo ? 'Desativar' : 'Ativar'} onClick={() => void toggleIndisponibilidade(item)}
+                              className={cn('w-8 h-8 rounded-lg flex items-center justify-center transition-colors',
+                                item.ativo ? 'text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800')}>
+                              {item.ativo ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
+        )}
+
+        {tab === 'marketplace' && (
+          <CatalogSection title="Lojas do Marketplace" actionLabel="Nova Loja" onAction={abrirNovaLojaMarketplace} loading={loadingCatalogo} error={catalogoErro}>
+            {marketplaceSchemaWarning && (
+              <div className="rounded-xl border border-amber-200 dark:border-amber-900/30 bg-amber-50/80 dark:bg-amber-950/20 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+                {marketplaceSchemaWarning}
+              </div>
+            )}
+            <div className="rounded-xl border border-blue-100 dark:border-blue-900/20 bg-blue-50/50 dark:bg-blue-950/10 px-4 py-3">
+              <p className="text-sm font-medium text-blue-700 dark:text-blue-300">
+                Cada loja do marketplace fica vinculada a uma tabela de preço e a um dono comercial.
+              </p>
+              <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                Isso garante que a venda nasça rastreável desde a origem: loja, tabela, vendedor/parceiro/contador e depois agente de registro.
+              </p>
+            </div>
+
+            {showFormLoja && (
+              <Panel title={editingLojaId ? 'Editar Loja do Marketplace' : 'Nova Loja do Marketplace'} onClose={() => setShowFormLoja(false)}>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <TextInput label="Nome da Loja *" value={formLoja.nome_loja} onChange={v => setFormLoja(p => ({ ...p, nome_loja: v, slug: p.slug || slugifyLoja(v) }))} />
+                  <TextInput label="Slug da Loja *" value={formLoja.slug} onChange={v => setFormLoja(p => ({ ...p, slug: slugifyLoja(v) }))} />
+                  <SelectInput
+                    label="Tabela de Preço *"
+                    value={formLoja.tabela_preco_id}
+                    onChange={v => setFormLoja(p => ({ ...p, tabela_preco_id: v, item_fixo_id: '' }))}
+                    options={[{ value: '', label: 'Selecione' }, ...tabelasAtivas.map(t => ({ value: t.id, label: t.nome }))]}
+                  />
+                  <SelectInput
+                    label="Dono da Loja"
+                    value={formLoja.owner_tipo}
+                    onChange={v => setFormLoja(p => ({ ...p, owner_tipo: v as OwnerTipoLojaMarketplace, owner_profile_id: '', owner_parceiro_id: '' }))}
+                    options={OWNER_LOJA_OPTIONS}
+                  />
+                  {formLoja.owner_tipo === 'vendedor' && (
+                    <SelectInput
+                      label="Vendedor Responsável *"
+                      value={formLoja.owner_profile_id}
+                      onChange={v => setFormLoja(p => ({ ...p, owner_profile_id: v }))}
+                      options={[{ value: '', label: 'Selecione' }, ...marketplaceOwners.map(owner => ({ value: owner.id, label: owner.nome }))]}
+                    />
+                  )}
+                  {['contador', 'parceiro', 'revendedor'].includes(formLoja.owner_tipo) && (
+                    <SelectInput
+                      label="Parceiro Responsável *"
+                      value={formLoja.owner_parceiro_id}
+                      onChange={v => setFormLoja(p => ({ ...p, owner_parceiro_id: v }))}
+                      options={[{ value: '', label: 'Selecione' }, ...parceiros.map(parceiro => ({ value: parceiro.id, label: `${parceiro.nome}${parceiro.tipo_parceiro ? ` · ${(parceiro.tipo_parceiro ?? '').toUpperCase()}` : ''}` }))]}
+                    />
+                  )}
+                  <SelectInput
+                    label="Modo da Loja"
+                    value={formLoja.modo_exibicao}
+                    onChange={v => setFormLoja(p => ({ ...p, modo_exibicao: v as LojaMarketplaceForm['modo_exibicao'], item_fixo_id: v === 'link_direto' ? p.item_fixo_id : '' }))}
+                    options={[
+                      { value: 'vitrine', label: 'Menu de escolhas por produtos' },
+                      { value: 'link_direto', label: 'Link direto para um produto' },
+                    ]}
+                  />
+                  {formLoja.modo_exibicao === 'link_direto' && (
+                    <SelectInput
+                      label="Produto Fixo *"
+                      value={formLoja.item_fixo_id}
+                      onChange={v => setFormLoja(p => ({ ...p, item_fixo_id: v }))}
+                      options={[{ value: '', label: opcoesItensLojaSelecionada.length ? 'Selecione o produto' : 'Nenhum produto nesta tabela' }, ...opcoesItensLojaSelecionada]}
+                    />
+                  )}
+                  <TextInput label="Domínio Público" value={formLoja.dominio_publico} onChange={v => setFormLoja(p => ({ ...p, dominio_publico: v }))} />
+                  <TextInput label="Descrição" value={formLoja.descricao} onChange={v => setFormLoja(p => ({ ...p, descricao: v }))} className="md:col-span-2" />
+                  <div className="md:col-span-2 rounded-xl border border-gray-200 dark:border-gray-800 px-4 py-3 bg-gray-50/70 dark:bg-gray-800/30">
+                    <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">URL futura da loja</p>
+                    <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 mt-1">
+                      {buildLojaProdutoUrl(
+                        {
+                          slug: formLoja.slug || slugifyLoja(formLoja.nome_loja) || 'sua-loja',
+                          dominio_publico: formLoja.dominio_publico.trim() || null,
+                        },
+                        formLoja.modo_exibicao === 'link_direto' ? formLoja.item_fixo_id || null : null
+                      )}
+                    </p>
+                  </div>
+                  <ActiveSelect value={formLoja.ativo} onChange={v => setFormLoja(p => ({ ...p, ativo: v }))} />
+                </div>
+                <FormActions onSave={salvarLojaMarketplace} onCancel={() => setShowFormLoja(false)} saving={salvandoCatalogo} />
+              </Panel>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {lojasMarketplace.length === 0 ? (
+                <EmptyBlock label="Nenhuma loja cadastrada ainda." />
+              ) : (
+                lojasMarketplace.map(loja => {
+                  const tabela = tabelasPreco.find(item => item.id === loja.tabela_preco_id)
+                  const ownerProfile = marketplaceOwners.find(item => item.id === loja.owner_profile_id)
+                  const ownerParceiro = parceiros.find(item => item.id === loja.owner_parceiro_id)
+                  const ownerNome = ownerProfile?.nome ?? ownerParceiro?.nome ?? 'Institucional'
+                  const config = normalizeLojaMarketplaceConfig(loja.configuracoes)
+                  const itensDaLoja = tabelaItens.filter(item => item.tabela_preco_id === loja.tabela_preco_id && item.ativo)
+                  const produtoFixo = config.item_fixo_id ? itensDaLoja.find(item => item.id === config.item_fixo_id) ?? null : null
+                  const certProdutoFixo = produtoFixo ? certificadoById.get(produtoFixo.certificado_id) : null
+                  const urlFutura = buildLojaProdutoUrl(loja, config.modo_exibicao === 'link_direto' ? config.item_fixo_id : null)
+
+                  return (
+                    <div key={loja.id} className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">{loja.nome_loja}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">{urlFutura}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <StatusPill active={loja.ativo} />
+                          <RowActions active={loja.ativo} onEdit={() => editarLojaMarketplace(loja)} onToggle={() => void toggleLojaMarketplace(loja)} />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <InfoCardMini label="Tabela" value={tabela?.nome ?? '—'} />
+                        <InfoCardMini label="Origem" value={`${capitalize(loja.owner_tipo)} · ${ownerNome}`} />
+                        <InfoCardMini label="Modo" value={config.modo_exibicao === 'link_direto' ? 'Link direto' : 'Menu de escolhas'} />
+                        <InfoCardMini label="Produto fixo" value={certProdutoFixo?.tipo ?? 'Livre escolha'} />
+                      </div>
+                      {loja.descricao && (
+                        <p className="text-xs text-gray-500 dark:text-gray-400">{loja.descricao}</p>
+                      )}
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={() => { void copiarMarketplaceLink(resolveLojaBaseUrl(loja), 'Link geral da loja') }}
+                          className="px-3 py-2 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700">
+                          Copiar link da loja
+                        </button>
+                        <button type="button" onClick={() => abrirMarketplaceLink(urlFutura)}
+                          className="px-3 py-2 text-xs rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
+                          Abrir loja
+                        </button>
+                      </div>
+                      {itensDaLoja.length > 0 && (
+                        <div className="rounded-xl border border-gray-200 dark:border-gray-800 p-3 space-y-2">
+                          <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Links por produto</p>
+                          <div className="space-y-2">
+                            {itensDaLoja.map(item => {
+                              const cert = certificadoById.get(item.certificado_id)
+                              const linkProduto = buildLojaProdutoUrl(loja, item.id)
+                              return (
+                                <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg bg-gray-50/70 dark:bg-gray-800/30 px-3 py-2">
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">{cert?.tipo ?? 'Produto'}</p>
+                                    <p className="text-[11px] text-gray-500 dark:text-gray-400">{formatCurrency(item.valor)}</p>
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <button type="button" onClick={() => { void copiarMarketplaceLink(linkProduto, `Link de ${cert?.tipo ?? 'produto'}`) }}
+                                      className="px-2.5 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-white dark:hover:bg-gray-900">
+                                      Copiar
+                                    </button>
+                                    <button type="button" onClick={() => abrirMarketplaceLink(linkProduto)}
+                                      className="px-2.5 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-white dark:hover:bg-gray-900">
+                                      Abrir
+                                    </button>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </CatalogSection>
         )}
 
         {/* ── CERTIFICADOS ───────────────────────────────────── */}
@@ -2066,6 +4565,11 @@ export default function Comercial() {
           <div className="space-y-6">
             {loadingCatalogo && <div className="flex items-center gap-2 text-gray-400 text-sm"><Loader2 size={16} className="animate-spin" /> Carregando...</div>}
             {catalogoErro && <div className="text-red-600 text-sm">{catalogoErro}</div>}
+            {agendaSchemaWarning && (
+              <div className="rounded-xl border border-amber-200 dark:border-amber-900/30 bg-amber-50/80 dark:bg-amber-950/20 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+                {agendaSchemaWarning}
+              </div>
+            )}
 
             {/* Lista de tabelas */}
             <div className="space-y-3">
@@ -2094,33 +4598,86 @@ export default function Comercial() {
                 </Panel>
               )}
 
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {tabelasPreco.length === 0
-                  ? <p className="text-sm text-gray-400 col-span-full">Nenhuma tabela cadastrada.</p>
-                  : tabelasPreco.map(t => (
-                    <div key={t.id} onClick={() => setSelectedTabelaId(t.id === selectedTabelaId ? null : t.id)}
-                      className={cn('cursor-pointer rounded-xl border p-4 transition-all',
-                        t.id === selectedTabelaId
-                          ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                          : 'border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 hover:border-blue-300',
-                        !t.ativo && 'opacity-50')}>
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <p className="font-semibold text-sm">{t.nome}</p>
-                          {t.descricao && <p className="text-xs text-gray-400 mt-0.5">{t.descricao}</p>}
-                          <p className="text-xs text-gray-400 mt-1">
-                            {tabelaItens.filter(i => i.tabela_preco_id === t.id).length} produto(s) ·{' '}
-                            {tabelaParticipantes.filter(p => p.tabela_preco_id === t.id).length} participante(s)
-                          </p>
-                        </div>
-                        <div onClick={e => e.stopPropagation()}>
-                          <RowActions active={t.ativo} onEdit={() => editarTabela(t)} onToggle={() => toggleTabela(t)} />
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                }
-              </div>
+              <DataTable headers={['Sel.', 'Tabela', 'Voucher', 'Produtos', 'Participantes', 'Desconto R$', 'Desconto %', '% Comissão', 'Status', 'Ações']}>
+                {tabelasPreco.length === 0 ? (
+                  <EmptyRow colSpan={10} label="Nenhuma tabela cadastrada." />
+                ) : (
+                  tabelasPreco.map(t => {
+                    const totalProdutos = tabelaItens.filter(i => i.tabela_preco_id === t.id).length
+                    const totalParticipantes = tabelaParticipantes.filter(p => p.tabela_preco_id === t.id).length
+                    const ativaSelecionada = t.id === selectedTabelaId
+                    return (
+                      <tr
+                        key={t.id}
+                        onClick={() => setSelectedTabelaId(t.id === selectedTabelaId ? null : t.id)}
+                        className={cn(
+                          'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50',
+                          ativaSelecionada && 'bg-blue-50 dark:bg-blue-900/10',
+                          !t.ativo && 'opacity-60'
+                        )}
+                      >
+                        <td className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            readOnly
+                            checked={ativaSelecionada}
+                            className="w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer"
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <div>
+                            <p className="font-medium text-sm text-gray-800 dark:text-gray-100">{t.nome}</p>
+                            {t.descricao && <p className="text-[11px] text-gray-400 mt-0.5">{t.descricao}</p>}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-gray-500">{t.codigo_voucher ?? '—'}</td>
+                        <td className="px-4 py-3 text-sm">{totalProdutos}</td>
+                        <td className="px-4 py-3 text-sm">{totalParticipantes}</td>
+                        <td className="px-4 py-3 text-sm text-gray-500">{formatCurrency(t.max_desconto_valor)}</td>
+                        <td className="px-4 py-3 text-sm text-gray-500">{Number(t.max_desconto_percentual).toLocaleString('pt-BR')}%</td>
+                        <td className="px-4 py-3 text-sm text-gray-500">{Number(t.comissao_venda_pct).toLocaleString('pt-BR')}%</td>
+                        <td className="px-4 py-3"><StatusPill active={t.ativo} /></td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              title="Editar tabela"
+                              onClick={() => { setSelectedTabelaId(t.id); editarTabela(t) }}
+                              className="w-8 h-8 rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-blue-600 flex items-center justify-center transition-colors"
+                            >
+                              <Edit3 size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              title="Editar preços"
+                              onClick={() => abrirEdicaoPrecosTabela(t.id)}
+                              className="w-8 h-8 rounded-lg text-gray-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 hover:text-amber-600 flex items-center justify-center transition-colors"
+                            >
+                              <Receipt size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              title="Associar agente"
+                              onClick={() => abrirAssociacaoAgenteTabela(t.id)}
+                              className="w-8 h-8 rounded-lg text-gray-400 hover:bg-green-50 dark:hover:bg-green-900/20 hover:text-green-600 flex items-center justify-center transition-colors"
+                            >
+                              <UserCheck size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              title="Excluir tabela"
+                              onClick={() => void excluirTabela(t)}
+                              className="w-8 h-8 rounded-lg text-gray-400 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 flex items-center justify-center transition-colors"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })
+                )}
+              </DataTable>
             </div>
 
             {/* Detalhe da tabela selecionada */}
@@ -2129,12 +4686,215 @@ export default function Comercial() {
               if (!tabela) return null
               const itens = tabelaItens.filter(i => i.tabela_preco_id === selectedTabelaId)
               const parts = tabelaParticipantes.filter(p => p.tabela_preco_id === selectedTabelaId)
+              const agentesPermitidos = agentesTabelaPreco.filter(a => a.tabela_preco_id === selectedTabelaId)
+              const pricingRule = pricingRuleByTabelaId.get(selectedTabelaId) ?? null
+              const certificadosDisponiveisBase = certificadosAtivos.filter(cert => !itens.some(item => item.certificado_id === cert.id))
+              const parceiroPreview = parceiros.find(p => p.id === slotPreviewParceiroId) ?? null
+              const restricoesParceiroPreview = parceiroPreview
+                ? parceirosAgentesPermitidos.filter(item => item.parceiro_id === parceiroPreview.id && item.ativo)
+                : []
+              const proximosSlots = generateAgendaSlotsPreview({
+                tabelaPrecoId: selectedTabelaId,
+                vinculados: agentesTabelaPreco.filter(a => a.ativo),
+                parceiroId: parceiroPreview?.id ?? null,
+                parceirosAgentesPermitidos,
+                disponibilidades: disponibilidades.filter(d => d.ativo),
+                indisponibilidades,
+                bookings: agenda
+                  .filter(a => a.origem === 'validacao_v2')
+                  .map(a => ({
+                    id: a.id,
+                    agente_registro_id: a.agente_registro_id,
+                    ponto_atendimento_id: a.ponto_atendimento_id,
+                    data_hora: a.data_hora,
+                    status: a.status,
+                  })),
+                rangeDays: 14,
+                limit: 10,
+              })
               return (
                 <div className="space-y-5 border-t border-gray-200 dark:border-gray-700 pt-5">
-                  <h3 className="font-semibold text-blue-600 dark:text-blue-400">Tabela: {tabela.nome}</h3>
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                      <h3 className="font-semibold text-blue-600 dark:text-blue-400">Tabela: {tabela.nome}</h3>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Primeiro você vincula produtos do catálogo base. Depois edita os preços somente desta tabela.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => editarTabela(tabela)}
+                        className="px-3 py-2 text-xs rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
+                        Editar tabela
+                      </button>
+                      <button type="button" onClick={() => abrirAssociacaoAgenteTabela(selectedTabelaId)}
+                        className="px-3 py-2 text-xs rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
+                        Associar agente
+                      </button>
+                      <button type="button" onClick={() => void excluirTabela(tabela)}
+                        className="px-3 py-2 text-xs rounded-lg border border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900/30 dark:hover:bg-red-950/20">
+                        Excluir tabela
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">Estratégia de preço pela tabela matriz</h4>
+                        <p className="text-xs text-gray-400 mt-0.5">Defina um percentual acima ou abaixo da tabela matriz e aplique em massa. Depois você ainda pode ajustar itens manualmente.</p>
+                      </div>
+                      {pricingRule && (
+                        <span className="text-[11px] px-2 py-1 rounded-full bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-300">
+                          Regra salva: {pricingRule.ajuste_percentual > 0 ? '+' : ''}{pricingRule.ajuste_percentual.toLocaleString('pt-BR')}% sobre {tabelaById.get(pricingRule.tabela_base_id)?.nome ?? 'tabela matriz'}
+                        </span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <SelectInput
+                        label="Tabela Matriz"
+                        value={pricingMatrixForm.tabela_base_id}
+                        onChange={v => setPricingMatrixForm(prev => ({ ...prev, tabela_base_id: v }))}
+                        options={[
+                          { value: '', label: 'Selecione a tabela base' },
+                          ...tabelasPreco
+                            .filter(item => item.id !== selectedTabelaId && item.ativo)
+                            .map(item => ({ value: item.id, label: item.nome })),
+                        ]}
+                      />
+                      <NumberInput
+                        label="% sobre a matriz"
+                        value={pricingMatrixForm.ajuste_percentual}
+                        onChange={v => setPricingMatrixForm(prev => ({ ...prev, ajuste_percentual: v }))}
+                      />
+                      <div className="flex items-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void salvarPricingMatrixRule(selectedTabelaId)}
+                          disabled={salvandoCatalogo}
+                          className="px-3 py-2 border border-gray-200 dark:border-gray-700 text-xs rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-60"
+                        >
+                          Salvar regra
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void aplicarPricingMatrixRule(selectedTabelaId)}
+                          disabled={salvandoCatalogo}
+                          className="px-3 py-2 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                        >
+                          Aplicar na tabela
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-gray-400">
+                      Exemplo: `-15` deixa esta tabela 15% abaixo da matriz. `10` aplica 10% acima. A regra atua nos produtos já vinculados a esta tabela.
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">Catálogo base da tabela</h4>
+                        <p className="text-xs text-gray-400 mt-0.5">A tela principal mostra só os produtos que realmente ficaram nesta tabela. Para agregar ou recolocar produtos, abra o popup do catálogo base.</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowCatalogoBasePopup(true)}
+                          className="px-3 py-2 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700"
+                        >
+                          Abrir catálogo base
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void vincularTodosCertificadosBaseNaTabela(selectedTabelaId)}
+                          disabled={salvandoCatalogo}
+                          className="px-3 py-2 border border-gray-200 dark:border-gray-700 text-xs rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-60"
+                        >
+                          Repor todos do catálogo
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div className="rounded-lg border border-gray-100 dark:border-gray-800 px-3 py-3">
+                        <p className="text-[11px] uppercase tracking-wide text-gray-400">Produtos na tabela</p>
+                        <p className="mt-1 text-lg font-semibold text-gray-800 dark:text-gray-100">{itens.length}</p>
+                      </div>
+                      <div className="rounded-lg border border-gray-100 dark:border-gray-800 px-3 py-3">
+                        <p className="text-[11px] uppercase tracking-wide text-gray-400">Disponíveis para recolocar</p>
+                        <p className="mt-1 text-lg font-semibold text-gray-800 dark:text-gray-100">{certificadosDisponiveisBase.length}</p>
+                      </div>
+                      <div className="rounded-lg border border-gray-100 dark:border-gray-800 px-3 py-3">
+                        <p className="text-[11px] uppercase tracking-wide text-gray-400">Seleção atual no popup</p>
+                        <p className="mt-1 text-lg font-semibold text-gray-800 dark:text-gray-100">{selectedBaseCertIds.size}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {showCatalogoBasePopup && (
+                    <Panel title="Catálogo Base da Tabela" onClose={() => setShowCatalogoBasePopup(false)}>
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div>
+                            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Selecione os produtos que deseja agregar ou recolocar</p>
+                            <p className="text-xs text-gray-400 mt-0.5">Somente os produtos marcados serão adicionados de volta na tabela. O que já está na tabela permanece visível apenas na grade principal.</p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedBaseCertIds(new Set(certificadosDisponiveisBase.map(cert => cert.id)))}
+                              className="px-3 py-2 border border-gray-200 dark:border-gray-700 text-xs rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800"
+                            >
+                              Selecionar todos
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedBaseCertIds(new Set())}
+                              className="px-3 py-2 border border-gray-200 dark:border-gray-700 text-xs rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800"
+                            >
+                              Limpar seleção
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void vincularCertificadosBaseNaTabela(selectedTabelaId).then(() => setShowCatalogoBasePopup(false))}
+                              disabled={salvandoCatalogo || selectedBaseCertIds.size === 0}
+                              className="px-3 py-2 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                            >
+                              Agregar selecionados ({selectedBaseCertIds.size})
+                            </button>
+                          </div>
+                        </div>
+                        {certificadosDisponiveisBase.length === 0 ? (
+                          <p className="text-sm text-gray-400">Todos os certificados ativos do catálogo já estão presentes nesta tabela.</p>
+                        ) : (
+                          <div className="max-h-[520px] overflow-y-auto pr-1 rounded-lg border border-gray-100 dark:border-gray-800">
+                            <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                              {certificadosDisponiveisBase.map(cert => (
+                                <label key={cert.id} className="flex items-start gap-3 px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedBaseCertIds.has(cert.id)}
+                                    onChange={() => setSelectedBaseCertIds(prev => {
+                                      const next = new Set(prev)
+                                      next.has(cert.id) ? next.delete(cert.id) : next.add(cert.id)
+                                      return next
+                                    })}
+                                    className="mt-0.5 w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer"
+                                  />
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{cert.tipo}</p>
+                                    <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                                      {[cert.validade || null, cert.tipo_emissao_padrao || null, cert.preco_venda ? formatCurrency(cert.preco_venda) : null].filter(Boolean).join(' · ')}
+                                    </p>
+                                  </div>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </Panel>
+                  )}
 
                   {/* Itens (certificados + preços) */}
-                  <div className="space-y-3">
+                  <div ref={tabelaProdutosSectionRef} className="space-y-3">
                     <div className="flex items-center justify-between flex-wrap gap-2">
                       <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">Produtos e Preços</h4>
                       <div className="flex items-center gap-2 flex-wrap">
@@ -2183,13 +4943,13 @@ export default function Comercial() {
                         const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s
                       })
                       return (
-                        <DataTable headers={['', 'Cód', 'Certificado', 'Validade', 'Preço Venda', 'Custo', 'Repasse', 'Status', 'Ações']}>
+                        <DataTable headers={['', 'Cód', 'Certificado', 'Validade', 'Preço Venda', 'Custo', 'Repasse', 'Marketplace', 'Status', 'Ações']}>
                           {itens.length === 0
-                            ? <EmptyRow colSpan={9} label="Nenhum produto nesta tabela." />
+                            ? <EmptyRow colSpan={10} label="Nenhum produto nesta tabela." />
                             : (
                               <>
                                 <tr className="bg-gray-50 dark:bg-gray-800/50">
-                                  <td className="px-4 py-2" colSpan={9}>
+                                  <td className="px-4 py-2" colSpan={10}>
                                     <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-500 select-none">
                                       <input type="checkbox" checked={allItemsSel} onChange={toggleAllItems}
                                         className="w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer" />
@@ -2211,6 +4971,26 @@ export default function Comercial() {
                                       <td className="px-4 py-3 text-green-600 dark:text-green-400 font-semibold">{formatCurrency(item.valor)}</td>
                                       <td className="px-4 py-3 text-sm text-gray-500">{formatCurrency(item.valor_custo)}</td>
                                       <td className="px-4 py-3 text-sm text-gray-500">{formatCurrency(item.valor_repasse)}</td>
+                                      <td className="px-4 py-3">
+                                        <div className="flex items-center gap-1">
+                                          <button
+                                            type="button"
+                                            onClick={() => abrirMarketplaceLink(item.link_safeweb)}
+                                            title="Abrir marketplace"
+                                            className="p-1 text-emerald-500 hover:text-emerald-700"
+                                          >
+                                            <ExternalLink size={13} />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => { void copiarMarketplaceLink(item.link_safeweb, 'Link do produto') }}
+                                            title="Copiar link"
+                                            className="p-1 text-emerald-500 hover:text-emerald-700"
+                                          >
+                                            <Copy size={13} />
+                                          </button>
+                                        </div>
+                                      </td>
                                       <td className="px-4 py-3"><StatusPill active={item.ativo} /></td>
                                       <td className="px-4 py-3">
                                         <div className="flex items-center gap-1">
@@ -2230,6 +5010,138 @@ export default function Comercial() {
                         </DataTable>
                       )
                     })()}
+                  </div>
+
+                  {/* Agentes permitidos */}
+                  <div ref={tabelaAgentesSectionRef} className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">Agentes de Registro Permitidos</h4>
+                        <p className="text-xs text-gray-400 mt-0.5">Esses agentes poderão aparecer para o cliente no agendamento desta tabela.</p>
+                      </div>
+                      <button type="button" onClick={() => abrirAssociacaoAgenteTabela(selectedTabelaId)}
+                        className="flex items-center gap-1 px-2 py-1.5 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700">
+                        <PlusCircle size={12} /> Vincular Agente
+                      </button>
+                    </div>
+
+                    {showFormAgenteTabela && formAgenteTabela.tabela_preco_id === selectedTabelaId && (
+                      <Panel title="Vincular Agente à Tabela" onClose={() => setShowFormAgenteTabela(false)}>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <SelectInput
+                            label="Agente *"
+                            value={formAgenteTabela.agente_registro_id}
+                            onChange={v => setFormAgenteTabela(p => ({ ...p, agente_registro_id: v }))}
+                            options={[{ value: '', label: 'Selecione' }, ...agentesRegistro.map(a => ({ value: a.id, label: a.nome }))]}
+                          />
+                          <SelectInput
+                            label="Ponto Preferencial"
+                            value={formAgenteTabela.ponto_atendimento_id}
+                            onChange={v => setFormAgenteTabela(p => ({ ...p, ponto_atendimento_id: v }))}
+                            options={[{ value: '', label: 'Sem ponto fixo' }, ...pontosAtivos.map(p => ({ value: p.id, label: p.nome }))]}
+                          />
+                          <ActiveSelect value={formAgenteTabela.ativo} onChange={v => setFormAgenteTabela(p => ({ ...p, ativo: v }))} />
+                        </div>
+                        <FormActions onSave={salvarAgenteTabela} onCancel={() => setShowFormAgenteTabela(false)} saving={salvandoCatalogo} />
+                      </Panel>
+                    )}
+
+                    {agentesPermitidos.length === 0 ? (
+                      <p className="text-sm text-gray-400">Nenhum agente vinculado ainda. Sem isso o cliente não terá lista controlada de atendimento.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {agentesPermitidos.map(item => {
+                          const agente = agentesRegistro.find(a => a.id === item.agente_registro_id)
+                          const ponto = pontos.find(p => p.id === item.ponto_atendimento_id)
+                          return (
+                            <div key={item.id} className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4 flex items-center justify-between gap-4">
+                              <div>
+                                <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{agente?.nome ?? item.agente_registro_id}</p>
+                                <p className="text-xs text-gray-500 dark:text-gray-400">
+                                  {ponto ? `Ponto preferencial: ${ponto.nome}` : 'Sem ponto preferencial fixado'}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <StatusPill active={item.ativo} />
+                                <button type="button" title={item.ativo ? 'Desativar' : 'Ativar'} onClick={() => void toggleAgenteTabela(item)}
+                                  className={cn('w-8 h-8 rounded-lg flex items-center justify-center transition-colors',
+                                    item.ativo ? 'text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800')}>
+                                  {item.ativo ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
+                                </button>
+                                <button type="button" title="Excluir vínculo" onClick={() => void excluirAgenteTabela(item.id)}
+                                  className="w-8 h-8 rounded-lg text-gray-400 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 flex items-center justify-center transition-colors">
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-3">
+                    <div>
+                      <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">Prévia de Slots para o Cliente</h4>
+                      <p className="text-xs text-gray-400 mt-0.5">Simulação dos próximos horários livres considerando tabela, parceiro, disponibilidade, bloqueios e ocupação.</p>
+                    </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,340px)_1fr] gap-4">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-xs text-gray-500">Simular parceiro, vendedor ou contador</span>
+                        <select
+                          value={slotPreviewParceiroId}
+                          onChange={e => setSlotPreviewParceiroId(e.target.value)}
+                          className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">Sem filtro de parceiro</option>
+                          {parceiros.map(p => (
+                            <option key={p.id} value={p.id}>
+                              {`${p.nome}${p.tipo_parceiro ? ` · ${(p.tipo_parceiro ?? '').toUpperCase()}` : ''}${p.cpf_cnpj ? ` · ${p.cpf_cnpj}` : ''}`}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 px-4 py-3 bg-gray-50/70 dark:bg-gray-800/30">
+                        {parceiroPreview ? (
+                          <div className="space-y-1">
+                            <p className="text-sm font-medium text-gray-800 dark:text-gray-100">
+                              Filtro ativo: {parceiroPreview.nome}
+                            </p>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              {restricoesParceiroPreview.length > 0
+                                ? `Este parceiro possui ${restricoesParceiroPreview.length} vínculo(s) ativo(s) com agentes. A lista abaixo já está limitada por essa regra.`
+                                : 'Este parceiro ainda não possui vínculo específico com agentes. A prévia está usando apenas a regra da tabela.'}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                            Selecione um parceiro para validar exatamente quais agentes e pontos aparecerão para ele no fluxo de compra e pós-compra.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    {proximosSlots.length === 0 ? (
+                      <p className="text-sm text-gray-400">Nenhum slot disponível encontrado para esta combinação nos próximos 14 dias.</p>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                        {proximosSlots.map(slot => {
+                          const agente = agentesRegistro.find(a => a.id === slot.agente_registro_id)
+                          const ponto = pontos.find(p => p.id === slot.ponto_atendimento_id)
+                          return (
+                            <div key={`${slot.agente_registro_id}-${slot.ponto_atendimento_id}-${slot.inicio}`} className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
+                              <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">{agente?.nome ?? 'Agente'}</p>
+                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{ponto?.nome ?? 'Ponto não definido'}</p>
+                              <p className="text-xs text-blue-600 dark:text-blue-400 mt-2">
+                                {new Date(slot.inicio).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} · {new Date(slot.inicio).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                              </p>
+                              <p className="text-xs text-gray-400 mt-1">
+                                {slot.tipo_atendimento ? capitalize(slot.tipo_atendimento.replace(/_/g, ' ')) : 'Tipo livre'} · {slot.vagas_restantes}/{slot.capacidade_total} vaga(s)
+                              </p>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   {/* Participantes */}
@@ -2338,9 +5250,10 @@ export default function Comercial() {
           <CatalogSection title="Formas de Pagamento Aceitas" actionLabel="Nova Forma" onAction={abrirNovoPagamento} loading={loadingCatalogo} error={catalogoErro}>
             {showFormPagamento && (
               <Panel title={editingPagamentoId ? 'Editar Forma de Pagamento' : 'Nova Forma de Pagamento'} onClose={() => setShowFormPagamento(false)}>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <TextInput label="Nome *" value={formPagamento.nome} onChange={v => setFormPagamento(p => ({ ...p, nome: v }))} />
-                  <NumberInput label="Ordem" value={formPagamento.ordem} onChange={v => setFormPagamento(p => ({ ...p, ordem: v }))} step={1} />
+                  <TextInput label="Código" value={formPagamento.codigo} onChange={v => setFormPagamento(p => ({ ...p, codigo: v }))} />
+                  <TextInput label="Gateway" value={formPagamento.gateway} onChange={v => setFormPagamento(p => ({ ...p, gateway: v }))} />
                   <ActiveSelect value={formPagamento.ativo} onChange={v => setFormPagamento(p => ({ ...p, ativo: v }))} />
                 </div>
                 <FormActions onSave={salvarPagamento} onCancel={() => setShowFormPagamento(false)} saving={salvandoCatalogo} />
@@ -2355,12 +5268,204 @@ export default function Comercial() {
                   <div className="w-8 h-8 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
                     <CreditCard size={16} className="text-blue-600 dark:text-blue-400" />
                   </div>
-                  <span className="text-sm font-medium flex-1 min-w-0 truncate">{p.nome}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{p.nome}</p>
+                    <p className="text-[11px] text-gray-400 truncate">
+                      {p.gateway ?? 'manual'}{p.codigo ? ` · código ${p.codigo}` : ''}
+                    </p>
+                  </div>
                   <RowActions active={p.ativo} onEdit={() => editarPagamento(p)} onToggle={() => togglePagamento(p)} />
                 </div>
               ))}
             </div>
           </CatalogSection>
+        )}
+
+        {featureNotice && (
+          <Panel title={featureNotice.title} onClose={() => setFeatureNotice(null)}>
+            <div className="space-y-3">
+              <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">{featureNotice.description}</p>
+              {featureNotice.nextStep && (
+                <div className="rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-950/20 px-4 py-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">Próximo passo previsto</p>
+                  <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">{featureNotice.nextStep}</p>
+                </div>
+              )}
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setFeatureNotice(null)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+                >
+                  Entendi
+                </button>
+              </div>
+            </div>
+          </Panel>
+        )}
+
+        {loadingVendaFinanceiro && (
+          <div className="flex items-center gap-2 text-sm text-gray-500">
+            <Loader2 size={16} className="animate-spin" />
+            Carregando fatura da venda...
+          </div>
+        )}
+
+        {vendaFinanceiroModal && (
+          <Panel title={`Fatura da venda ${vendaFinanceiroModal.venda.protocolo_numero ?? vendaFinanceiroModal.venda.pedido_numero ?? ''}`.trim()} onClose={() => setVendaFinanceiroModal(null)}>
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <InfoCardMini label="Cliente" value={(vendaFinanceiroModal.venda.cadastros_base as { nome?: string } | null)?.nome ?? vendaFinanceiroModal.venda.nome_faturamento ?? '—'} />
+                <InfoCardMini label="Valor da venda" value={formatCurrency(vendaFinanceiroModal.venda.valor_venda ?? 0)} />
+                <InfoCardMini label="Pagamento" value={vendaFinanceiroModal.venda.pago ? 'Pago' : 'Pendente'} />
+                <InfoCardMini label="Forma" value={(vendaFinanceiroModal.venda.metadata as { forma_pagamento?: string } | null)?.forma_pagamento ?? '—'} />
+              </div>
+
+              <div className="rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+                <div className="px-4 py-3 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-800">
+                  <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Lançamentos financeiros vinculados</h4>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                        <th className="px-4 py-3">Descrição</th>
+                        <th className="px-4 py-3">Tipo</th>
+                        <th className="px-4 py-3">Vencimento</th>
+                        <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3 text-right">Valor</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                      {vendaFinanceiroModal.lancamentos.length === 0 ? (
+                        <EmptyRow colSpan={5} label="Nenhum lançamento financeiro vinculado a esta venda." />
+                      ) : vendaFinanceiroModal.lancamentos.map(lanc => (
+                        <tr key={lanc.id}>
+                          <td className="px-4 py-3">{lanc.descricao}</td>
+                          <td className="px-4 py-3 capitalize">{lanc.tipo}</td>
+                          <td className="px-4 py-3 text-gray-500">{new Date(lanc.vencimento).toLocaleDateString('pt-BR')}</td>
+                          <td className="px-4 py-3">
+                            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                              {capitalize(lanc.status)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right font-medium">{formatCurrency(lanc.valor ?? 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+                <div className="px-4 py-3 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-800">
+                  <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Documentos vinculados</h4>
+                </div>
+                <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {vendaFinanceiroModal.documentos.length === 0 ? (
+                    <div className="px-4 py-6 text-sm text-gray-400">Nenhum documento financeiro vinculado a esta venda.</div>
+                  ) : vendaFinanceiroModal.documentos.map(doc => (
+                    <div key={doc.id} className="px-4 py-3 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-gray-700 dark:text-gray-200 truncate">{doc.nome_original}</p>
+                        <p className="text-xs text-gray-500">
+                          {doc.tipo_documento.replace(/_/g, ' ')} · {new Date(doc.created_at).toLocaleDateString('pt-BR')}
+                        </p>
+                      </div>
+                      <span className="text-xs text-gray-400 truncate">{doc.bucket}/{doc.storage_path}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </Panel>
+        )}
+
+        {loadingVendaNfse && (
+          <div className="flex items-center gap-2 text-sm text-gray-500">
+            <Loader2 size={16} className="animate-spin" />
+            Carregando NFS-e da venda...
+          </div>
+        )}
+
+        {vendaNfseModal && (
+          <Panel title={`NFS-e da venda ${vendaNfseModal.venda.protocolo_numero ?? vendaNfseModal.venda.pedido_numero ?? ''}`.trim()} onClose={() => setVendaNfseModal(null)}>
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <InfoCardMini label="Cliente" value={(vendaNfseModal.venda.cadastros_base as { nome?: string } | null)?.nome ?? vendaNfseModal.venda.nome_faturamento ?? '—'} />
+                <InfoCardMini label="Status venda" value={STATUS_VENDA_LABEL[vendaNfseModal.venda.status_venda]} />
+                <InfoCardMini label="Valor venda" value={formatCurrency(vendaNfseModal.venda.valor_venda ?? 0)} />
+                <InfoCardMini label="Notas encontradas" value={String(vendaNfseModal.notas.length)} />
+              </div>
+
+              <div className="rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-50 dark:bg-gray-800/50 text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide text-left">
+                        <th className="px-4 py-3">Número</th>
+                        <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3">Emissão</th>
+                        <th className="px-4 py-3">Valor</th>
+                        <th className="px-4 py-3">Verificação</th>
+                        <th className="px-4 py-3 text-right">Arquivos</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                      {vendaNfseModal.notas.length === 0 ? (
+                        <EmptyRow colSpan={6} label="Nenhuma NFS-e vinculada a esta venda." />
+                      ) : vendaNfseModal.notas.map(nota => (
+                        <tr key={nota.id}>
+                          <td className="px-4 py-3 font-medium">{nota.numero_nf ?? '—'}</td>
+                          <td className="px-4 py-3">
+                            <span className={cn(
+                              'px-2 py-0.5 rounded-full text-xs font-medium',
+                              nota.status_nf === 'emitida' && 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+                              nota.status_nf === 'erro' && 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+                              nota.status_nf === 'cancelada' && 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300',
+                              nota.status_nf === 'pendente' && 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
+                            )}>
+                              {capitalize(nota.status_nf)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-gray-500">{nota.data_emissao ? new Date(nota.data_emissao).toLocaleString('pt-BR') : '—'}</td>
+                          <td className="px-4 py-3">{formatCurrency(nota.valor_servico ?? 0)}</td>
+                          <td className="px-4 py-3 text-gray-500">{nota.codigo_verificacao ?? '—'}</td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center justify-end gap-2">
+                              {nota.pdf_url && (
+                                <button type="button" onClick={() => window.open(nota.pdf_url!, '_blank')}
+                                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700">
+                                  PDF
+                                </button>
+                              )}
+                              {nota.xml_url && (
+                                <button type="button" onClick={() => window.open(nota.xml_url!, '_blank')}
+                                  className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
+                                  XML
+                                </button>
+                              )}
+                              {!nota.pdf_url && !nota.xml_url && (
+                                <span className="text-xs text-gray-400">Sem arquivo</span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="flex justify-end pt-2">
+                <button type="button"
+                  onClick={() => emitirNfseMock(vendaNfseModal.venda)}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-purple-600 text-white text-xs font-medium rounded-lg hover:bg-purple-700 transition-colors">
+                  <FileText size={13} />
+                  Emitir NFS-e (Mock)
+                </button>
+              </div>
+            </div>
+          </Panel>
         )}
 
         {/* ── IMPORTAR ───────────────────────────────────────── */}
@@ -2643,6 +5748,18 @@ export default function Comercial() {
                       <label className="flex flex-col gap-1">
                         <span className="text-xs text-gray-500">CEP:</span>
                         <input value={formProtocolo.cep} onChange={e => setFormProtocolo(p => ({ ...p, cep: e.target.value }))}
+                          onBlur={async e => {
+                            const r = await buscarCep(e.target.value)
+                            if (!r) return
+                            setFormProtocolo(p => ({
+                              ...p,
+                              logradouro: r.logradouro || p.logradouro,
+                              bairro:     r.bairro     || p.bairro,
+                              cidade:     r.localidade || p.cidade,
+                              uf:         r.uf         || p.uf,
+                              ibge:       r.ibge       || p.ibge,
+                            }))
+                          }}
                           className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
                       </label>
                       <label className="flex flex-col gap-1 md:col-span-2">
@@ -2726,6 +5843,18 @@ export default function Comercial() {
           </div>
         </div>
       )}
+
+      {toast && (
+        <div className={cn(
+          'fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-xl text-sm font-medium',
+          toast.type === 'ok' ? 'bg-green-600 text-white' : 'bg-red-600 text-white',
+        )}>
+          {toast.msg}
+          <button type="button" title="Fechar" onClick={() => setToast(null)} className="ml-1 opacity-80 hover:opacity-100">
+            <X size={14} />
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -2750,11 +5879,14 @@ function CatalogSection({ title, actionLabel, onAction, loading, error, children
   if (loading) return <div className="flex items-center gap-2 text-gray-400 text-sm"><Loader2 size={16} className="animate-spin" /> Carregando catálogo...</div>
 
   if (error) {
+    const missingMarketplaceTable = error.includes("public.lojas_marketplace")
     return (
       <div className="space-y-4">
         <SectionHeader title={title} actionLabel={actionLabel} onAction={onAction} />
         <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg p-4 text-sm">
-          Erro ao carregar catálogo comercial: {error}. Execute o SQL em <strong>sql/commercial_schema.sql</strong> no Supabase.
+          {missingMarketplaceTable
+            ? <>Erro ao carregar catálogo comercial: {error}. Execute o arquivo <strong>sql/marketplace_lojas_fix.sql</strong> no Supabase ou aplique as migrations de marketplace de 23/05/2026.</>
+            : <>Erro ao carregar catálogo comercial: {error}. Verifique as migrations comerciais do projeto no Supabase.</>}
         </div>
       </div>
     )
@@ -2795,13 +5927,13 @@ function FormActions({ onSave, onCancel, saving, disabled = false }: {
   )
 }
 
-function TextInput({ label, value, onChange, type = 'text', className }: {
-  label: string; value: string; onChange: (value: string) => void; type?: string; className?: string
+function TextInput({ label, value, onChange, onBlur, type = 'text', className }: {
+  label: string; value: string; onChange: (value: string) => void; onBlur?: () => void; type?: string; className?: string
 }) {
   return (
     <label className={cn('flex flex-col gap-1', className)}>
       <span className="text-xs text-gray-500">{label}</span>
-      <input type={type} value={value} onChange={e => onChange(e.target.value)}
+      <input type={type} value={value} onChange={e => onChange(e.target.value)} onBlur={onBlur}
         className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
     </label>
   )
@@ -2829,6 +5961,67 @@ function SelectInput({ label, value, onChange, options }: {
         className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
         {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
+    </label>
+  )
+}
+
+function ClienteSearchInput({ value, onChange, onSelect, className }: {
+  value: string
+  onChange: (v: string) => void
+  onSelect: (nome: string, telefone: string | null) => void
+  className?: string
+}) {
+  const [resultados, setResultados] = useState<Pick<CadastroBase, 'id' | 'nome' | 'cpf_cnpj' | 'telefone'>[]>([])
+  const [buscando, setBuscando] = useState(false)
+  const [aberto, setAberto] = useState(false)
+  const justSelected = useRef(false)
+
+  useEffect(() => {
+    if (justSelected.current) { justSelected.current = false; return }
+    if (value.length < 3) { setResultados([]); setAberto(false); return }
+    const t = setTimeout(async () => {
+      setBuscando(true)
+      const { data } = await supabase
+        .from('cadastros_base')
+        .select('id, nome, cpf_cnpj, telefone')
+        .or(`nome.ilike.%${value}%,cpf_cnpj.ilike.%${value}%`)
+        .eq('status', 'ativo')
+        .limit(8)
+      setBuscando(false)
+      setResultados(data ?? [])
+      setAberto(true)
+    }, 300)
+    return () => { clearTimeout(t); setBuscando(false) }
+  }, [value])
+
+  return (
+    <label className={cn('flex flex-col gap-1 relative', className)}>
+      <span className="text-xs text-gray-500">Cliente *</span>
+      <input
+        type="text"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onBlur={() => setTimeout(() => setAberto(false), 150)}
+        placeholder="Digite nome ou CPF/CNPJ…"
+        className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+      {buscando && <span className="absolute right-3 top-8 text-xs text-gray-400">buscando…</span>}
+      {aberto && resultados.length > 0 && (
+        <ul className="absolute top-full left-0 right-0 z-50 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg mt-1 overflow-hidden">
+          {resultados.map(r => (
+            <li key={r.id}>
+              <button
+                type="button"
+                onMouseDown={() => { justSelected.current = true; onSelect(r.nome, r.telefone ?? null); setAberto(false); setResultados([]) }}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors"
+              >
+                <span className="font-medium">{r.nome}</span>
+                {r.cpf_cnpj && <span className="text-xs text-gray-400 ml-2">{r.cpf_cnpj}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </label>
   )
 }
@@ -2904,6 +6097,14 @@ function EmptyBlock({ label }: { label: string }) {
   return <div className="col-span-full text-center py-10 text-gray-400 text-sm">{label}</div>
 }
 
+function InfoCardMini({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800 px-4 py-3 bg-gray-50/70 dark:bg-gray-800/30">
+      <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">{label}</p>
+      <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 mt-1">{value}</p>
+    </div>
+  )
+}
 
 function statusVendaV2Cls(s: StatusVendaCertificado) {
   const m: Record<StatusVendaCertificado, string> = {

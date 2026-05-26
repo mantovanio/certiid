@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabase'
+import { getEdgeFunctionUrl, getSupabaseAccessToken, SUPABASE_ANON_KEY } from '@/lib/supabase'
 import type { PerfilAcesso, PermissaoPagina, TipoVinculoUsuario } from '@/types'
 
 type CreateUserPayload = {
@@ -35,9 +35,23 @@ const DEFAULT_VINCULO_BY_PERFIL: Record<PerfilAcesso, TipoVinculoUsuario> = {
 }
 
 async function invokeAdminUsers(body: AdminUsersAction) {
-  const { data, error } = await supabase.functions.invoke('admin-users', { body })
-  if (error) throw new Error(error.message)
-  return data as { ok: boolean; userId?: string; error?: string }
+  const accessToken = await getSupabaseAccessToken()
+  const response = await fetch(getEdgeFunctionUrl('admin-users'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  })
+
+  const data = await response.json().catch(() => null) as { ok?: boolean; userId?: string; error?: string } | null
+  if (!response.ok) {
+    throw new Error(data?.error ?? `Falha ao chamar Edge Function (${response.status})`)
+  }
+
+  return { ok: Boolean(data?.ok), userId: data?.userId, error: data?.error }
 }
 
 export async function createAdminManagedUser(payload: CreateUserPayload) {

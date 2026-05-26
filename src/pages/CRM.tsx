@@ -10,13 +10,12 @@ import {
 } from '@dnd-kit/core'
 import { useDroppable } from '@dnd-kit/core'
 import { useDraggable } from '@dnd-kit/core'
-import { ExternalLink, MessageCircle } from 'lucide-react'
-import { supabase, getSupabaseAccessToken } from '@/lib/supabase'
+import { MessageCircle } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
-import ChatPanel, { type ChatwootCfg } from '@/components/ChatPanel'
+import { loadActiveWhatsAppIntegration } from '@/lib/whatsappIntegration'
+import ChatPanel, { type EvolutionCfg } from '@/components/ChatPanel'
 import type { Lead, StatusLead } from '@/types'
-
-const EDGE_FN = 'https://cvfrhfiaprdtwxxplngk.supabase.co/functions/v1/chatwoot-webhook'
 
 interface Column {
   id: StatusLead
@@ -36,53 +35,19 @@ const COLUMNS: Column[] = [
   { id: 'perdido',             label: 'Perdido',             color: '#6B7280', bg: 'bg-gray-50 dark:bg-gray-800/30',  border: 'border-gray-200 dark:border-gray-700' },
 ]
 
-const TO_CHATWOOT_STATUS: Record<StatusLead, 'open' | 'pending' | 'resolved' | 'snoozed'> = {
-  iniciou_conversa:     'pending',
-  conversando:          'open',
-  agendado:             'open',
-  cliente:              'resolved',
-  follow_up:            'snoozed',
-  cancelou_agendamento: 'open',
-  perdido:              'resolved',
-}
-
-const TO_CHATWOOT_LABEL: Partial<Record<StatusLead, string>> = {
-  agendado:             'agendado',
-  cancelou_agendamento: 'cancelou',
-  perdido:              'perdido',
-}
-
-async function pushToChatwoot(conversationId: string, status: StatusLead, cfg: ChatwootCfg) {
-  const label = TO_CHATWOOT_LABEL[status] ?? null
-  const accessToken = await getSupabaseAccessToken()
-  await fetch(EDGE_FN, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-    body:    JSON.stringify({
-      _action:         'update_conversation',
-      conversation_id: conversationId,
-      account_id:      cfg.account_id,
-      base_url:        cfg.base_url,
-      api_token:       cfg.api_token,
-      status:          TO_CHATWOOT_STATUS[status],
-      label,
-    }),
-  })
-}
-
 export default function CRM() {
   const [leads, setLeads]         = useState<Lead[]>([])
   const [loading, setLoading]     = useState(true)
   const [error, setError]         = useState<string | null>(null)
   const [activeId, setActiveId]   = useState<string | null>(null)
-  const [chatwoot, setChatwoot]   = useState<ChatwootCfg | null>(null)
+  const [evolution, setEvolution] = useState<EvolutionCfg | null>(null)
   const [chatLead, setChatLead]   = useState<Lead | null>(null)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
   useEffect(() => {
     void fetchLeads()
-    void loadChatwoot()
+    void loadEvolution()
 
     const channel = supabase
       .channel('leads-realtime')
@@ -100,22 +65,21 @@ export default function CRM() {
     return () => { void supabase.removeChannel(channel) }
   }, [])
 
-  async function loadChatwoot() {
-    const { data, error } = await supabase
-      .from('external_integrations')
-      .select('base_url, api_token, account_id, inbox_id')
-      .eq('provider', 'chatwoot')
-      .maybeSingle()
-    if (error) { logger.error('CRM', 'erro ao buscar config chatwoot', error.message); return }
-    if (!data) { logger.warn('CRM', 'nenhuma integração chatwoot encontrada'); return }
-    logger.info('CRM', 'config chatwoot carregada', { base_url: data.base_url, account_id: data.account_id, inbox_id: data.inbox_id, tem_token: !!data.api_token })
-    if (data?.base_url && data?.api_token && data?.account_id) {
-      setChatwoot({
-        base_url:   data.base_url   as string,
-        api_token:  data.api_token  as string,
-        account_id: data.account_id as string,
-        inbox_id:   (data.inbox_id  as string | null) ?? null,
-      })
+  async function loadEvolution() {
+    try {
+      const data = await loadActiveWhatsAppIntegration()
+      if (!data) { logger.warn('CRM', 'nenhuma integração WhatsApp ativa encontrada'); return }
+      if (!data.supportsEmbeddedChat) { logger.warn('CRM', 'integração WhatsApp ativa não suporta chat embutido', data.engine); return }
+      if (data.base_url && data.api_token && data.instance_name) {
+        setEvolution({
+          base_url: data.base_url,
+          api_token: data.api_token,
+          instance_name: data.instance_name,
+        })
+      }
+    } catch (error) {
+      logger.error('CRM', 'erro ao buscar integração WhatsApp', String(error))
+      return
     }
   }
 
@@ -123,7 +87,7 @@ export default function CRM() {
     setLoading(true)
     const { data, error: err } = await supabase
       .from('leads_contabilidade')
-      .select('id, nome_lead, whatsapp_lead, motivo_contato, status, created_at, horario_comercial, id_conversa_chatwoot')
+      .select('id, nome_lead, whatsapp_lead, motivo_contato, status, created_at, horario_comercial, evolution_remote_jid, evolution_instance')
       .order('created_at', { ascending: false })
 
     if (err) { setError(err.message); setLoading(false); return }
@@ -145,10 +109,6 @@ export default function CRM() {
 
     setLeads(prev => prev.map(l => l.id === lead.id ? { ...l, status: newStatus } : l))
     await supabase.from('leads_contabilidade').update({ status: newStatus }).eq('id', lead.id)
-
-    if (chatwoot && lead.id_conversa_chatwoot) {
-      void pushToChatwoot(lead.id_conversa_chatwoot, newStatus, chatwoot)
-    }
   }
 
   const activeLead = leads.find(l => l.id === activeId)
@@ -179,7 +139,7 @@ export default function CRM() {
                   key={col.id}
                   column={col}
                   leads={colLeads}
-                  chatwoot={chatwoot}
+                  evolution={evolution}
                   onOpenChat={lead => setChatLead(lead)}
                 />
               )
@@ -188,7 +148,7 @@ export default function CRM() {
         </div>
         <DragOverlay>
           {activeLead
-            ? <LeadCard lead={activeLead} color="#3b82f6" isDragging chatwoot={null} onOpenChat={() => {}} />
+            ? <LeadCard lead={activeLead} color="#3b82f6" isDragging evolution={null} onOpenChat={() => {}} />
             : null
           }
         </DragOverlay>
@@ -196,14 +156,17 @@ export default function CRM() {
 
       {chatLead && (
         <ChatPanel
+          key={chatLead.id}
           contact={{
             id:                   chatLead.id,
             nome:                 chatLead.nome_lead,
             telefone:             chatLead.whatsapp_lead,
-            id_conversa_chatwoot: chatLead.id_conversa_chatwoot,
+            id_conversa_chatwoot: null,
+            evolution_remote_jid: chatLead.evolution_remote_jid,
+            evolution_instance:   chatLead.evolution_instance,
             _table:               'leads_contabilidade',
           }}
-          chatwoot={chatwoot}
+          evolution={evolution}
           onClose={() => setChatLead(null)}
         />
       )}
@@ -212,11 +175,11 @@ export default function CRM() {
 }
 
 function KanbanColumn({
-  column, leads, chatwoot, onOpenChat,
+  column, leads, evolution, onOpenChat,
 }: {
   column: Column
   leads: Lead[]
-  chatwoot: ChatwootCfg | null
+  evolution: EvolutionCfg | null
   onOpenChat: (lead: Lead) => void
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: column.id })
@@ -242,7 +205,7 @@ function KanbanColumn({
             key={lead.id}
             lead={lead}
             color={column.color}
-            chatwoot={chatwoot}
+            evolution={evolution}
             onOpenChat={onOpenChat}
           />
         ))}
@@ -255,35 +218,31 @@ function KanbanColumn({
 }
 
 function DraggableCard({
-  lead, color, chatwoot, onOpenChat,
+  lead, color, evolution, onOpenChat,
 }: {
   lead: Lead
   color: string
-  chatwoot: ChatwootCfg | null
+  evolution: EvolutionCfg | null
   onOpenChat: (lead: Lead) => void
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: lead.id })
   return (
     <div ref={setNodeRef} {...listeners} {...attributes} style={{ opacity: isDragging ? 0.4 : 1 }}>
-      <LeadCard lead={lead} color={color} chatwoot={chatwoot} onOpenChat={onOpenChat} />
+      <LeadCard lead={lead} color={color} evolution={evolution} onOpenChat={onOpenChat} />
     </div>
   )
 }
 
 function LeadCard({
-  lead, color, isDragging, chatwoot, onOpenChat,
+  lead, color, isDragging, evolution, onOpenChat,
 }: {
   lead: Lead
   color: string
   isDragging?: boolean
-  chatwoot: ChatwootCfg | null
+  evolution: EvolutionCfg | null
   onOpenChat: (lead: Lead) => void
 }) {
-  const chatwootUrl = chatwoot && lead.id_conversa_chatwoot
-    ? `${chatwoot.base_url.replace(/\/$/, '')}/app/accounts/${chatwoot.account_id}/conversations/${lead.id_conversa_chatwoot}`
-    : null
-
-  const canChat = !!chatwoot && !!lead.id_conversa_chatwoot
+  const canChat = !!evolution && !!lead.whatsapp_lead
 
   return (
     <div
@@ -306,19 +265,6 @@ function LeadCard({
             >
               <MessageCircle size={13} />
             </button>
-          )}
-          {chatwootUrl && (
-            <a
-              href={chatwootUrl}
-              target="_blank"
-              rel="noreferrer"
-              onPointerDown={e => e.stopPropagation()}
-              onClick={e => e.stopPropagation()}
-              title="Abrir no Chatwoot"
-              className="text-gray-400 hover:text-blue-500 transition-colors"
-            >
-              <ExternalLink size={12} />
-            </a>
           )}
         </div>
       </div>

@@ -2,7 +2,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
 export const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
-export const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+export const SERVICE_KEY = Deno.env.get('SUPABASE_SECRET_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
 export const CORS = {
   'Access-Control-Allow-Origin': '*',

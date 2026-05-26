@@ -28,13 +28,13 @@ import {
   ChevronRight,
   Search,
   Send,
-  Filter,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import { isAdminProfile } from '@/lib/security'
-import ChatPanel, { type ChatwootCfg } from '@/components/ChatPanel'
+import { loadActiveWhatsAppIntegration } from '@/lib/whatsappIntegration'
+import ChatPanel, { type EvolutionCfg } from '@/components/ChatPanel'
 import { logger } from '@/lib/logger'
 import type { Lead, StatusLead } from '@/types'
 
@@ -114,7 +114,17 @@ function emptyColumnForm(): ColumnConfig {
   }
 }
 
+function withAlpha(hex: string, alpha: number) {
+  const normalized = hex.replace('#', '').trim()
+  if (normalized.length !== 6) return hex
+  const r = parseInt(normalized.slice(0, 2), 16)
+  const g = parseInt(normalized.slice(2, 4), 16)
+  const b = parseInt(normalized.slice(4, 6), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
 export default function ChatAoVivo() {
+  const PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
   const { profile } = useAuth()
   const isAdmin = isAdminProfile(profile)
   const [leads, setLeads] = useState<Lead[]>([])
@@ -133,22 +143,24 @@ export default function ChatAoVivo() {
   const [reagendarEm, setReagendarEm] = useState('')
   const [reagendarObs, setReagendarObs] = useState('')
   const [leadForm, setLeadForm] = useState<LeadFormState>(emptyLeadForm())
-  const [chatwoot, setChatwoot] = useState<ChatwootCfg | null>(null)
+  const [evolution, setEvolution] = useState<EvolutionCfg | null>(null)
   const [chatLead, setChatLead] = useState<Lead | null>(null)
   const [listSearch, setListSearch] = useState('')
-  const [listStatusFilter, setListStatusFilter] = useState('')
+  const [listStatusFilter, setListStatusFilter] = useState('todos')
   const [listSort, setListSort] = useState<{ col: string; asc: boolean }>({ col: 'created_at', asc: false })
   const [quickSendLead, setQuickSendLead] = useState<Lead | null>(null)
   const [quickSendText, setQuickSendText] = useState('')
   const [quickSendLoading, setQuickSendLoading] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [deletingBulk, setDeletingBulk] = useState(false)
+  const [listPageSize, setListPageSize] = useState(25)
+  const [listPage, setListPage] = useState(1)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
   useEffect(() => {
     void loadAll()
-    void loadChatwoot()
+    void loadEvolution()
     const channel = supabase
       .channel('chat-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_contabilidade' }, payload => {
@@ -177,23 +189,14 @@ export default function ChatAoVivo() {
         const data = payload?.data as Record<string, unknown> | undefined
         const leadMessage = (data?.content as string | undefined) ?? null
 
-        if (eventType === 'message_created') {
+        if (eventType === 'message_received') {
+          const content = (payload?.content as string | undefined) ?? (data?.content as string | undefined) ?? leadMessage
           setLeads(prev => prev.map(lead => {
-            if (lead.id_conversa_chatwoot !== conversationId) return lead
+            if (lead.evolution_remote_jid !== conversationId) return lead
             return {
               ...lead,
-              ultima_mensagem: leadMessage ?? lead.ultima_mensagem,
+              ultima_mensagem: content ?? lead.ultima_mensagem,
               status: lead.status === 'iniciou_conversa' ? 'conversando' : lead.status,
-            }
-          }))
-        }
-
-        if (eventType === 'conversation_updated') {
-          setLeads(prev => prev.map(lead => {
-            if (lead.id_conversa_chatwoot !== conversationId) return lead
-            return {
-              ...lead,
-              ultima_mensagem: (data?.last_activity_at as string | undefined) ?? lead.ultima_mensagem,
             }
           }))
         }
@@ -217,7 +220,7 @@ export default function ChatAoVivo() {
   async function loadLeads() {
     const { data, error: err } = await supabase
       .from('leads_contabilidade')
-      .select('id, nome_lead, whatsapp_lead, motivo_contato, resumo_conversa, ultima_mensagem, status, created_at, horario_comercial, data_agendamento, agendamento_criado_em, anotacoes, follow_up_1, follow_up_2, follow_up_3, id_conversa_chatwoot, inbox_id_chatwoot')
+      .select('id, nome_lead, whatsapp_lead, motivo_contato, resumo_conversa, ultima_mensagem, status, created_at, horario_comercial, data_agendamento, agendamento_criado_em, anotacoes, follow_up_1, follow_up_2, follow_up_3, evolution_remote_jid, evolution_instance')
       .order('created_at', { ascending: false })
     if (err) {
       setError(err.message)
@@ -373,24 +376,20 @@ export default function ChatAoVivo() {
     }
   }
 
-  async function loadChatwoot() {
-    const { data, error } = await supabase
-      .from('external_integrations')
-      .select('base_url, api_token, account_id, inbox_id')
-      .eq('provider', 'chatwoot')
-      .maybeSingle()
-    if (error) { logger.error('ChatAoVivo', 'erro ao buscar config chatwoot', error.message); return }
-    if (!data) { logger.warn('ChatAoVivo', 'nenhuma integração chatwoot encontrada'); return }
-    logger.info('ChatAoVivo', 'config chatwoot carregada', { base_url: data.base_url, account_id: data.account_id, inbox_id: data.inbox_id, tem_token: !!data.api_token })
-    if (data?.base_url && data?.api_token && data?.account_id) {
-      setChatwoot({
-        base_url:   data.base_url   as string,
-        api_token:  data.api_token  as string,
-        account_id: data.account_id as string,
-        inbox_id:   (data.inbox_id  as string | null) ?? null,
-      })
-    } else {
-      logger.warn('ChatAoVivo', 'config chatwoot incompleta — campos obrigatórios ausentes', { base_url: !!data.base_url, api_token: !!data.api_token, account_id: !!data.account_id })
+  async function loadEvolution() {
+    try {
+      const data = await loadActiveWhatsAppIntegration()
+      if (!data) { logger.warn('ChatAoVivo', 'nenhuma integração WhatsApp ativa encontrada'); return }
+      if (!data.supportsEmbeddedChat) { logger.warn('ChatAoVivo', 'integração WhatsApp ativa sem chat embutido', data.engine); return }
+      if (data.base_url && data.api_token && data.instance_name) {
+        setEvolution({
+          base_url: data.base_url,
+          api_token: data.api_token,
+          instance_name: data.instance_name,
+        })
+      }
+    } catch (error) {
+      logger.error('ChatAoVivo', 'erro ao buscar integração WhatsApp', String(error))
     }
   }
 
@@ -486,7 +485,23 @@ export default function ChatAoVivo() {
 
   const filteredLeads = useMemo(() => {
     let list = [...leads]
-    if (listStatusFilter) list = list.filter(l => l.status === listStatusFilter)
+    if (listStatusFilter && listStatusFilter !== 'todos') {
+      if (listStatusFilter === 'atendidos') {
+        list = list.filter(lead => ['cliente', 'agendado'].includes(lead.status))
+      } else if (listStatusFilter === 'pendentes') {
+        list = list.filter(lead => ['iniciou_conversa', 'conversando', 'follow_up'].includes(lead.status))
+      } else if (listStatusFilter === 'atrasados') {
+        const now = Date.now()
+        list = list.filter(lead => {
+          if (!lead.data_agendamento) return false
+          const time = new Date(lead.data_agendamento).getTime()
+          if (Number.isNaN(time)) return false
+          return time < now && lead.status !== 'cliente'
+        })
+      } else {
+        list = list.filter(l => l.status === listStatusFilter)
+      }
+    }
     if (listSearch.trim()) {
       const q = listSearch.trim().toLowerCase()
       list = list.filter(l =>
@@ -504,6 +519,46 @@ export default function ChatAoVivo() {
     return list
   }, [leads, listSearch, listStatusFilter, listSort])
 
+  useEffect(() => {
+    setListPage(1)
+  }, [listSearch, listStatusFilter, listPageSize])
+
+  const totalListPages = Math.max(1, Math.ceil(filteredLeads.length / listPageSize))
+  const paginatedLeads = useMemo(() => {
+    const start = (listPage - 1) * listPageSize
+    return filteredLeads.slice(start, start + listPageSize)
+  }, [filteredLeads, listPage, listPageSize])
+
+  const statusCounters = useMemo(() => {
+    const byStatus = columns.map(column => ({
+      key: column.status_key,
+      label: column.label,
+      count: leads.filter(lead => lead.status === column.status_key).length,
+      color: column.color,
+    }))
+
+    const now = Date.now()
+    const pendentes = leads.filter(lead => ['iniciou_conversa', 'conversando', 'follow_up'].includes(lead.status)).length
+    const atendidos = leads.filter(lead => ['cliente', 'agendado'].includes(lead.status)).length
+    const atrasados = leads.filter(lead => {
+      if (!lead.data_agendamento) return false
+      const time = new Date(lead.data_agendamento).getTime()
+      if (Number.isNaN(time)) return false
+      return time < now && lead.status !== 'cliente'
+    }).length
+
+    return { byStatus, pendentes, atendidos, atrasados }
+  }, [columns, leads])
+
+  useEffect(() => {
+    const focusLeadId = localStorage.getItem('crm_chat_focus_lead_id')
+    if (!focusLeadId || leads.length === 0) return
+    const lead = leads.find(item => item.id === focusLeadId)
+    if (!lead) return
+    setChatLead(lead)
+    localStorage.removeItem('crm_chat_focus_lead_id')
+  }, [leads])
+
   function toggleSort(col: string) {
     setListSort(prev => prev.col === col ? { col, asc: !prev.asc } : { col, asc: true })
   }
@@ -511,18 +566,25 @@ export default function ChatAoVivo() {
   async function sendQuickMessage() {
     if (!quickSendLead || !quickSendText.trim()) return
     setQuickSendLoading(true)
-    if (chatwoot) {
+    if (evolution) {
       setChatLead(quickSendLead)
       setQuickSendLead(null)
       setQuickSendText('')
       setQuickSendLoading(false)
       return
     }
+    const activeWhatsapp = await loadActiveWhatsAppIntegration().catch(() => null)
     const { error: err } = await supabase.from('communication_outbox').insert([{
-      channel: 'whatsapp', provider: 'chatwoot',
+      channel: 'whatsapp', provider: activeWhatsapp?.provider ?? 'n8n',
       to_address: quickSendLead.whatsapp_lead,
       body: quickSendText.trim(),
-      payload: { lead_id: quickSendLead.id, tipo: 'manual_lista' },
+      payload: {
+        lead_id: quickSendLead.id,
+        tipo: 'manual_lista',
+        integration_id: activeWhatsapp?.id ?? null,
+        whatsapp_engine: activeWhatsapp?.engine ?? null,
+        instance_name: activeWhatsapp?.instance_name ?? null,
+      },
       scheduled_for: new Date().toISOString(),
     }])
     setQuickSendLoading(false)
@@ -609,7 +671,57 @@ export default function ChatAoVivo() {
       {!loading && !error && view === 'lista' && (
         <div className="flex-1 overflow-auto flex flex-col">
           {/* Barra de filtros */}
-          <div className="px-6 py-3 border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 shrink-0 flex flex-wrap items-center gap-3">
+          <div className="px-6 py-3 border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 shrink-0 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusQuickChip
+                active={listStatusFilter === 'todos'}
+                label="Todos"
+                count={totalContatos}
+                onClick={() => setListStatusFilter('todos')}
+              />
+              <StatusQuickChip
+                active={listStatusFilter === 'atendidos'}
+                label="Atendidos"
+                count={statusCounters.atendidos}
+                tone="emerald"
+                onClick={() => {
+                  if (statusCounters.atendidos === 0) return
+                  setListStatusFilter(prev => prev === 'atendidos' ? 'todos' : 'atendidos')
+                }}
+              />
+              <StatusQuickChip
+                active={listStatusFilter === 'pendentes'}
+                label="Pendentes"
+                count={statusCounters.pendentes}
+                tone="amber"
+                onClick={() => {
+                  if (statusCounters.pendentes === 0) return
+                  setListStatusFilter(prev => prev === 'pendentes' ? 'todos' : 'pendentes')
+                }}
+              />
+              <StatusQuickChip
+                active={listStatusFilter === 'atrasados'}
+                label="Em atraso"
+                count={statusCounters.atrasados}
+                tone="red"
+                onClick={() => {
+                  if (statusCounters.atrasados === 0) return
+                  setListStatusFilter(prev => prev === 'atrasados' ? 'todos' : 'atrasados')
+                }}
+              />
+              {statusCounters.byStatus.map(item => (
+                <StatusQuickChip
+                  key={item.key}
+                  active={listStatusFilter === item.key}
+                  label={item.label}
+                  count={item.count}
+                  customColor={item.color}
+                  onClick={() => setListStatusFilter(prev => prev === item.key ? '' : item.key)}
+                />
+              ))}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
             <div className="relative flex-1 min-w-48">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
               <input
@@ -620,20 +732,10 @@ export default function ChatAoVivo() {
                 className="w-full pl-8 pr-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            <div className="flex items-center gap-2">
-              <Filter size={13} className="text-gray-400 shrink-0" />
-              <select
-                value={listStatusFilter}
-                onChange={e => setListStatusFilter(e.target.value)}
-                aria-label="Filtrar por status"
-                title="Filtrar por status"
-                className="text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">Todos os status</option>
-                {columns.map(col => <option key={col.status_key} value={col.status_key}>{col.label}</option>)}
-              </select>
-            </div>
-            <span className="text-xs text-gray-400">{filteredLeads.length} de {totalContatos}</span>
+            <span className="text-xs text-gray-400">
+              {filteredLeads.length} de {totalContatos}
+              {listStatusFilter !== 'todos' && ` · filtro: ${statusLabelFromKey(listStatusFilter, statusCounters.byStatus)}`}
+            </span>
             {isAdmin && selectedIds.size > 0 && (
               <button
                 type="button"
@@ -645,6 +747,7 @@ export default function ChatAoVivo() {
                 {deletingBulk ? 'Excluindo…' : `Excluir selecionados (${selectedIds.size})`}
               </button>
             )}
+            </div>
           </div>
 
           {/* Tabela */}
@@ -658,9 +761,30 @@ export default function ChatAoVivo() {
                         <input
                           type="checkbox"
                           aria-label="Selecionar todos"
-                          checked={filteredLeads.length > 0 && selectedIds.size === filteredLeads.length}
-                          ref={el => { if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < filteredLeads.length }}
-                          onChange={toggleSelectAll}
+                          checked={paginatedLeads.length > 0 && paginatedLeads.every(lead => selectedIds.has(lead.id))}
+                          ref={el => {
+                            if (el) {
+                              const selectedVisible = paginatedLeads.filter(lead => selectedIds.has(lead.id)).length
+                              el.indeterminate = selectedVisible > 0 && selectedVisible < paginatedLeads.length
+                            }
+                          }}
+                          onChange={() => {
+                            const visibleIds = paginatedLeads.map(lead => lead.id)
+                            const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedIds.has(id))
+                            if (allVisibleSelected) {
+                              setSelectedIds(prev => {
+                                const next = new Set(prev)
+                                visibleIds.forEach(id => next.delete(id))
+                                return next
+                              })
+                            } else {
+                              setSelectedIds(prev => {
+                                const next = new Set(prev)
+                                visibleIds.forEach(id => next.add(id))
+                                return next
+                              })
+                            }
+                          }}
                           className="rounded border-gray-300 dark:border-gray-600 accent-red-600 cursor-pointer"
                         />
                       </th>
@@ -686,9 +810,9 @@ export default function ChatAoVivo() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                  {filteredLeads.length === 0 ? (
+                  {paginatedLeads.length === 0 ? (
                     <tr><td colSpan={7} className="px-5 py-10 text-center text-gray-400">Nenhum contato encontrado.</td></tr>
-                  ) : filteredLeads.map(lead => (
+                  ) : paginatedLeads.map(lead => (
                     <tr
                       key={lead.id}
                       className={cn(
@@ -766,6 +890,44 @@ export default function ChatAoVivo() {
                 </tbody>
               </table>
             </div>
+            <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-gray-400">
+                  Página {listPage} de {totalListPages} — {filteredLeads.length} contato(s)
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400">Mostrar</span>
+                  <select
+                    value={listPageSize}
+                    onChange={e => setListPageSize(Number(e.target.value))}
+                    className="text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {PAGE_SIZE_OPTIONS.map(option => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                  <span className="text-xs text-gray-400">por página</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setListPage(prev => Math.max(1, prev - 1))}
+                  disabled={listPage === 1}
+                  className="px-3 py-1.5 text-xs border border-gray-200 dark:border-gray-700 rounded-lg disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                  Anterior
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setListPage(prev => Math.min(totalListPages, prev + 1))}
+                  disabled={listPage >= totalListPages}
+                  className="px-3 py-1.5 text-xs border border-gray-200 dark:border-gray-700 rounded-lg disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                  Próxima
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -812,14 +974,17 @@ export default function ChatAoVivo() {
 
       {chatLead && (
         <ChatPanel
+          key={chatLead.id}
           contact={{
             id:                   chatLead.id,
             nome:                 chatLead.nome_lead,
             telefone:             chatLead.whatsapp_lead,
-            id_conversa_chatwoot: chatLead.id_conversa_chatwoot,
+            id_conversa_chatwoot: null,
+            evolution_remote_jid: chatLead.evolution_remote_jid,
+            evolution_instance:   chatLead.evolution_instance,
             _table:               'leads_contabilidade',
           }}
-          chatwoot={chatwoot}
+          evolution={evolution}
           onClose={() => setChatLead(null)}
         />
       )}
@@ -845,7 +1010,7 @@ export default function ChatAoVivo() {
                 className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
               />
               <p className="text-xs text-gray-400">
-                {chatwoot ? 'Abre o chat para enviar pelo Chatwoot.' : 'A mensagem será enfileirada na communication_outbox para envio pelo N8N.'}
+                {evolution ? 'Abre o chat para enviar pelo WhatsApp.' : 'A mensagem será enfileirada no canal WhatsApp configurado.'}
               </p>
               <div className="flex items-center gap-2">
                 <button
@@ -855,7 +1020,7 @@ export default function ChatAoVivo() {
                   className="flex-1 px-4 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-medium flex items-center justify-center gap-2"
                 >
                   <Send size={14} />
-                  {quickSendLoading ? 'Enviando…' : chatwoot ? 'Abrir chat' : 'Enfileirar envio'}
+                  {quickSendLoading ? 'Enviando…' : evolution ? 'Abrir chat' : 'Enfileirar envio'}
                 </button>
                 <button type="button" onClick={() => setQuickSendLead(null)} className="px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">
                   Cancelar
@@ -867,6 +1032,94 @@ export default function ChatAoVivo() {
       )}
 
     </div>
+  )
+}
+
+function statusLabelFromKey(
+  key: string,
+  statuses: Array<{ key: string; label: string }>,
+) {
+  if (key === 'todos') return 'Todos'
+  if (key === 'atendidos') return 'Atendidos'
+  if (key === 'pendentes') return 'Pendentes'
+  if (key === 'atrasados') return 'Em atraso'
+  return statuses.find(item => item.key === key)?.label ?? key
+}
+
+function StatusQuickChip({
+  active,
+  label,
+  count,
+  onClick,
+  tone = 'slate',
+  customColor,
+}: {
+  active: boolean
+  label: string
+  count: number
+  onClick: () => void
+  tone?: 'slate' | 'emerald' | 'amber' | 'red'
+  customColor?: string
+}) {
+  const palette = {
+    slate: {
+      color: '#64748B',
+      border: 'border-slate-200 dark:border-slate-700',
+      bg: 'bg-slate-50/80 dark:bg-slate-900/30',
+      text: 'text-slate-700 dark:text-slate-200',
+      badge: 'bg-slate-200/70 dark:bg-slate-800 text-slate-700 dark:text-slate-200',
+      activeBg: 'bg-slate-100 dark:bg-slate-800/70',
+    },
+    emerald: {
+      color: '#10B981',
+      border: 'border-emerald-200 dark:border-emerald-800',
+      bg: 'bg-emerald-50/80 dark:bg-emerald-950/20',
+      text: 'text-emerald-700 dark:text-emerald-300',
+      badge: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300',
+      activeBg: 'bg-emerald-100 dark:bg-emerald-900/35',
+    },
+    amber: {
+      color: '#F59E0B',
+      border: 'border-amber-200 dark:border-amber-800',
+      bg: 'bg-amber-50/80 dark:bg-amber-950/20',
+      text: 'text-amber-700 dark:text-amber-300',
+      badge: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300',
+      activeBg: 'bg-amber-100 dark:bg-amber-900/35',
+    },
+    red: {
+      color: '#EF4444',
+      border: 'border-red-200 dark:border-red-800',
+      bg: 'bg-red-50/80 dark:bg-red-950/20',
+      text: 'text-red-700 dark:text-red-300',
+      badge: 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300',
+      activeBg: 'bg-red-100 dark:bg-red-900/35',
+    },
+  } as const
+
+  const current = palette[tone]
+  const inlineColor = customColor ?? current.color
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition-all',
+        current.border,
+        current.bg,
+        current.text,
+        active ? `shadow-sm ${current.activeBg}` : 'hover:-translate-y-[1px] hover:shadow-sm',
+      )}
+      style={{
+        borderLeftWidth: 4,
+        borderLeftColor: inlineColor,
+      }}
+    >
+      <span className="whitespace-nowrap">{label}</span>
+      <span className={cn('min-w-6 rounded-full px-2 py-0.5 text-[11px] font-semibold text-center', current.badge)}>
+        {count}
+      </span>
+    </button>
   )
 }
 
@@ -919,23 +1172,46 @@ function KanbanColumn({
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: column.status_key })
   return (
-    <div ref={setNodeRef} className={cn('flex flex-col rounded-2xl border transition-colors', column.border, column.bg, isOver && 'ring-2 ring-blue-400')} style={{ minWidth: 280, width: 280 }}>
-      <div className="rounded-t-2xl px-4 py-3 flex items-center justify-between gap-2" style={{ backgroundColor: column.color }}>
+    <div
+      ref={setNodeRef}
+      className={cn(
+        'flex flex-col rounded-2xl border bg-white dark:bg-[#111827] transition-colors',
+        column.border,
+        isOver && 'ring-2 ring-blue-400'
+      )}
+      style={{ minWidth: 280, width: 280 }}
+    >
+      <div
+        className="rounded-t-2xl px-4 py-3 flex items-center justify-between gap-2 border-b"
+        style={{
+          backgroundColor: withAlpha(column.color, 0.1),
+          borderColor: withAlpha(column.color, 0.24),
+        }}
+      >
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-white font-semibold text-sm truncate">{column.label}</span>
-            <button type="button" onClick={() => onEditColumn(column)} title="Editar coluna" className="text-white/90 hover:text-white">
+            <span className="font-semibold text-sm truncate" style={{ color: column.color }}>{column.label}</span>
+            <button type="button" onClick={() => onEditColumn(column)} title="Editar coluna" className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100">
               <Pencil size={13} />
             </button>
-            <button type="button" onClick={() => onMoveColumn(column.id, -1)} title="Mover para a esquerda" className="text-white/90 hover:text-white">
+            <button type="button" onClick={() => onMoveColumn(column.id, -1)} title="Mover para a esquerda" className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100">
               <ChevronLeft size={13} />
             </button>
-            <button type="button" onClick={() => onMoveColumn(column.id, 1)} title="Mover para a direita" className="text-white/90 hover:text-white">
+            <button type="button" onClick={() => onMoveColumn(column.id, 1)} title="Mover para a direita" className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100">
               <ChevronRight size={13} />
             </button>
           </div>
         </div>
-        <span className="bg-white/25 text-white text-xs font-bold px-2 py-0.5 rounded-full">{leads.length}</span>
+        <span
+          className="text-xs font-bold px-2 py-0.5 rounded-full border"
+          style={{
+            color: column.color,
+            backgroundColor: withAlpha(column.color, 0.08),
+            borderColor: withAlpha(column.color, 0.16),
+          }}
+        >
+          {leads.length}
+        </span>
       </div>
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
         {leads.map(lead => (
@@ -1023,13 +1299,28 @@ function LeadCard({
   isAdmin?: boolean
 }) {
   return (
-    <div className={cn('group bg-white dark:bg-[#1E2535] rounded-xl p-3 shadow-sm border border-gray-100 dark:border-gray-700 cursor-grab hover:-translate-y-0.5 transition-transform', isDragging && 'shadow-lg cursor-grabbing')} style={{ borderLeftWidth: 4, borderLeftColor: color }}>
+    <div
+      className={cn(
+        'group bg-white dark:bg-[#1E2535] rounded-xl p-3 shadow-sm border border-gray-200 dark:border-gray-700 cursor-grab hover:-translate-y-0.5 transition-transform',
+        isDragging && 'shadow-lg cursor-grabbing'
+      )}
+      style={{ borderLeftWidth: 4, borderLeftColor: color }}
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="font-semibold text-sm text-gray-900 dark:text-gray-100 truncate">{lead.nome_lead || 'Sem nome'}</p>
           <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5 truncate">{lead.whatsapp_lead || 'Sem WhatsApp'}</p>
         </div>
-        <span className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400">{STATUS_LABEL[lead.status] ?? lead.status}</span>
+        <span
+          className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-semibold border"
+          style={{
+            color,
+            backgroundColor: withAlpha(color, 0.08),
+            borderColor: withAlpha(color, 0.16),
+          }}
+        >
+          {STATUS_LABEL[lead.status] ?? lead.status}
+        </span>
       </div>
 
       <div className="mt-2 space-y-1.5">
@@ -1173,7 +1464,7 @@ function buildAttributes(lead: Lead) {
   const attrs = [
     lead.horario_comercial ? 'horario comercial' : null,
     lead.data_agendamento ? `retorno ${new Date(lead.data_agendamento).toLocaleDateString('pt-BR')}` : null,
-    lead.inbox_id_chatwoot ? `inbox ${lead.inbox_id_chatwoot}` : null,
+    lead.evolution_instance ? `instância ${lead.evolution_instance}` : null,
   ].filter(Boolean)
   return attrs.length > 0 ? attrs.join(' · ') : 'Sem atributos'
 }

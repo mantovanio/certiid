@@ -5,7 +5,12 @@ const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
+export const SUPABASE_URL = supabaseUrl
 export const SUPABASE_ANON_KEY = supabaseAnonKey
+
+export function getEdgeFunctionUrl(functionName: string) {
+  return `${supabaseUrl.replace(/\/$/, '')}/functions/v1/${functionName}`
+}
 
 export async function getSupabaseAccessToken() {
   const { data, error } = await supabase.auth.getSession()

@@ -4,11 +4,14 @@ import { cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { hasPerfil } from '@/lib/security'
+import { buscarCep } from '@/lib/cep'
 import type {
   Banco,
   CentroCusto,
   NovoParceiro,
   Parceiro,
+  ParceiroAgentePermitido,
+  PontoAtendimento,
   Profile,
   TipoContaBancaria,
   TipoParceiro,
@@ -100,6 +103,11 @@ const EMPTY: NovoParceiro = {
 }
 
 type GestorOption = Pick<Profile, 'id' | 'nome' | 'perfil' | 'status'>
+type AgentePermitidoForm = {
+  agente_registro_id: string
+  ponto_atendimento_id: string
+  ativo: boolean
+}
 
 export default function Parceiros() {
   const { profile } = useAuth()
@@ -108,6 +116,10 @@ export default function Parceiros() {
   const [bancos, setBancos] = useState<Banco[]>([])
   const [centros, setCentros] = useState<CentroCusto[]>([])
   const [gestores, setGestores] = useState<GestorOption[]>([])
+  const [pontos, setPontos] = useState<PontoAtendimento[]>([])
+  const [agentesPermitidos, setAgentesPermitidos] = useState<ParceiroAgentePermitido[]>([])
+  const [formAgente, setFormAgente] = useState<AgentePermitidoForm>({ agente_registro_id: '', ponto_atendimento_id: '', ativo: true })
+  const [salvandoAgente, setSalvandoAgente] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busca, setBusca] = useState('')
@@ -126,13 +138,15 @@ export default function Parceiros() {
   async function fetchAll() {
     setLoading(true)
     setError(null)
-    const [parceirosRes, bancosRes, centrosRes, gestoresRes] = await Promise.all([
+    const [parceirosRes, bancosRes, centrosRes, gestoresRes, pontosRes, agentesRes] = await Promise.all([
       supabase.from('parceiros').select('*').order('created_at', { ascending: false }),
       supabase.from('bancos').select('*').eq('ativo', true).order('codigo', { ascending: true }),
       supabase.from('centros_custos').select('*').eq('ativo', true).order('nome', { ascending: true }),
       supabase.from('profiles').select('id, nome, perfil, status').in('perfil', ['admin', 'vendedor', 'agente_registro']).eq('status', 'ativo').order('nome', { ascending: true }),
+      supabase.from('pontos_atendimento').select('*').eq('status', 'ativo').order('nome', { ascending: true }),
+      supabase.from('parceiros_agentes_permitidos').select('*').order('created_at', { ascending: true }),
     ])
-    const err = parceirosRes.error ?? bancosRes.error ?? centrosRes.error ?? gestoresRes.error
+    const err = parceirosRes.error ?? bancosRes.error ?? centrosRes.error ?? gestoresRes.error ?? pontosRes.error ?? agentesRes.error
     if (err) {
       setError(`${err.message}. Se for relacionado a campos novos, execute sql/parceiros_gestao_v2.sql no Supabase.`)
       setLoading(false)
@@ -142,11 +156,26 @@ export default function Parceiros() {
     setBancos((bancosRes.data ?? []) as Banco[])
     setCentros((centrosRes.data ?? []) as CentroCusto[])
     setGestores((gestoresRes.data ?? []) as GestorOption[])
+    setPontos((pontosRes.data ?? []) as PontoAtendimento[])
+    setAgentesPermitidos((agentesRes.data ?? []) as ParceiroAgentePermitido[])
     setLoading(false)
   }
 
   function updateField<K extends keyof NovoParceiro>(key: K, value: NovoParceiro[K]) {
     setForm(prev => ({ ...prev, [key]: value }))
+  }
+
+  async function preencherCep(cep: string | null) {
+    const resultado = await buscarCep(cep ?? '')
+    if (!resultado) return
+    setForm(prev => ({
+      ...prev,
+      logradouro: resultado.logradouro || prev.logradouro,
+      bairro:     resultado.bairro     || prev.bairro,
+      cidade:     resultado.localidade || prev.cidade,
+      estado:     resultado.uf         || prev.estado,
+      ibge:       resultado.ibge       || prev.ibge,
+    }))
   }
 
   function abrirNovo() {
@@ -339,6 +368,46 @@ export default function Parceiros() {
     await fetchAll()
   }
 
+  async function salvarAgentePermitido() {
+    if (!editingId || !formAgente.agente_registro_id) return
+    setSalvandoAgente(true)
+    const { error } = await supabase.from('parceiros_agentes_permitidos').insert([{
+      parceiro_id: editingId,
+      agente_registro_id: formAgente.agente_registro_id,
+      ponto_atendimento_id: formAgente.ponto_atendimento_id || null,
+      ativo: formAgente.ativo,
+      metadata: {},
+    }])
+    setSalvandoAgente(false)
+    if (error) {
+      setError(`Erro ao vincular agente ao parceiro: ${error.message}`)
+      return
+    }
+    setFormAgente({ agente_registro_id: '', ponto_atendimento_id: '', ativo: true })
+    await fetchAll()
+  }
+
+  async function toggleAgentePermitido(item: ParceiroAgentePermitido) {
+    const { error } = await supabase
+      .from('parceiros_agentes_permitidos')
+      .update({ ativo: !item.ativo })
+      .eq('id', item.id)
+    if (error) {
+      setError(error.message)
+      return
+    }
+    await fetchAll()
+  }
+
+  async function excluirAgentePermitido(id: string) {
+    const { error } = await supabase.from('parceiros_agentes_permitidos').delete().eq('id', id)
+    if (error) {
+      setError(error.message)
+      return
+    }
+    await fetchAll()
+  }
+
   const filtrado = useMemo(() => {
     return lista.filter(p => {
       const termo = busca.trim().toLowerCase()
@@ -451,7 +520,7 @@ export default function Parceiros() {
                 <TextField label="Email adicional 01" value={form.email_adicional_1} onChange={v => updateField('email_adicional_1', v)} />
                 <TextField label="Email adicional 02" value={form.email_adicional_2} onChange={v => updateField('email_adicional_2', v)} />
                 <TextField label="Email adicional 03" value={form.email_adicional_3} onChange={v => updateField('email_adicional_3', v)} />
-                <TextField label="CEP" value={form.cep} onChange={v => updateField('cep', v)} placeholder="CEP" />
+                <TextField label="CEP" value={form.cep} onChange={v => updateField('cep', v)} onBlur={() => preencherCep(form.cep)} placeholder="CEP" />
                 <TextField label="Logradouro" value={form.logradouro} onChange={v => updateField('logradouro', v)} placeholder="Logradouro" className="md:col-span-2" />
                 <TextField label="Número" value={form.numero} onChange={v => updateField('numero', v)} placeholder="Número" />
                 <TextField label="IBGE" value={form.ibge} onChange={v => updateField('ibge', v)} placeholder="IBGE" />
@@ -525,6 +594,91 @@ export default function Parceiros() {
                 />
               </div>
             </Section>
+
+            {editingId && (
+              <Section title="Agentes de Registro Permitidos para este Parceiro">
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                  Essa regra limita quais agentes de registro poderão atender vendas e validações deste parceiro, vendedor ou contador.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <SelectField
+                    label="Agente"
+                    value={formAgente.agente_registro_id}
+                    onChange={v => setFormAgente(prev => ({ ...prev, agente_registro_id: v ?? '' }))}
+                    options={[
+                      { value: '', label: 'Selecione o agente' },
+                      ...gestores
+                        .filter(g => g.perfil === 'agente_registro')
+                        .map(g => ({ value: g.id, label: g.nome })),
+                    ]}
+                  />
+                  <SelectField
+                    label="Ponto preferencial"
+                    value={formAgente.ponto_atendimento_id}
+                    onChange={v => setFormAgente(prev => ({ ...prev, ponto_atendimento_id: v ?? '' }))}
+                    options={[
+                      { value: '', label: 'Sem ponto fixo' },
+                      ...pontos.map(p => ({ value: p.id, label: p.nome })),
+                    ]}
+                  />
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={() => void salvarAgentePermitido()}
+                      disabled={salvandoAgente || !formAgente.agente_registro_id}
+                      className="w-full px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {salvandoAgente ? 'Salvando…' : 'Vincular agente'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-2">
+                  {agentesPermitidos.filter(item => item.parceiro_id === editingId).length === 0 ? (
+                    <p className="text-sm text-gray-400">Nenhum agente vinculado ainda.</p>
+                  ) : (
+                    agentesPermitidos
+                      .filter(item => item.parceiro_id === editingId)
+                      .map(item => {
+                        const agente = gestores.find(g => g.id === item.agente_registro_id)
+                        const ponto = pontos.find(p => p.id === item.ponto_atendimento_id)
+                        return (
+                          <div key={item.id} className="flex items-center justify-between gap-4 rounded-xl border border-gray-200 dark:border-gray-800 px-4 py-3">
+                            <div>
+                              <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{agente?.nome ?? item.agente_registro_id}</p>
+                              <p className="text-xs text-gray-500 dark:text-gray-400">{ponto?.nome ?? 'Sem ponto preferencial'}</p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={cn(
+                                'px-2 py-0.5 rounded-full text-xs font-medium',
+                                item.ativo
+                                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                                  : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400',
+                              )}>
+                                {item.ativo ? 'Ativo' : 'Inativo'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => void toggleAgentePermitido(item)}
+                                className="p-1.5 rounded-md text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+                              >
+                                <PowerOff size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void excluirAgentePermitido(item.id)}
+                                className="p-1.5 rounded-md text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })
+                  )}
+                </div>
+              </Section>
+            )}
 
             <div className="flex gap-2 pt-2">
               <button
@@ -725,6 +879,7 @@ function TextField({
   label,
   value,
   onChange,
+  onBlur,
   placeholder,
   type = 'text',
   className,
@@ -732,6 +887,7 @@ function TextField({
   label: string
   value: string | null
   onChange: (value: string | null) => void
+  onBlur?: () => void
   placeholder?: string
   type?: string
   className?: string
@@ -743,6 +899,7 @@ function TextField({
         type={type}
         value={value ?? ''}
         onChange={e => onChange(e.target.value || null)}
+        onBlur={onBlur}
         placeholder={placeholder}
         className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
       />

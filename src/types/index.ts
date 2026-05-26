@@ -4,6 +4,8 @@ export interface ChatContact {
   nome: string | null
   telefone: string | null
   id_conversa_chatwoot: string | null
+  evolution_remote_jid: string | null
+  evolution_instance: string | null
   _table?: 'leads_contabilidade'
 }
 
@@ -23,6 +25,8 @@ export interface Lead {
   id_conversa_chatwoot: string | null
   id_lead_chatwoot: string | null
   inbox_id_chatwoot: string | null
+  evolution_remote_jid: string | null
+  evolution_instance: string | null
   follow_up_1: string | null
   follow_up_2: string | null
   follow_up_3: string | null
@@ -30,6 +34,23 @@ export interface Lead {
   id_agendamento: string | null
   agendamento_criado_em: string | null
   anotacoes: string | null
+  anexos: Array<{
+    id: string
+    nome_original: string
+    mime_type: string | null
+    tamanho_bytes: number | null
+    uploaded_at: string
+    uploaded_by: string | null
+    data_url: string | null
+    storage_provider?: 'supabase' | 'server' | null
+    bucket?: string | null
+    storage_path?: string | null
+    external_url?: string | null
+  }> | null
+  responsavel_profile_id: string | null
+  responsavel_nome: string | null
+  transferido_em: string | null
+  transferido_por: string | null
   created_at: string
   minutos_ultima_mensagem_base: number | null
   horario_comercial: boolean | null
@@ -355,13 +376,14 @@ export interface ContaBancaria {
 // ── integrações / comunicação ─────────────────────────────────
 export type IntegrationProvider =
   | 'chatwoot' | 'chatwoot_disparo' | 'email_smtp' | 'n8n' | 'gestao_ar'
-  | 'safe2pay' | 'safeweb' | 'supabase'
+  | 'safe2pay' | 'safeweb' | 'supabase' | 'evolution'
 
 export type IntegrationStatus = 'ativo' | 'pendente' | 'erro' | 'inativo'
 export type CommunicationChannel = 'whatsapp' | 'email' | 'webhook'
-export type CommunicationProvider = 'chatwoot' | 'chatwoot_disparo' | 'email_smtp' | 'n8n'
+export type CommunicationProvider = 'chatwoot' | 'chatwoot_disparo' | 'email_smtp' | 'n8n' | 'evolution'
 export type CommunicationStatus = 'queued' | 'processing' | 'sent' | 'failed' | 'cancelled'
 export type AutomationChannel = 'whatsapp' | 'email' | 'whatsapp_email' | 'webhook'
+export type WhatsAppEngine = 'evolution' | 'zapi' | 'custom'
 
 export interface ExternalIntegration {
   id: string
@@ -374,6 +396,7 @@ export interface ExternalIntegration {
   api_token: string | null
   account_id: string | null
   inbox_id: string | null
+  instance_name: string | null
   sender_name: string | null
   sender_email: string | null
   host: string | null
@@ -561,6 +584,85 @@ export interface PontoAtendimentoAgente {
   created_at: string
 }
 
+export interface AgenteTabelaPreco {
+  id: string
+  tabela_preco_id: string
+  agente_registro_id: string
+  ponto_atendimento_id: string | null
+  ativo: boolean
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export type NovoAgenteTabelaPreco = Omit<AgenteTabelaPreco, 'id' | 'created_at' | 'updated_at'>
+
+export interface ParceiroAgentePermitido {
+  id: string
+  parceiro_id: string
+  agente_registro_id: string
+  ponto_atendimento_id: string | null
+  ativo: boolean
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export type NovoParceiroAgentePermitido = Omit<ParceiroAgentePermitido, 'id' | 'created_at' | 'updated_at'>
+
+export interface AgenteDisponibilidade {
+  id: string
+  agente_registro_id: string
+  ponto_atendimento_id: string
+  dia_semana: number
+  hora_inicio: string
+  hora_fim: string
+  intervalo_minutos: number
+  capacidade_por_slot: number
+  tipo_atendimento: TipoAtendimento | null
+  ativo: boolean
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export type NovoAgenteDisponibilidade = Omit<AgenteDisponibilidade, 'id' | 'created_at' | 'updated_at'>
+
+export interface AgenteIndisponibilidade {
+  id: string
+  agente_registro_id: string
+  ponto_atendimento_id: string | null
+  inicio_em: string
+  fim_em: string
+  motivo: string | null
+  ativo: boolean
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export type NovaAgenteIndisponibilidade = Omit<AgenteIndisponibilidade, 'id' | 'created_at' | 'updated_at'>
+
+export type OwnerTipoLojaMarketplace = 'institucional' | 'vendedor' | 'contador' | 'parceiro' | 'revendedor'
+
+export interface LojaMarketplace {
+  id: string
+  nome_loja: string
+  slug: string
+  tabela_preco_id: string
+  owner_tipo: OwnerTipoLojaMarketplace
+  owner_profile_id: string | null
+  owner_parceiro_id: string | null
+  descricao: string | null
+  dominio_publico: string | null
+  ativo: boolean
+  configuracoes: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export type NovaLojaMarketplace = Omit<LojaMarketplace, 'id' | 'created_at' | 'updated_at'>
+
 // ── vendas_certificados ───────────────────────────────────────
 export type StatusVendaCertificado = 'rascunho' | 'vendido' | 'agendado' | 'em_validacao' | 'emitido' | 'cancelado'
 export type StatusPedidoProtocolo  = 'nao_gerado' | 'pendente' | 'gerado' | 'erro' | 'cancelado'
@@ -569,6 +671,7 @@ export type TipoParceiro = 'ar' | 'pa_controle_total' | 'pa_emissor' | 'contador
 
 export interface VendaCertificado {
   id: string
+  loja_marketplace_id: string | null
   cadastro_base_id: string
   empresa_id: string | null
   titular_id: string | null     // null até a emissão do protocolo
@@ -601,7 +704,7 @@ export interface VendaCertificado {
   inscricao_estadual: string | null
   iss_retido: boolean
   // responsáveis
-  vendedor_id: string
+  vendedor_id: string | null
   agente_registro_id: string | null
   contador_id: string | null
   ponto_atendimento_id: string
@@ -646,10 +749,10 @@ export interface AgendamentoValidacao {
   venda_certificado_id: string
   cadastro_base_id: string
   empresa_id: string | null
-  titular_id: string
+  titular_id: string | null
   contador_id: string | null
-  agente_registro_id: string
-  ponto_atendimento_id: string
+  agente_registro_id: string | null
+  ponto_atendimento_id: string | null
   data_agendada: string | null
   tipo_atendimento: TipoAtendimento | null
   status_agendamento: StatusAgendamentoValidacao
@@ -932,9 +1035,15 @@ export interface OrdemPagamento {
 // ── nfse ──────────────────────────────────────────────────────
 export type AmbienteNfse = 'homologacao' | 'producao'
 export type StatusNfse   = 'pendente' | 'emitida' | 'erro' | 'cancelada'
+export type ProvedorNfse = 'nacional' | 'gissonline' | 'municipal'
 
 export interface NfseConfiguracao {
   id: string
+  identificador: string | null
+  municipio_nome: string
+  municipio_codigo_ibge: string | null
+  provedor: ProvedorNfse
+  ativo: boolean
   cadastro_base_emitente_id: string | null
   cnpj_emitente: string
   inscricao_municipal: string | null
@@ -959,6 +1068,13 @@ export interface NfseConfiguracao {
   aliquota_inss: number | null
   aliquota_ir: number | null
   aliquota_csll: number | null
+  usuario_prefeitura: string | null
+  senha_prefeitura: string | null
+  chave_autenticacao: string | null
+  usa_certificado_digital: boolean
+  certificado_pfx_path: string | null
+  certificado_senha: string | null
+  observacoes: string | null
   robo_ligado: boolean
   payload_reforma_tributaria: Record<string, unknown>
   updated_by: string | null
@@ -1012,6 +1128,24 @@ export interface LancamentoV2Campos {
   venda_certificado_id: string | null
   produto_emitido_id: string | null
   documento_fiscal_id: string | null
+  cobranca_gateway: string | null
+  cobranca_link: string | null
+  cobranca_id_externo: string | null
+}
+
+// ── webhook_log ───────────────────────────────────────────────
+export type StatusWebhookLog = 'recebido' | 'processado' | 'erro'
+
+export interface WebhookLog {
+  id: string
+  gateway: string
+  evento: string
+  payload: Record<string, unknown>
+  status: StatusWebhookLog
+  erro: string | null
+  external_id: string | null
+  ordem_pagamento_id: string | null
+  created_at: string
 }
 
 export type LancamentoV2 = Lancamento & LancamentoV2Campos

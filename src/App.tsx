@@ -12,6 +12,7 @@ import Financeiro from './pages/Financeiro'
 import Relatorios from './pages/Relatorios'
 import Parceiros from './pages/Parceiros'
 import Configuracoes from './pages/Configuracoes'
+import MarketplaceLoja from './pages/MarketplaceLoja'
 import type { PermissaoPagina } from './types'
 import { APP_VERSION } from './lib/version'
 import { DEFAULT_AGENCY_CONFIG, fetchAgencyConfig } from './lib/agencyConfig'
@@ -20,10 +21,14 @@ import DebugPanel from './components/DebugPanel'
 import NotificationBell from './components/NotificationBell'
 import { useNotifications } from './hooks/useNotifications'
 import { Menu } from 'lucide-react'
-import { PAGE_LABELS, PERFIL_LABEL, isAdminProfile, resolveAllowedPages } from './lib/security'
+import { PAGE_LABELS, PERFIL_LABEL, isAdminProfile, resolveAllowedPages, resolveDefaultPage } from './lib/security'
 
 function AppContent() {
   const { user, profile, loading, signOut, isPasswordRecovery } = useAuth()
+  const pathname = window.location.pathname
+  const isShopRoute = /^\/shop\/?$/.test(pathname)
+  const lojaMatch = pathname.match(/^\/loja\/([^/]+)\/?$/)
+  const lojaSlug = lojaMatch?.[1] ? decodeURIComponent(lojaMatch[1]) : null
   const [page, setPage] = useState<Page>('dashboard')
   const [dark, setDark] = useState(() => localStorage.getItem('theme') === 'dark')
   const [agencyConfig, setAgencyConfig] = useState(DEFAULT_AGENCY_CONFIG)
@@ -37,6 +42,17 @@ function AppContent() {
     document.documentElement.classList.toggle('dark', dark)
     localStorage.setItem('theme', dark ? 'dark' : 'light')
   }, [dark])
+
+  useEffect(() => {
+    function handleExternalNavigate(event: Event) {
+      const custom = event as CustomEvent<{ page?: Page }>
+      const nextPage = custom.detail?.page
+      if (nextPage) setPage(nextPage)
+    }
+
+    window.addEventListener('crm:navigate', handleExternalNavigate as EventListener)
+    return () => window.removeEventListener('crm:navigate', handleExternalNavigate as EventListener)
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -64,6 +80,14 @@ function AppContent() {
         </div>
       </div>
     )
+  }
+
+  if (isShopRoute) {
+    return <MarketplaceLoja />
+  }
+
+  if (lojaSlug) {
+    return <MarketplaceLoja slug={lojaSlug} />
   }
 
   if (!user) return <Login />
@@ -117,9 +141,10 @@ function AppContent() {
   }
 
   const allowedPages = resolveAllowedPages(profile)
+  const defaultPage = resolveDefaultPage(profile)
 
-  // Se a página atual não estiver disponível para o perfil, volta ao dashboard
-  const activePage: Page = allowedPages.includes(page) ? page : 'dashboard'
+  // Se a página atual não estiver disponível para o perfil, cai na primeira página válida do perfil.
+  const activePage: Page = allowedPages.includes(page) ? page : defaultPage
 
   function handleNavigate(p: Page) {
     if (allowedPages.includes(p)) setPage(p)

@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Loader2, MapPin, Pencil, X, Check, KeyRound, UserPlus, Eye, EyeOff, MessageCircle, Mail, Webhook, Save, Send, Trash2, Plus, ToggleLeft, ToggleRight } from 'lucide-react'
+import { Loader2, MapPin, Pencil, X, Check, KeyRound, UserPlus, Eye, EyeOff, MessageCircle, Mail, Webhook, Save, Send, Trash2, Plus, ToggleLeft, ToggleRight, CreditCard, FileText, Upload, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { supabase, getSupabaseAccessToken } from '@/lib/supabase'
 import { createAdminManagedUser, deleteAdminManagedUser, updateAdminManagedPassword } from '@/lib/adminUsers'
 import { DEFAULT_AGENCY_CONFIG, type AgencyConfig, fetchAgencyConfig } from '@/lib/agencyConfig'
+import { DEFAULT_CONTACT_DOCUMENT_STORAGE, loadContactDocumentStorageConfig, type ContactDocumentStorageConfig } from '@/lib/contactDocumentStorage'
+import { buildWhatsAppMetadata, getWhatsAppEngine, getWhatsAppEngineLabel, isWhatsAppIntegration, normalizeWhatsAppProvider } from '@/lib/whatsappIntegration'
 import { DEFAULT_PERMISSIONS, PAGE_PERMISSIONS, hasPerfil, isAdminProfile } from '@/lib/security'
+import { buscarCep } from '@/lib/cep'
 import { useAuth } from '@/contexts/AuthContext'
 import type {
   AutomationRule,
@@ -12,16 +15,19 @@ import type {
   ExternalIntegration,
   IntegrationProvider,
   IntegrationStatus,
+  NfseConfiguracao,
   Parceiro,
   PerfilAcesso,
   PermissaoPagina,
   PontoAtendimento,
+  ProvedorNfse,
   NovoPontoAtendimento,
   Profile,
   TipoVinculoUsuario,
+  WhatsAppEngine,
 } from '@/types'
 
-type Tab = 'geral' | 'integracoes' | 'automacoes' | 'usuarios' | 'pontos'
+type Tab = 'geral' | 'integracoes' | 'automacoes' | 'usuarios' | 'pontos' | 'pagamentos' | 'fiscal'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'geral',        label: 'Geral'                  },
@@ -29,7 +35,11 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'automacoes',   label: 'Automações'             },
   { id: 'usuarios',     label: 'Usuários'               },
   { id: 'pontos',       label: 'Pontos de Atendimento'  },
+  { id: 'pagamentos',   label: 'Pagamentos'             },
+  { id: 'fiscal',       label: 'Fiscal / NFS-e'         },
 ]
+
+const ADMIN_ONLY_TABS: Tab[] = ['fiscal']
 
 const PERFIL_LABEL: Record<PerfilAcesso, string> = {
   admin:           'Administrador',
@@ -72,6 +82,7 @@ type ModalSenha = { userId: string; nome: string } | null
 type ModalNovoUsuario = { aberto: boolean }
 
 const PROVIDER_LABEL: Record<IntegrationProvider, string> = {
+  evolution:         'WhatsApp API',
   chatwoot:          'Chatwoot / WhatsApp (Atendimento)',
   chatwoot_disparo:  'Chatwoot / WhatsApp (Disparos)',
   email_smtp:        'Email SMTP',
@@ -96,11 +107,13 @@ const STATUS_CLASS: Record<IntegrationStatus, string> = {
   inativo: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400',
 }
 
-function providerIcon(provider: IntegrationProvider) {
-  if (provider === 'chatwoot' || provider === 'chatwoot_disparo') return MessageCircle
+function providerIcon(provider: IntegrationProvider, forceWhatsApp = false) {
+  if (forceWhatsApp || provider === 'evolution' || provider === 'chatwoot' || provider === 'chatwoot_disparo') return MessageCircle
   if (provider === 'email_smtp') return Mail
   return Webhook
 }
+
+const WHATSAPP_ENGINE_OPTIONS: WhatsAppEngine[] = ['evolution', 'zapi', 'custom']
 
 function automationChannelLabel(channel: AutomationRule['channel']) {
   const labels: Record<AutomationRule['channel'], string> = {
@@ -340,6 +353,8 @@ function AbaUsuarios() {
   const [senhaOk, setSenhaOk]         = useState(false)
   const [salvandoSenha, setSalvandoSenha] = useState(false)
 
+  const [toastU, setToastU] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null)
+
   // Confirmação de exclusão de usuário
   const [confirmExcluirUser, setConfirmExcluirUser] = useState<Profile | null>(null)
   const [excluindoUser, setExcluindoUser]           = useState(false)
@@ -353,6 +368,11 @@ function AbaUsuarios() {
   const [criandoUser, setCriandoUser] = useState(false)
   const [criadoOk, setCriadoOk]       = useState(false)
   const [criadoErro, setCriadoErro]   = useState<string | null>(null)
+
+  function showMsgU(msg: string, type: 'ok' | 'err' = 'err') {
+    setToastU({ msg, type })
+    setTimeout(() => setToastU(null), 4000)
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -416,7 +436,7 @@ function AbaUsuarios() {
       setConfirmExcluirUser(null)
       void load()
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Erro ao excluir usuário.')
+      showMsgU(error instanceof Error ? error.message : 'Erro ao excluir usuário.')
     } finally {
       setExcluindoUser(false)
     }
@@ -876,24 +896,87 @@ function AbaUsuarios() {
           )}
         </div>
       </div>
+      {toastU && (
+        <div className={cn(
+          'fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-xl text-sm font-medium',
+          toastU.type === 'ok' ? 'bg-green-600 text-white' : 'bg-red-600 text-white',
+        )}>
+          {toastU.msg}
+          <button type="button" title="Fechar" onClick={() => setToastU(null)} className="ml-1 opacity-80 hover:opacity-100"><X size={14} /></button>
+        </div>
+      )}
     </>
   )
 }
 
-const EDGE_FN = 'https://cvfrhfiaprdtwxxplngk.supabase.co/functions/v1/chatwoot-webhook'
+const EDGE_FN_EVOLUTION = 'https://cvfrhfiaprdtwxxplngk.supabase.co/functions/v1/evolution-webhook'
 
-async function testarChatwoot(baseUrl: string, token: string): Promise<{ ok: boolean; erro: string | null }> {
+function getWhatsAppEngineFromForm(form: Partial<ExternalIntegration> | null | undefined): WhatsAppEngine {
+  return getWhatsAppEngine({ provider: form?.provider ?? 'evolution', metadata: form?.metadata ?? {} })
+}
+
+function setWhatsAppEngineOnForm(form: Partial<ExternalIntegration>, engine: WhatsAppEngine): Partial<ExternalIntegration> {
+  const providerBase = form.provider ?? 'evolution'
+  return {
+    ...form,
+    provider: normalizeWhatsAppProvider(providerBase, engine),
+    metadata: buildWhatsAppMetadata(form, engine),
+  }
+}
+
+function whatsAppBaseUrlPlaceholder(engine: WhatsAppEngine) {
+  if (engine === 'evolution') return 'https://sua-evolution-api.com'
+  if (engine === 'zapi') return 'https://api.z-api.io'
+  return 'https://seu-orquestrador.com'
+}
+
+function getPrimaryWhatsAppIntegration(list: ExternalIntegration[]) {
+  return (
+    list.find(item => isWhatsAppIntegration(item) && getWhatsAppEngine(item) === 'evolution' && !!item.instance_name) ??
+    list.find(item => isWhatsAppIntegration(item) && getWhatsAppEngine(item) === 'evolution') ??
+    list.find(item => isWhatsAppIntegration(item)) ??
+    list.find(item => item.provider === 'evolution' && !!item.instance_name) ??
+    list.find(item => item.provider === 'evolution') ??
+    list.find(item => item.provider === 'chatwoot_disparo') ??
+    list.find(item => item.provider === 'chatwoot') ??
+    null
+  )
+}
+
+function toUnifiedWhatsAppIntegration(source: ExternalIntegration): ExternalIntegration {
+  const engine = source.provider === 'chatwoot' || source.provider === 'chatwoot_disparo'
+    ? 'custom'
+    : getWhatsAppEngine(source)
+
+  return {
+    ...source,
+    provider: 'evolution',
+    name: 'WhatsApp API',
+    description: 'Canal híbrido de WhatsApp para atendimento, disparos e automações.',
+    metadata: buildWhatsAppMetadata(source, engine),
+  }
+}
+
+function getWhatsAppDisplayName(integration: Pick<ExternalIntegration, 'name' | 'instance_name'>) {
+  const rawName = integration.name?.trim() ?? ''
+  if (rawName && rawName !== 'WhatsApp API') return rawName
+  const instance = integration.instance_name?.trim() ?? ''
+  if (instance) return instance
+  return 'Número sem nome'
+}
+
+async function testarEvolution(baseUrl: string, token: string, instanceName: string): Promise<{ ok: boolean; erro: string | null }> {
   try {
     const accessToken = await getSupabaseAccessToken()
-    const res = await fetch(EDGE_FN, {
+    const res = await fetch(EDGE_FN_EVOLUTION, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-      body: JSON.stringify({ _action: 'test_connection', base_url: baseUrl, api_token: token }),
+      body: JSON.stringify({ _action: 'test_connection', base_url: baseUrl, api_token: token, instance_name: instanceName }),
       signal: AbortSignal.timeout(12000),
     })
-    const data = await res.json() as { ok: boolean; error?: string; name?: string }
+    const data = await res.json() as { ok: boolean; error?: string; state?: string }
     if (data.ok) return { ok: true, erro: null }
-    return { ok: false, erro: data.error ?? 'Falha na conexão' }
+    return { ok: false, erro: data.error ?? `Estado: ${data.state ?? 'desconhecido'}` }
   } catch {
     return { ok: false, erro: 'Sem conexão com o servidor' }
   }
@@ -902,6 +985,7 @@ async function testarChatwoot(baseUrl: string, token: string): Promise<{ ok: boo
 function AbaIntegracoes() {
   const { profile } = useAuth()
   const isAdmin = isAdminProfile(profile)
+  const providersOcultosDaAba: IntegrationProvider[] = ['safe2pay', 'chatwoot', 'chatwoot_disparo']
 
   const [integracoes, setIntegracoes] = useState<ExternalIntegration[]>([])
   const [outbox, setOutbox] = useState<CommunicationOutbox[]>([])
@@ -913,10 +997,19 @@ function AbaIntegracoes() {
   const [testando, setTestando] = useState<IntegrationProvider | null>(null)
   const [novaModal, setNovaModal] = useState(false)
   const [novaForm, setNovaForm] = useState<Partial<ExternalIntegration>>({ status: 'pendente' as IntegrationStatus })
-  const [novaProvider, setNovaProvider] = useState<IntegrationProvider>('chatwoot')
+  const [novaProvider, setNovaProvider] = useState<IntegrationProvider>('evolution')
   const [criando, setCriando] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<ExternalIntegration | null>(null)
   const [deletando, setDeletando] = useState(false)
+  const [toastI, setToastI] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null)
+  const [whatsAppHubOpen, setWhatsAppHubOpen] = useState(false)
+  const [documentStorage, setDocumentStorage] = useState<ContactDocumentStorageConfig>(DEFAULT_CONTACT_DOCUMENT_STORAGE)
+  const [savingDocumentStorage, setSavingDocumentStorage] = useState(false)
+
+  function showMsgI(msg: string, type: 'ok' | 'err' = 'err') {
+    setToastI({ msg, type })
+    setTimeout(() => setToastI(null), 4000)
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -935,21 +1028,27 @@ function AbaIntegracoes() {
     const lista = (integracoesRes.data ?? []) as ExternalIntegration[]
     setIntegracoes(lista)
     setOutbox((outboxRes.data ?? []) as CommunicationOutbox[])
+    try {
+      const cfg = await loadContactDocumentStorageConfig()
+      setDocumentStorage(cfg)
+    } catch {
+      setDocumentStorage(DEFAULT_CONTACT_DOCUMENT_STORAGE)
+    }
     setLoading(false)
 
-    // Verifica Chatwoot silenciosamente após carregar
-    const chatwoot = lista.find(i => i.provider === 'chatwoot' && i.base_url && i.api_token)
-    if (chatwoot) {
-      const resultado = await testarChatwoot(chatwoot.base_url!, chatwoot.api_token!)
+    // Verifica o canal WhatsApp híbrido silenciosamente após carregar
+    const evo = lista.find(i => isWhatsAppIntegration(i) && getWhatsAppEngine(i) === 'evolution' && i.base_url && i.api_token && i.instance_name)
+    if (evo) {
+      const resultado = await testarEvolution(evo.base_url!, evo.api_token!, evo.instance_name!)
       const novoStatus: IntegrationStatus = resultado.ok ? 'ativo' : 'erro'
-      if (novoStatus !== chatwoot.status) {
+      if (novoStatus !== evo.status) {
         await supabase.from('external_integrations').update({
           status: novoStatus,
           last_test_at: new Date().toISOString(),
           last_error: resultado.erro,
-        }).eq('id', chatwoot.id)
+        }).eq('id', evo.id)
         setIntegracoes(prev => prev.map(i =>
-          i.id === chatwoot.id ? { ...i, status: novoStatus, last_error: resultado.erro } : i
+          i.id === evo.id ? { ...i, status: novoStatus, last_error: resultado.erro } : i
         ))
       }
     }
@@ -962,9 +1061,41 @@ function AbaIntegracoes() {
     setForm({ ...integracao })
   }
 
+  function startEditWhatsApp(integracao: ExternalIntegration) {
+    const unified = toUnifiedWhatsAppIntegration(integracao)
+    setEditing(unified)
+    setForm({ ...unified })
+  }
+
   function closeEdit() {
     setEditing(null)
     setForm({})
+  }
+
+  function openWhatsAppHub() {
+    setWhatsAppHubOpen(true)
+  }
+
+  async function salvarDocumentStorage() {
+    if (!isAdmin) return
+    setSavingDocumentStorage(true)
+    const { error } = await supabase
+      .from('app_settings')
+      .upsert({
+        key: 'contact_document_storage',
+        value: documentStorage,
+        updated_by: profile?.id ?? null,
+      }, { onConflict: 'key' })
+    setSavingDocumentStorage(false)
+    if (error) {
+      showMsgI(`Erro ao salvar armazenamento de documentos: ${error.message}`)
+      return
+    }
+    showMsgI('Armazenamento de documentos atualizado.', 'ok')
+  }
+
+  function closeWhatsAppHub() {
+    setWhatsAppHubOpen(false)
   }
 
   async function salvarIntegracao() {
@@ -975,11 +1106,15 @@ function AbaIntegracoes() {
     let lastError: string | null = editing.last_error ?? null
     let lastTestAt: string | null = editing.last_test_at ?? null
 
-    if (editing.provider === 'chatwoot' || editing.provider === 'chatwoot_disparo') {
-      const baseUrl = form.base_url ?? ''
-      const token = form.api_token ?? ''
-      if (baseUrl && token) {
-        const resultado = await testarChatwoot(baseUrl, token)
+    const editingIsWhatsApp = isWhatsAppIntegration(editing) || editing.provider === 'evolution'
+
+    if (editingIsWhatsApp) {
+      const baseUrl  = form.base_url      ?? ''
+      const token    = form.api_token     ?? ''
+      const instance = form.instance_name ?? ''
+      const engine = getWhatsAppEngineFromForm({ ...editing, ...form })
+      if (engine === 'evolution' && baseUrl && token && instance) {
+        const resultado = await testarEvolution(baseUrl, token, instance)
         statusFinal = resultado.ok ? 'ativo' : 'erro'
         lastError = resultado.erro
         lastTestAt = new Date().toISOString()
@@ -989,27 +1124,36 @@ function AbaIntegracoes() {
       }
     }
 
+    const engineAtual = getWhatsAppEngineFromForm({ ...editing, ...form })
+    const providerFinal = editingIsWhatsApp ? normalizeWhatsAppProvider(editing.provider, engineAtual) : editing.provider
+    const metadataFinal = editingIsWhatsApp
+      ? buildWhatsAppMetadata({ ...editing, ...form }, engineAtual)
+      : (form.metadata ?? editing.metadata ?? {})
+
     const { error } = await supabase.from('external_integrations').update({
+      provider: providerFinal,
       name: form.name,
       description: form.description,
       status: statusFinal,
       base_url: form.base_url || null,
       webhook_url: form.webhook_url || null,
-      api_token: form.api_token || null,
-      account_id: form.account_id || null,
-      inbox_id: form.inbox_id || null,
+      api_token:     form.api_token     || null,
+      account_id:    form.account_id    || null,
+      inbox_id:      form.inbox_id      || null,
+      instance_name: form.instance_name || null,
       sender_name: form.sender_name || null,
       sender_email: form.sender_email || null,
       host: form.host || null,
       port: form.port || null,
       username: form.username || null,
+      metadata: metadataFinal,
       last_test_at: lastTestAt,
       last_error: lastError,
     }).eq('id', editing.id)
     setSaving(false)
 
     if (error) {
-      alert('Erro ao salvar: ' + error.message)
+      showMsgI('Erro ao salvar: ' + error.message)
       return
     }
 
@@ -1020,29 +1164,33 @@ function AbaIntegracoes() {
   async function registrarTeste(integracao: ExternalIntegration) {
     setTestando(integracao.provider)
 
-    if (integracao.provider === 'chatwoot' || integracao.provider === 'chatwoot_disparo') {
-      if (!integracao.base_url || !integracao.api_token || !integracao.account_id) {
-        alert('Configure URL base, API Token e Account ID primeiro.')
+    if (isWhatsAppIntegration(integracao) || integracao.provider === 'evolution') {
+      const engine = getWhatsAppEngine(integracao)
+      if (engine !== 'evolution') {
+        showMsgI(`Teste automático indisponível para ${getWhatsAppEngineLabel(engine)}. Use o webhook/orquestrador configurado.`, 'ok')
+        setTestando(null)
+        return
+      }
+      if (!integracao.base_url || !integracao.api_token || !integracao.instance_name) {
+        showMsgI('Configure URL base, token e identificador da instância primeiro.')
         setTestando(null)
         return
       }
       try {
-        const accessToken = await getSupabaseAccessToken()
-        const res = await fetch(EDGE_FN, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-          body: JSON.stringify({
-            _action:    'sync_conversations',
-            base_url:   integracao.base_url,
-            api_token:  integracao.api_token,
-            account_id: integracao.account_id,
-          }),
-        })
-        const data = await res.json() as { ok: boolean; count?: number; error?: string }
-        if (!data.ok) throw new Error(data.error ?? 'Erro desconhecido')
-        alert(`${data.count ?? 0} conversa(s) sincronizada(s) com o Kanban!`)
+        const resultado = await testarEvolution(integracao.base_url, integracao.api_token, integracao.instance_name)
+        const novoStatus: IntegrationStatus = resultado.ok ? 'ativo' : 'erro'
+        await supabase.from('external_integrations').update({
+          status: novoStatus,
+          last_test_at: new Date().toISOString(),
+          last_error: resultado.erro,
+        }).eq('id', integracao.id)
+        if (resultado.ok) {
+          showMsgI('Canal WhatsApp conectado com sucesso!', 'ok')
+        } else {
+          showMsgI('Falha na conexão: ' + (resultado.erro ?? 'erro desconhecido'))
+        }
       } catch (e) {
-        alert('Erro ao sincronizar: ' + String(e))
+        showMsgI('Erro ao testar: ' + String(e))
       }
       setTestando(null)
       void load()
@@ -1077,8 +1225,19 @@ function AbaIntegracoes() {
 
   function providersDisponiveis(): IntegrationProvider[] {
     const usados = new Set(integracoes.map(i => i.provider))
-    return (Object.keys(PROVIDER_LABEL) as IntegrationProvider[]).filter(p => !usados.has(p))
+    return (Object.keys(PROVIDER_LABEL) as IntegrationProvider[]).filter(p => {
+      if (providersOcultosDaAba.includes(p)) return false
+      if (p === 'evolution') return true
+      return !usados.has(p)
+    })
   }
+
+  const whatsappIntegracoes = integracoes.filter(i => isWhatsAppIntegration(i) || i.provider === 'evolution' || i.provider === 'chatwoot' || i.provider === 'chatwoot_disparo')
+  const whatsappPrincipal = getPrimaryWhatsAppIntegration(integracoes)
+  const integracoesVisiveis = [
+    ...(whatsappPrincipal ? [toUnifiedWhatsAppIntegration(whatsappPrincipal)] : []),
+    ...integracoes.filter(i => !providersOcultosDaAba.includes(i.provider) && !isWhatsAppIntegration(i) && i.provider !== 'evolution'),
+  ]
 
   function abrirNovaIntegracao() {
     const disponiveis = providersDisponiveis()
@@ -1088,11 +1247,20 @@ function AbaIntegracoes() {
     setNovaModal(true)
   }
 
+  function abrirNovoNumeroWhatsApp() {
+    setNovaProvider('evolution')
+    setNovaForm(setWhatsAppEngineOnForm({ status: 'pendente' as IntegrationStatus, provider: 'evolution', name: 'WhatsApp API' }, 'evolution'))
+    setNovaModal(true)
+  }
+
   async function criarIntegracao() {
     setCriando(true)
+    const creatingWhatsApp = novaProvider === 'evolution'
+    const engineNovo = getWhatsAppEngineFromForm({ provider: novaProvider, metadata: novaForm.metadata ?? {} })
+    const providerFinal = creatingWhatsApp ? normalizeWhatsAppProvider(novaProvider, engineNovo) : novaProvider
     const { error } = await supabase.from('external_integrations').insert([{
-      provider: novaProvider,
-      name: PROVIDER_LABEL[novaProvider],
+      provider: providerFinal,
+      name: novaForm.name || (providerFinal === 'evolution' || providerFinal === 'n8n' ? 'WhatsApp API' : PROVIDER_LABEL[providerFinal]),
       description: novaForm.description ?? null,
       status: novaForm.status ?? 'pendente',
       base_url: novaForm.base_url || null,
@@ -1105,10 +1273,12 @@ function AbaIntegracoes() {
       host: novaForm.host || null,
       port: novaForm.port || null,
       username: novaForm.username || null,
-      metadata: {},
+      metadata: creatingWhatsApp
+        ? buildWhatsAppMetadata({ provider: providerFinal, metadata: novaForm.metadata ?? {} }, engineNovo)
+        : {},
     }])
     setCriando(false)
-    if (error) { alert('Erro ao criar: ' + error.message); return }
+    if (error) { showMsgI('Erro ao criar: ' + error.message); return }
     setNovaModal(false)
     void load()
   }
@@ -1118,7 +1288,7 @@ function AbaIntegracoes() {
     setDeletando(true)
     const { error } = await supabase.from('external_integrations').delete().eq('id', confirmDelete.id)
     setDeletando(false)
-    if (error) { alert('Erro ao remover: ' + error.message); setConfirmDelete(null); return }
+    if (error) { showMsgI('Erro ao remover: ' + error.message); setConfirmDelete(null); return }
     setConfirmDelete(null)
     void load()
   }
@@ -1138,13 +1308,31 @@ function AbaIntegracoes() {
   return (
     <div className="space-y-6">
       {editing && (
-        <ModalOverlay titulo={`Configurar ${PROVIDER_LABEL[editing.provider]}`} onClose={closeEdit}>
+        <ModalOverlay titulo={`Configurar ${isWhatsAppIntegration(editing) ? 'WhatsApp API' : PROVIDER_LABEL[editing.provider]}`} onClose={closeEdit}>
           <div className="space-y-3">
-            {(editing.provider === 'chatwoot' || editing.provider === 'chatwoot_disparo') ? (
+            {(isWhatsAppIntegration(editing) || editing.provider === 'evolution') ? (
+              <div className="space-y-3">
+                <p className="text-xs text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 rounded-lg px-3 py-2">
+                  Canal WhatsApp híbrido. Você pode manter Evolution agora e trocar depois para Z-API ou outro conector sem mudar a tela de operação.
+                </p>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">Motor WhatsApp</span>
+                  <select
+                    value={getWhatsAppEngineFromForm({ ...editing, ...form })}
+                    onChange={e => setForm(prev => setWhatsAppEngineOnForm({ ...editing, ...prev }, e.target.value as WhatsAppEngine))}
+                    className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {WHATSAPP_ENGINE_OPTIONS.map(engine => (
+                      <option key={engine} value={engine}>{getWhatsAppEngineLabel(engine)}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            ) : (editing.provider === 'chatwoot' || editing.provider === 'chatwoot_disparo') ? (
               <p className="text-xs text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 rounded-lg px-3 py-2">
                 {editing.provider === 'chatwoot_disparo'
-                  ? '📤 Número de disparos — usado para renovações e mensagens automáticas'
-                  : 'Status detectado automaticamente ao salvar'}
+                  ? 'Legado de disparos WhatsApp.'
+                  : 'Legado de atendimento WhatsApp.'}
               </p>
             ) : (
               <label className="flex flex-col gap-1">
@@ -1159,9 +1347,31 @@ function AbaIntegracoes() {
               </label>
             )}
 
-            <ConfigInput label="URL base / API" value={form.base_url ?? ''} onChange={base_url => setForm(p => ({ ...p, base_url }))} placeholder="https://chatwoot.seudominio.com" />
+            <ConfigInput
+              label={(isWhatsAppIntegration(editing) || editing.provider === 'evolution') ? 'URL base / gateway WhatsApp' : 'URL base / API'}
+              value={form.base_url ?? ''}
+              onChange={base_url => setForm(p => ({ ...p, base_url }))}
+              placeholder={(isWhatsAppIntegration(editing) || editing.provider === 'evolution') ? whatsAppBaseUrlPlaceholder(getWhatsAppEngineFromForm({ ...editing, ...form })) : 'https://chatwoot.seudominio.com'}
+            />
             <ConfigInput label="Webhook de entrada/saída" value={form.webhook_url ?? ''} onChange={webhook_url => setForm(p => ({ ...p, webhook_url }))} placeholder="https://..." />
 
+            {(isWhatsAppIntegration(editing) || editing.provider === 'evolution') && (
+              <>
+                <ConfigInput
+                  label="Apelido do número"
+                  value={form.name ?? ''}
+                  onChange={name => setForm(p => ({ ...p, name }))}
+                  placeholder="Atendimento, Renovações, Financeiro..."
+                />
+                <ConfigInput
+                  label="Identificador da instância / conta"
+                  value={form.instance_name ?? ''}
+                  onChange={instance_name => setForm(p => ({ ...p, instance_name }))}
+                  placeholder={getWhatsAppEngineFromForm({ ...editing, ...form }) === 'evolution' ? 'minha_instancia' : 'instancia_principal'}
+                />
+                <ConfigInput label="Token / API Key" type="password" value={form.api_token ?? ''} onChange={api_token => setForm(p => ({ ...p, api_token }))} />
+              </>
+            )}
             {(editing.provider === 'chatwoot' || editing.provider === 'chatwoot_disparo') && (
               <>
                 <ConfigInput label="Account ID" value={form.account_id ?? ''} onChange={account_id => setForm(p => ({ ...p, account_id }))} />
@@ -1222,7 +1432,7 @@ function AbaIntegracoes() {
         <ModalOverlay titulo="Nova Integração" onClose={() => setNovaModal(false)}>
           <div className="space-y-3">
             <label className="flex flex-col gap-1">
-              <span className="text-xs text-gray-500 dark:text-gray-400">Provedor</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400">Tipo de integração</span>
               <select value={novaProvider} onChange={e => setNovaProvider(e.target.value as IntegrationProvider)}
                 className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
                 {providersDisponiveis().map(p => (
@@ -1239,8 +1449,36 @@ function AbaIntegracoes() {
                 <option value="inativo">Inativo</option>
               </select>
             </label>
-            <ConfigInput label="URL base / API" value={novaForm.base_url ?? ''} onChange={v => setNovaForm(f => ({ ...f, base_url: v }))} placeholder="https://..." />
+            {novaProvider === 'evolution' && (
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500 dark:text-gray-400">Motor WhatsApp</span>
+                <select
+                  value={getWhatsAppEngineFromForm({ provider: novaProvider, metadata: novaForm.metadata ?? {} })}
+                  onChange={e => setNovaForm(f => setWhatsAppEngineOnForm({ ...f, provider: novaProvider }, e.target.value as WhatsAppEngine))}
+                  className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {WHATSAPP_ENGINE_OPTIONS.map(engine => (
+                    <option key={engine} value={engine}>{getWhatsAppEngineLabel(engine)}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <ConfigInput
+              label={novaProvider === 'evolution' ? 'URL base / gateway WhatsApp' : 'URL base / API'}
+              value={novaForm.base_url ?? ''}
+              onChange={v => setNovaForm(f => ({ ...f, base_url: v }))}
+              placeholder={novaProvider === 'evolution'
+                ? whatsAppBaseUrlPlaceholder(getWhatsAppEngineFromForm({ provider: novaProvider, metadata: novaForm.metadata ?? {} }))
+                : 'https://...'}
+            />
             <ConfigInput label="Webhook" value={novaForm.webhook_url ?? ''} onChange={v => setNovaForm(f => ({ ...f, webhook_url: v }))} placeholder="https://..." />
+            {novaProvider === 'evolution' && (
+              <>
+                <ConfigInput label="Apelido do número" value={novaForm.name ?? ''} onChange={v => setNovaForm(f => ({ ...f, name: v }))} placeholder="Atendimento, Renovações, Financeiro..." />
+                <ConfigInput label="Identificador da instância / conta" value={novaForm.instance_name ?? ''} onChange={v => setNovaForm(f => ({ ...f, instance_name: v }))} placeholder="instancia_principal" />
+                <ConfigInput label="Token / API Key" type="password" value={novaForm.api_token ?? ''} onChange={v => setNovaForm(f => ({ ...f, api_token: v }))} />
+              </>
+            )}
             {(novaProvider === 'chatwoot' || novaProvider === 'chatwoot_disparo') && (
               <>
                 <ConfigInput label="Account ID" value={novaForm.account_id ?? ''} onChange={v => setNovaForm(f => ({ ...f, account_id: v }))} />
@@ -1273,11 +1511,111 @@ function AbaIntegracoes() {
         </ModalOverlay>
       )}
 
+      {whatsAppHubOpen && (
+        <ModalOverlay titulo="WhatsApp API — Números e Instâncias" onClose={closeWhatsAppHub}>
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-3 rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-800/40 p-3">
+              <div>
+                <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Canal híbrido de WhatsApp</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Cada número pode usar um motor diferente. Exemplo: uma instância em Evolution e outra em Z-API.
+                </p>
+              </div>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={abrirNovoNumeroWhatsApp}
+                  className="shrink-0 flex items-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors"
+                >
+                  <Plus size={13} /> Novo número
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-2 max-h-[52vh] overflow-y-auto pr-1">
+              {whatsappIntegracoes.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-4 text-sm text-gray-500 dark:text-gray-400">
+                  Nenhum número configurado ainda.
+                </div>
+              ) : whatsappIntegracoes.map(int => {
+                const unified = toUnifiedWhatsAppIntegration(int)
+                const engine = getWhatsAppEngine(unified)
+                return (
+                  <div key={int.id} className="rounded-xl border border-gray-200 dark:border-gray-800 p-3 bg-white dark:bg-gray-900">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                            {getWhatsAppDisplayName(int)}
+                          </p>
+                          <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                            {getWhatsAppEngineLabel(engine)}
+                          </span>
+                          <span className={cn('px-2 py-0.5 rounded-full text-xs font-medium', STATUS_CLASS[int.status])}>
+                            {STATUS_LABEL[int.status]}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {int.base_url && (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-50 dark:bg-gray-800 text-[11px] text-gray-600 dark:text-gray-300 break-all">
+                              {int.base_url}
+                            </span>
+                          )}
+                          {int.instance_name && (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-50 dark:bg-gray-800 text-[11px] text-gray-600 dark:text-gray-300">
+                              Instância: {int.instance_name}
+                            </span>
+                          )}
+                          {int.name && int.name !== 'WhatsApp API' && (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-50 dark:bg-gray-800 text-[11px] text-gray-600 dark:text-gray-300">
+                              Apelido: {int.name}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => void registrarTeste(unified)}
+                          disabled={testando === unified.provider}
+                          title="Testar"
+                          className="w-8 h-8 rounded-lg text-gray-400 hover:bg-green-50 dark:hover:bg-green-900/20 hover:text-green-600 dark:hover:text-green-400 flex items-center justify-center"
+                        >
+                          {testando === unified.provider ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => startEditWhatsApp(int)}
+                          title="Configurar"
+                          className="w-8 h-8 rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-200 flex items-center justify-center"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDelete(int)}
+                            title="Remover número"
+                            className="w-8 h-8 rounded-lg text-gray-400 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500 dark:hover:text-red-400 flex items-center justify-center transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </ModalOverlay>
+      )}
+
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h2 className="font-semibold text-gray-800 dark:text-gray-200">Integrações Externas</h2>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            Configure Chatwoot para WhatsApp, SMTP para email e webhooks para automações.
+            Configure o canal híbrido de WhatsApp, email e webhooks sem prender a operação a um único fornecedor.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -1288,16 +1626,16 @@ function AbaIntegracoes() {
             </button>
           )}
           <div className="grid grid-cols-3 gap-2">
-            <SummaryChip label="Conectados" value={integracoes.filter(i => i.status === 'ativo').length} tone="green" />
-            <SummaryChip label="Pendentes" value={integracoes.filter(i => i.status === 'pendente').length} tone="yellow" />
+            <SummaryChip label="Conectados" value={integracoesVisiveis.filter(i => i.status === 'ativo').length} tone="green" />
+            <SummaryChip label="Pendentes" value={integracoesVisiveis.filter(i => i.status === 'pendente').length} tone="yellow" />
             <SummaryChip label="Fila" value={outbox.length} tone="blue" />
           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-        {integracoes.map(int => {
-          const Icon = providerIcon(int.provider)
+        {integracoesVisiveis.map(int => {
+          const Icon = providerIcon(int.provider, isWhatsAppIntegration(int))
           return (
             <div key={int.id} className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4 shadow-sm">
               <div className="flex items-start justify-between gap-4">
@@ -1316,16 +1654,26 @@ function AbaIntegracoes() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="font-medium text-sm">{int.name}</p>
                       <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-                        {PROVIDER_LABEL[int.provider]}
+                        {isWhatsAppIntegration(int) ? `WhatsApp API · ${getWhatsAppEngineLabel(getWhatsAppEngine(int))}` : PROVIDER_LABEL[int.provider]}
                       </span>
                     </div>
                     <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{int.description}</p>
                     <div className="mt-2 flex flex-wrap gap-2">
+                      {isWhatsAppIntegration(int) && (
+                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-50 dark:bg-gray-800 text-[11px] text-gray-600 dark:text-gray-300">
+                          {whatsappIntegracoes.length} número(s) / instância(s)
+                        </span>
+                      )}
                       {(int.base_url || int.webhook_url) && (
                         <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-50 dark:bg-gray-800 text-[11px] text-gray-600 dark:text-gray-300 break-all">
                           {int.base_url || int.webhook_url}
                         </span>
                       )}
+                      {isWhatsAppIntegration(int) && whatsappIntegracoes.slice(0, 3).map(item => (
+                        <span key={item.id} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-50 dark:bg-gray-800 text-[11px] text-gray-600 dark:text-gray-300">
+                          {getWhatsAppDisplayName(item)}
+                        </span>
+                      ))}
                       {int.host && (
                         <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-50 dark:bg-gray-800 text-[11px] text-gray-600 dark:text-gray-300">
                           SMTP {int.host}{int.port ? `:${int.port}` : ''}
@@ -1347,14 +1695,14 @@ function AbaIntegracoes() {
                     {STATUS_LABEL[int.status]}
                   </span>
                   <div className="flex items-center gap-1">
-                    {(['chatwoot', 'chatwoot_disparo', 'email_smtp', 'n8n'] as IntegrationProvider[]).includes(int.provider) && (
+                    {((['evolution', 'chatwoot', 'chatwoot_disparo', 'email_smtp', 'n8n'] as IntegrationProvider[]).includes(int.provider) || isWhatsAppIntegration(int)) && (
                       <button type="button" onClick={() => registrarTeste(int)} disabled={testando === int.provider}
                         title="Registrar teste na fila"
                         className="w-8 h-8 rounded-lg text-gray-400 hover:bg-green-50 dark:hover:bg-green-900/20 hover:text-green-600 dark:hover:text-green-400 flex items-center justify-center">
                         {testando === int.provider ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
                       </button>
                     )}
-                    <button type="button" onClick={() => startEdit(int)} title="Configurar"
+                    <button type="button" onClick={() => isWhatsAppIntegration(int) ? openWhatsAppHub() : startEdit(int)} title="Configurar"
                       className="w-8 h-8 rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-200 flex items-center justify-center">
                       <Pencil size={14} />
                     </button>
@@ -1370,6 +1718,94 @@ function AbaIntegracoes() {
             </div>
           )
         })}
+      </div>
+
+      <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Documentos do contato</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Defina se os anexos do popup do chat serão gravados no Supabase Storage ou em um caminho do seu servidor.
+            </p>
+          </div>
+          <span className="px-2 py-1 rounded-full text-[11px] font-medium bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+            {documentStorage.mode === 'server' ? 'Servidor próprio' : 'Supabase Storage'}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 border-b border-gray-200 dark:border-gray-800 pb-2">
+          {[
+            { id: 'supabase', label: 'Supabase Storage' },
+            { id: 'server', label: 'Servidor próprio' },
+          ].map(option => (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => setDocumentStorage(prev => ({ ...prev, mode: option.id as ContactDocumentStorageConfig['mode'] }))}
+              className={cn(
+                'px-3 py-2 text-xs font-medium rounded-md transition-colors',
+                documentStorage.mode === option.id
+                  ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                  : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800',
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+
+        {documentStorage.mode === 'supabase' ? (
+          <div className="grid gap-4 md:grid-cols-2">
+            <ConfigInput
+              label="Bucket do Supabase"
+              value={documentStorage.supabase_bucket}
+              onChange={v => setDocumentStorage(prev => ({ ...prev, supabase_bucket: v }))}
+              placeholder="chat-lead-documentos"
+            />
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-700">
+              Recomendado para começar. Mais simples de manter, com leitura e exclusão dentro do próprio sistema.
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2">
+            <ConfigInput
+              label="URL de upload"
+              value={documentStorage.server_upload_url}
+              onChange={v => setDocumentStorage(prev => ({ ...prev, server_upload_url: v }))}
+              placeholder="https://seuservidor.com/api/chat-docs/upload"
+            />
+            <ConfigInput
+              label="URL de exclusão"
+              value={documentStorage.server_delete_url}
+              onChange={v => setDocumentStorage(prev => ({ ...prev, server_delete_url: v }))}
+              placeholder="https://seuservidor.com/api/chat-docs/delete"
+            />
+            <ConfigInput
+              label="Base pública dos arquivos"
+              value={documentStorage.server_public_base_url}
+              onChange={v => setDocumentStorage(prev => ({ ...prev, server_public_base_url: v }))}
+              placeholder="https://seuservidor.com/uploads/chat-leads"
+            />
+            <ConfigInput
+              label="Token do servidor"
+              value={documentStorage.server_auth_token}
+              onChange={v => setDocumentStorage(prev => ({ ...prev, server_auth_token: v }))}
+              placeholder="Bearer/Token para upload e exclusão"
+            />
+          </div>
+        )}
+
+        <div className="flex items-center justify-end">
+          <button
+            type="button"
+            onClick={() => void salvarDocumentStorage()}
+            disabled={savingDocumentStorage}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium disabled:opacity-50"
+          >
+            {savingDocumentStorage ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            Salvar armazenamento
+          </button>
+        </div>
       </div>
 
       <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
@@ -1398,6 +1834,15 @@ function AbaIntegracoes() {
           </tbody>
         </table>
       </div>
+      {toastI && (
+        <div className={cn(
+          'fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-xl text-sm font-medium',
+          toastI.type === 'ok' ? 'bg-green-600 text-white' : 'bg-red-600 text-white',
+        )}>
+          {toastI.msg}
+          <button type="button" title="Fechar" onClick={() => setToastI(null)} className="ml-1 opacity-80 hover:opacity-100"><X size={14} /></button>
+        </div>
+      )}
     </div>
   )
 }
@@ -1410,6 +1855,12 @@ function AbaAutomacoes() {
   const [erro, setErro] = useState<string | null>(null)
   const [schemaPronto, setSchemaPronto] = useState(true)
   const [savingId, setSavingId] = useState<string | null>(null)
+  const [toastA, setToastA] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null)
+
+  function showMsgA(msg: string, type: 'ok' | 'err' = 'err') {
+    setToastA({ msg, type })
+    setTimeout(() => setToastA(null), 4000)
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1436,7 +1887,7 @@ function AbaAutomacoes() {
     setSavingId(null)
     if (error) {
       setAutomacoes(prev => prev.map(a => a.id === rule.id ? { ...a, ativo: rule.ativo } : a))
-      alert('Erro ao atualizar automação: ' + error.message)
+      showMsgA('Erro ao atualizar automação: ' + error.message)
     }
   }
 
@@ -1487,6 +1938,15 @@ function AbaAutomacoes() {
           </div>
         ))}
       </div>
+      {toastA && (
+        <div className={cn(
+          'fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-xl text-sm font-medium',
+          toastA.type === 'ok' ? 'bg-green-600 text-white' : 'bg-red-600 text-white',
+        )}>
+          {toastA.msg}
+          <button type="button" title="Fechar" onClick={() => setToastA(null)} className="ml-1 opacity-80 hover:opacity-100"><X size={14} /></button>
+        </div>
+      )}
     </div>
   )
 }
@@ -1536,8 +1996,17 @@ function AbaPontos() {
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm]         = useState<NovoPontoAtendimento>(EMPTY_PONTO)
+  const [cepPa, setCepPa]       = useState('')
+  const [numeroPa, setNumeroPa]         = useState('')
+  const [complementoPa, setComplementoPa] = useState('')
   const [saving, setSaving]     = useState(false)
   const [togglingId, setTogglingId] = useState<string | null>(null)
+  const [toastP, setToastP] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null)
+
+  function showMsgP(msg: string, type: 'ok' | 'err' = 'err') {
+    setToastP({ msg, type })
+    setTimeout(() => setToastP(null), 4000)
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1554,24 +2023,36 @@ function AbaPontos() {
   function abrirNovo() {
     setEditingId(null)
     setForm({ ...EMPTY_PONTO })
+    setCepPa(''); setNumeroPa(''); setComplementoPa('')
     setShowForm(true)
   }
 
   function abrirEditar(p: PontoAtendimento) {
     setEditingId(p.id)
     setForm({ codigo: p.codigo, nome: p.nome, endereco: p.endereco, cidade: p.cidade, uf: p.uf, status: p.status, metadata: p.metadata })
+    setCepPa('')
+    setNumeroPa(String(p.metadata?.numero ?? ''))
+    setComplementoPa(String(p.metadata?.complemento ?? ''))
     setShowForm(true)
   }
 
   async function salvar() {
     if (!form.nome.trim()) return
     setSaving(true)
-    const payload = { ...form, nome: form.nome.trim(), codigo: form.codigo?.trim() || null, endereco: form.endereco?.trim() || null, cidade: form.cidade?.trim() || null, uf: form.uf?.trim() || null }
+    const payload = {
+      ...form,
+      nome: form.nome.trim(),
+      codigo: form.codigo?.trim() || null,
+      endereco: form.endereco?.trim() || null,
+      cidade: form.cidade?.trim() || null,
+      uf: form.uf?.trim() || null,
+      metadata: { ...form.metadata, numero: numeroPa.trim() || null, complemento: complementoPa.trim() || null },
+    }
     const { error } = editingId
       ? await supabase.from('pontos_atendimento').update(payload).eq('id', editingId)
       : await supabase.from('pontos_atendimento').insert([payload])
     setSaving(false)
-    if (error) { alert('Erro: ' + error.message); return }
+    if (error) { showMsgP('Erro: ' + error.message); return }
     setShowForm(false)
     setEditingId(null)
     setForm({ ...EMPTY_PONTO })
@@ -1586,7 +2067,7 @@ function AbaPontos() {
     setTogglingId(null)
     if (error) {
       setPontos(prev => prev.map(x => x.id === p.id ? { ...x, status: p.status } : x))
-      alert('Erro: ' + error.message)
+      showMsgP('Erro: ' + error.message)
     }
   }
 
@@ -1634,9 +2115,34 @@ function AbaPontos() {
                 placeholder="ex: Balcão Principal"
                 className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
-            <div className="flex flex-col gap-1 md:col-span-3">
-              <span className="text-xs text-gray-500">Endereço</span>
-              <input type="text" title="Endereço" placeholder="Rua, número, bairro" value={form.endereco ?? ''} onChange={e => setForm(p => ({ ...p, endereco: e.target.value || null }))}
+            <div className="flex flex-col gap-1">
+              <span className="text-xs text-gray-500">CEP</span>
+              <input type="text" placeholder="00000-000" value={cepPa} onChange={e => setCepPa(e.target.value)}
+                onBlur={async () => {
+                  const r = await buscarCep(cepPa)
+                  if (!r) return
+                  setForm(p => ({
+                    ...p,
+                    endereco: r.logradouro ? `${r.logradouro}, ${r.bairro}`.trim().replace(/, $/, '') : p.endereco,
+                    cidade:   r.localidade || p.cidade,
+                    uf:       r.uf         || p.uf,
+                  }))
+                }}
+                className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div className="flex flex-col gap-1 md:col-span-2">
+              <span className="text-xs text-gray-500">Logradouro</span>
+              <input type="text" title="Logradouro" placeholder="Rua / Avenida" value={form.endereco ?? ''} onChange={e => setForm(p => ({ ...p, endereco: e.target.value || null }))}
+                className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="text-xs text-gray-500">Número</span>
+              <input type="text" placeholder="ex: 123" value={numeroPa} onChange={e => setNumeroPa(e.target.value)}
+                className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div className="flex flex-col gap-1 md:col-span-2">
+              <span className="text-xs text-gray-500">Complemento</span>
+              <input type="text" placeholder="ex: Sala 5, 2º andar" value={complementoPa} onChange={e => setComplementoPa(e.target.value)}
                 className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             <div className="flex flex-col gap-1">
@@ -1728,17 +2234,1265 @@ function AbaPontos() {
           </table>
         </div>
       )}
+      {toastP && (
+        <div className={cn(
+          'fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-xl text-sm font-medium',
+          toastP.type === 'ok' ? 'bg-green-600 text-white' : 'bg-red-600 text-white',
+        )}>
+          {toastP.msg}
+          <button type="button" title="Fechar" onClick={() => setToastP(null)} className="ml-1 opacity-80 hover:opacity-100"><X size={14} /></button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+type PaymentMethodId = 'safe2pay' | 'mercado_pago' | 'itau' | 'inter' | 'c6'
+type PaymentMethodEnv = 'sandbox' | 'producao'
+type PaymentSubTab = 'gateway' | 'meios'
+
+type PaymentMethodConfig = {
+  id: PaymentMethodId
+  label: string
+  categoria: 'gateway' | 'banco'
+  enabled: boolean
+  is_default: boolean
+  ambiente: PaymentMethodEnv
+  client_id: string
+  secret_key: string
+  webhook_url: string
+  observacoes: string
+}
+
+type PaymentRuntimeConfig = {
+  modo_teste_geral: boolean
+  bloquear_integracoes_reais: boolean
+  aviso_checkout: string
+}
+
+const DEFAULT_PAYMENT_RUNTIME: PaymentRuntimeConfig = {
+  modo_teste_geral: true,
+  bloquear_integracoes_reais: true,
+  aviso_checkout: 'Ambiente de testes ativo. Use apenas clientes, pagamentos e emissoes de homologacao.',
+}
+
+const PAYMENT_METHOD_PRESETS: PaymentMethodConfig[] = [
+  { id: 'safe2pay',      label: 'Safe2Pay',      categoria: 'gateway', enabled: false, is_default: false, ambiente: 'sandbox', client_id: '', secret_key: '', webhook_url: '', observacoes: '' },
+  { id: 'mercado_pago', label: 'Mercado Pago', categoria: 'gateway', enabled: false, is_default: false, ambiente: 'sandbox', client_id: '', secret_key: '', webhook_url: '', observacoes: '' },
+  { id: 'itau',         label: 'Itaú',         categoria: 'banco',   enabled: false, is_default: false, ambiente: 'sandbox', client_id: '', secret_key: '', webhook_url: '', observacoes: '' },
+  { id: 'inter',        label: 'Inter',        categoria: 'banco',   enabled: false, is_default: false, ambiente: 'sandbox', client_id: '', secret_key: '', webhook_url: '', observacoes: '' },
+  { id: 'c6',           label: 'C6 Bank',      categoria: 'banco',   enabled: false, is_default: false, ambiente: 'sandbox', client_id: '', secret_key: '', webhook_url: '', observacoes: '' },
+]
+
+// ── Aba Pagamentos (Safe2Pay) ─────────────────────────────────
+function AbaPagamentos() {
+  const { profile } = useAuth()
+  const isAdmin = isAdminProfile(profile)
+  const [subtab, setSubtab] = useState<PaymentSubTab>('gateway')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [erro, setErro] = useState<string | null>(null)
+  const [ok, setOk] = useState(false)
+
+  const [integration, setIntegration] = useState<any>(null)
+  const [prodKey, setProdKey] = useState('')
+  const [sandboxKey, setSandboxKey] = useState('')
+  const [isSandbox, setIsSandbox] = useState(false)
+  const [webhookUrl, setWebhookUrl] = useState('')
+
+  const [editingProd, setEditingProd] = useState(false)
+  const [editingSandbox, setEditingSandbox] = useState(false)
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodConfig[]>(PAYMENT_METHOD_PRESETS)
+  const [selectedMethodId, setSelectedMethodId] = useState<PaymentMethodId>('mercado_pago')
+  const [paymentRuntime, setPaymentRuntime] = useState<PaymentRuntimeConfig>(DEFAULT_PAYMENT_RUNTIME)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setErro(null)
+    const [integrationRes, methodsRes, runtimeRes] = await Promise.all([
+      supabase.from('external_integrations').select('*').eq('provider', 'safe2pay').maybeSingle(),
+      supabase.from('app_settings').select('value').eq('key', 'payment_methods').maybeSingle(),
+      supabase.from('app_settings').select('value').eq('key', 'payment_runtime').maybeSingle(),
+    ])
+
+    if (integrationRes.error) {
+      setErro(integrationRes.error.message)
+      setLoading(false)
+      return
+    }
+
+    const data = integrationRes.data
+    if (data) {
+      setIntegration(data)
+      setWebhookUrl(data.webhook_url || '')
+      setIsSandbox(data.metadata?.is_sandbox === true)
+      
+      if (data.api_token) {
+        setProdKey(`••••••••••••••••${data.api_token.slice(-4)}`)
+        setEditingProd(false)
+      } else {
+        setProdKey('')
+        setEditingProd(true)
+      }
+
+      if (data.metadata?.api_key_sandbox) {
+        setSandboxKey(`••••••••••••••••${data.metadata.api_key_sandbox.slice(-4)}`)
+        setEditingSandbox(false)
+      } else {
+        setSandboxKey('')
+        setEditingSandbox(true)
+      }
+    }
+
+    if (methodsRes.data?.value && Array.isArray(methodsRes.data.value.methods)) {
+      const merged = PAYMENT_METHOD_PRESETS.map(preset => {
+        const saved = methodsRes.data?.value.methods.find((item: PaymentMethodConfig) => item.id === preset.id)
+        return saved ? { ...preset, ...saved } : preset
+      })
+      setPaymentMethods(merged)
+      const active = merged.find(item => item.is_default) ?? merged[0]
+      setSelectedMethodId(active.id)
+    } else {
+      setPaymentMethods(PAYMENT_METHOD_PRESETS)
+      setSelectedMethodId(PAYMENT_METHOD_PRESETS[0].id)
+    }
+
+    const runtimeValue = runtimeRes.data?.value
+    setPaymentRuntime({
+      modo_teste_geral: runtimeValue?.modo_teste_geral ?? DEFAULT_PAYMENT_RUNTIME.modo_teste_geral,
+      bloquear_integracoes_reais: runtimeValue?.bloquear_integracoes_reais ?? DEFAULT_PAYMENT_RUNTIME.bloquear_integracoes_reais,
+      aviso_checkout: runtimeValue?.aviso_checkout ?? DEFAULT_PAYMENT_RUNTIME.aviso_checkout,
+    })
+
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  async function salvar() {
+    if (!isAdmin) return
+    setSaving(true)
+    setErro(null)
+    setOk(false)
+
+    const meta = {
+      ...(integration?.metadata || {}),
+      is_sandbox: isSandbox
+    }
+
+    const payload: any = {
+      webhook_url: webhookUrl || null,
+      status: (prodKey || sandboxKey) ? 'ativo' : 'pendente',
+    }
+
+    if (editingProd) {
+      payload.api_token = prodKey.trim() || null
+    }
+    if (editingSandbox) {
+      meta.api_key_sandbox = sandboxKey.trim() || null
+    }
+
+    payload.metadata = meta
+
+    const [safe2payRes, methodsSaveRes, runtimeSaveRes] = await Promise.all([
+      supabase
+        .from('external_integrations')
+        .update(payload)
+        .eq('provider', 'safe2pay'),
+      supabase
+        .from('app_settings')
+        .upsert({
+          key: 'payment_methods',
+          value: {
+            methods: paymentMethods,
+            default_method_id: paymentMethods.find(item => item.is_default)?.id ?? null,
+          },
+          updated_by: profile?.id ?? null,
+        }, { onConflict: 'key' }),
+      supabase
+        .from('app_settings')
+        .upsert({
+          key: 'payment_runtime',
+          value: paymentRuntime,
+          updated_by: profile?.id ?? null,
+        }, { onConflict: 'key' }),
+    ])
+
+    setSaving(false)
+    if (safe2payRes.error || methodsSaveRes.error || runtimeSaveRes.error) {
+      setErro(safe2payRes.error?.message ?? methodsSaveRes.error?.message ?? runtimeSaveRes.error?.message ?? 'Erro ao salvar pagamentos.')
+      return
+    }
+
+    setOk(true)
+    void load()
+  }
+
+  function updateMethod(methodId: PaymentMethodId, patch: Partial<PaymentMethodConfig>) {
+    setOk(false)
+    setPaymentMethods(prev => prev.map(item => {
+      if (item.id !== methodId) return item
+      return { ...item, ...patch }
+    }))
+  }
+
+  function setMethodAsDefault(methodId: PaymentMethodId) {
+    setOk(false)
+    setPaymentMethods(prev => prev.map(item => ({
+      ...item,
+      enabled: item.id === methodId ? true : item.enabled,
+      is_default: item.id === methodId,
+    })))
+  }
+
+  const selectedMethod = paymentMethods.find(item => item.id === selectedMethodId) ?? paymentMethods[0]
+
+  if (loading) return <div className="flex items-center justify-center py-16"><Loader2 size={24} className="animate-spin text-gray-400" /></div>
+
+  return (
+    <div className="max-w-5xl space-y-5">
+      <div>
+        <h2 className="font-semibold text-gray-800 dark:text-gray-200">Pagamentos e meios habilitados</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          Você pode chavear o meio principal de recebimento quando quiser e manter os outros prontos para ativação.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-2 border-b border-gray-200 dark:border-gray-800 pb-2">
+        {[
+          { id: 'gateway', label: 'Gateway atual' },
+          { id: 'meios', label: 'Meios de pagamento' },
+        ].map(item => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => setSubtab(item.id as PaymentSubTab)}
+            className={cn(
+              'px-3 py-2 text-xs font-medium rounded-md transition-colors',
+              subtab === item.id
+                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'
+            )}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      {subtab === 'gateway' && (
+        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Gateway padrão atual — Safe2Pay</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Mantive o gateway atual e abri o chaveamento dos meios paralelos no submenu ao lado.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Token de API (Produção)</label>
+            <div className="flex gap-2">
+              <input
+                type={editingProd ? 'text' : 'password'}
+                value={prodKey}
+                onChange={e => setProdKey(e.target.value)}
+                disabled={!editingProd || !isAdmin}
+                placeholder={editingProd ? 'Insira a chave de API de produção' : 'Chave configurada'}
+                className="flex-1 border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 dark:disabled:bg-gray-950 disabled:text-gray-400"
+              />
+              {!editingProd && isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => { setProdKey(''); setEditingProd(true) }}
+                  className="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 text-xs font-medium flex items-center gap-1.5 transition-colors"
+                >
+                  <Pencil size={13} /> Alterar
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Token de API (Sandbox / Testes)</label>
+            <div className="flex gap-2">
+              <input
+                type={editingSandbox ? 'text' : 'password'}
+                value={sandboxKey}
+                onChange={e => setSandboxKey(e.target.value)}
+                disabled={!editingSandbox || !isAdmin}
+                placeholder={editingSandbox ? 'Insira a chave de API de testes' : 'Chave de testes configurada'}
+                className="flex-1 border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 dark:disabled:bg-gray-950 disabled:text-gray-400"
+              />
+              {!editingSandbox && isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => { setSandboxKey(''); setEditingSandbox(true) }}
+                  className="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 text-xs font-medium flex items-center gap-1.5 transition-colors"
+                >
+                  <Pencil size={13} /> Alterar
+                </button>
+              )}
+            </div>
+          </div>
+
+          <ConfigInput
+            label="URL de Callback (Webhook)"
+            value={webhookUrl}
+            onChange={setWebhookUrl}
+            placeholder="https://sua-api.com/functions/v1/payment-webhook"
+          />
+
+          <div className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-950 rounded-xl border border-gray-100 dark:border-gray-800">
+            <div>
+              <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">Modo Sandbox (Testes)</p>
+              <p className="text-[10px] text-gray-400">Quando ligado, as cobranças serão enviadas em modo de testes.</p>
+            </div>
+            <button
+              type="button"
+              disabled={!isAdmin}
+              onClick={() => setIsSandbox(!isSandbox)}
+              className={cn('relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 disabled:opacity-50',
+                isSandbox ? 'bg-blue-600' : 'bg-gray-200 dark:bg-gray-700')}
+            >
+              <span className={cn('pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200',
+                isSandbox ? 'translate-x-5' : 'translate-x-0')} />
+            </button>
+          </div>
+
+          <div className="rounded-xl border border-amber-200 dark:border-amber-900/30 bg-amber-50/70 dark:bg-amber-950/20 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">Ambiente global de testes</p>
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">Liga a operacao de homologacao para o time testar sem confundir com producao.</p>
+              </div>
+              <button
+                type="button"
+                disabled={!isAdmin}
+                onClick={() => setPaymentRuntime(prev => ({ ...prev, modo_teste_geral: !prev.modo_teste_geral }))}
+                className={cn('relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 disabled:opacity-50',
+                  paymentRuntime.modo_teste_geral ? 'bg-amber-500' : 'bg-gray-200 dark:bg-gray-700')}
+              >
+                <span className={cn('pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200',
+                  paymentRuntime.modo_teste_geral ? 'translate-x-5' : 'translate-x-0')} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">Bloquear integracoes reais</p>
+                <p className="text-[10px] text-gray-400">Marca checkout e vendas como teste para evitar uso acidental em producao.</p>
+              </div>
+              <button
+                type="button"
+                disabled={!isAdmin}
+                onClick={() => setPaymentRuntime(prev => ({ ...prev, bloquear_integracoes_reais: !prev.bloquear_integracoes_reais }))}
+                className={cn('relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 disabled:opacity-50',
+                  paymentRuntime.bloquear_integracoes_reais ? 'bg-amber-500' : 'bg-gray-200 dark:bg-gray-700')}
+              >
+                <span className={cn('pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200',
+                  paymentRuntime.bloquear_integracoes_reais ? 'translate-x-5' : 'translate-x-0')} />
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Aviso para checkout e operacao</label>
+              <textarea
+                value={paymentRuntime.aviso_checkout}
+                onChange={e => setPaymentRuntime(prev => ({ ...prev, aviso_checkout: e.target.value }))}
+                rows={2}
+                className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Mensagem mostrada quando o ambiente de testes estiver ativo."
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {subtab === 'meios' && (
+        <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+          <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4 space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Meios cadastrados</p>
+            {paymentMethods.map(method => (
+              <button
+                key={method.id}
+                type="button"
+                onClick={() => setSelectedMethodId(method.id)}
+                className={cn(
+                  'w-full text-left rounded-xl border p-3 transition-colors',
+                  selectedMethodId === method.id
+                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                    : 'border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800'
+                )}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">{method.label}</span>
+                  {method.is_default && <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">Principal</span>}
+                </div>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  {method.enabled ? 'Ativo para uso' : 'Desligado'} • {method.ambiente === 'producao' ? 'Produção' : 'Sandbox'}
+                </p>
+              </button>
+            ))}
+          </div>
+
+          <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">{selectedMethod.label}</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Cadastre as credenciais e chaveie esse meio quando quiser usar no operacional.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <ConfigInput label="Client ID / Chave pública" value={selectedMethod.client_id} onChange={v => updateMethod(selectedMethod.id, { client_id: v })} placeholder="Ex: APP_USR..." />
+              <ConfigInput label="Token secreto" value={selectedMethod.secret_key} onChange={v => updateMethod(selectedMethod.id, { secret_key: v })} placeholder="Ex: EAA..." />
+              <ConfigInput label="Webhook / retorno" value={selectedMethod.webhook_url} onChange={v => updateMethod(selectedMethod.id, { webhook_url: v })} placeholder="https://..." />
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500 dark:text-gray-400">Ambiente</span>
+                <select
+                  value={selectedMethod.ambiente}
+                  onChange={e => updateMethod(selectedMethod.id, { ambiente: e.target.value as PaymentMethodEnv })}
+                  className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="sandbox">Sandbox / Testes</option>
+                  <option value="producao">Produção</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-950 rounded-xl border border-gray-100 dark:border-gray-800">
+                <div>
+                  <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">Habilitar este meio agora</p>
+                  <p className="text-[10px] text-gray-400">Liga ou desliga sem perder o cadastro.</p>
+                </div>
+                <button
+                  type="button"
+                  disabled={!isAdmin}
+                  onClick={() => updateMethod(selectedMethod.id, { enabled: !selectedMethod.enabled })}
+                  className={cn('relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 disabled:opacity-50',
+                    selectedMethod.enabled ? 'bg-blue-600' : 'bg-gray-200 dark:bg-gray-700')}
+                >
+                  <span className={cn('pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200',
+                    selectedMethod.enabled ? 'translate-x-5' : 'translate-x-0')} />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-950 rounded-xl border border-gray-100 dark:border-gray-800">
+                <div>
+                  <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">Definir como principal</p>
+                  <p className="text-[10px] text-gray-400">Esse será o meio preferencial do momento.</p>
+                </div>
+                <button
+                  type="button"
+                  disabled={!isAdmin}
+                  onClick={() => setMethodAsDefault(selectedMethod.id)}
+                  className="px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-60"
+                >
+                  Tornar principal
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Observações</label>
+              <textarea
+                value={selectedMethod.observacoes}
+                onChange={e => updateMethod(selectedMethod.id, { observacoes: e.target.value })}
+                rows={3}
+                placeholder="Ex: usar para PIX no horário comercial, homologação aprovada, conta matriz..."
+                className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {erro && (
+        <p className="text-xs text-red-600 dark:text-red-300 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">
+          {erro}
+        </p>
+      )}
+      {ok && (
+        <p className="text-xs text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-3 py-2">
+          Configurações de pagamento atualizadas.
+        </p>
+      )}
+
+      <button type="button" onClick={salvar} disabled={!isAdmin || saving}
+        className="mt-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors inline-flex items-center gap-2">
+        {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+        {saving ? 'Salvando...' : 'Salvar Alterações'}
+      </button>
+    </div>
+  )
+}
+
+// ── Aba Fiscal / NFS-e ───────────────────────────────────────
+type FiscalSubTab = 'configuracoes' | 'modelo'
+
+type NfseModeloLayout = {
+  nome_modelo: string
+  titulo: string
+  subtitulo: string
+  cor_primaria: string
+  mostrar_logo: boolean
+  bloco_servico_titulo: string
+  mensagem_destaque: string
+  observacao_padrao: string
+  rodape: string
+}
+
+const DEFAULT_NFSE_MODELO: NfseModeloLayout = {
+  nome_modelo: 'Modelo CertiID Premium',
+  titulo: 'Nota Fiscal de Serviços',
+  subtitulo: 'Emissão inteligente para certificação digital',
+  cor_primaria: '#1d4ed8',
+  mostrar_logo: true,
+  bloco_servico_titulo: 'Detalhamento do serviço prestado',
+  mensagem_destaque: 'Documento gerado com padrão visual próprio da operação.',
+  observacao_padrao: 'Conferir retenções, dados do tomador e regras municipais antes do envio definitivo.',
+  rodape: 'Modelo visual configurável da CertiID. Ajuste livre para operação comercial e fiscal.',
+}
+
+const NFSE_PROVIDER_LABELS: Record<ProvedorNfse, string> = {
+  nacional: 'Emissor Nacional',
+  gissonline: 'GISSONLINE',
+  municipal: 'Portal Municipal',
+}
+
+const NFSE_PRESETS: Array<{
+  id: string
+  label: string
+  municipio_nome: string
+  municipio_codigo_ibge: string
+  provedor: ProvedorNfse
+  observacoes: string
+}> = [
+  {
+    id: 'sjc',
+    label: 'São José dos Campos',
+    municipio_nome: 'São José dos Campos',
+    municipio_codigo_ibge: '3549904',
+    provedor: 'nacional',
+    observacoes: 'A partir de 1º de julho de 2026, o município passa a usar exclusivamente o Emissor Nacional.',
+  },
+  {
+    id: 'sbc',
+    label: 'São Bernardo do Campo',
+    municipio_nome: 'São Bernardo do Campo',
+    municipio_codigo_ibge: '3548708',
+    provedor: 'gissonline',
+    observacoes: 'Município opera com fluxo orientado por GISSONLINE e portal NFS-e local.',
+  },
+]
+
+function createEmptyFiscalForm(preset?: typeof NFSE_PRESETS[number]): Partial<NfseConfiguracao> {
+  return {
+    identificador: preset ? `Perfil ${preset.label}` : '',
+    municipio_nome: preset?.municipio_nome ?? '',
+    municipio_codigo_ibge: preset?.municipio_codigo_ibge ?? '',
+    provedor: preset?.provedor ?? 'municipal',
+    ativo: true,
+    cadastro_base_emitente_id: null,
+    cnpj_emitente: '',
+    inscricao_municipal: '',
+    inscricao_estadual: '',
+    cnae: '',
+    ambiente: 'homologacao',
+    natureza_operacao: '',
+    simples_nacional: false,
+    regime_especial: '',
+    exigibilidade_iss: '',
+    incentivo_fiscal: false,
+    tipo_rps: '',
+    serie_rps: '',
+    numero_rps_atual: 1,
+    codigo_servico_municipio: '',
+    codigo_tributacao_municipio: '',
+    codigo_cfps: '',
+    codigo_cst: '',
+    aliquota_iss: 0,
+    aliquota_pis: 0,
+    aliquota_cofins: 0,
+    aliquota_inss: 0,
+    aliquota_ir: 0,
+    aliquota_csll: 0,
+    usuario_prefeitura: '',
+    senha_prefeitura: '',
+    chave_autenticacao: '',
+    usa_certificado_digital: false,
+    certificado_pfx_path: null,
+    certificado_senha: null,
+    observacoes: preset?.observacoes ?? '',
+    robo_ligado: false,
+    payload_reforma_tributaria: {},
+  }
+}
+
+function AbaFiscal() {
+  const { profile } = useAuth()
+  const isAdmin = isAdminProfile(profile)
+  const [subtab, setSubtab] = useState<FiscalSubTab>('configuracoes')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [savingModelo, setSavingModelo] = useState(false)
+  const [erro, setErro] = useState<string | null>(null)
+  const [ok, setOk] = useState(false)
+  const [okModelo, setOkModelo] = useState(false)
+  const [showSenhaPrefeitura, setShowSenhaPrefeitura] = useState(false)
+  const [showCertSenha, setShowCertSenha] = useState(false)
+  const [certFile, setCertFile] = useState<File | null>(null)
+  const [uploadingCert, setUploadingCert] = useState(false)
+  const [configuracoes, setConfiguracoes] = useState<NfseConfiguracao[]>([])
+  const [form, setForm] = useState<Partial<NfseConfiguracao>>(createEmptyFiscalForm())
+  const [modeloNota, setModeloNota] = useState<NfseModeloLayout>(DEFAULT_NFSE_MODELO)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setErro(null)
+    const [configsRes, modeloRes] = await Promise.all([
+      supabase
+        .from('nfse_configuracoes')
+        .select('*')
+        .order('municipio_nome', { ascending: true })
+        .order('created_at', { ascending: true }),
+      supabase
+        .from('app_settings')
+        .select('value')
+        .eq('key', 'nfse_modelo_layout')
+        .maybeSingle(),
+    ])
+
+    if (configsRes.error) {
+      setErro(configsRes.error.message)
+      setLoading(false)
+      return
+    }
+
+    const lista = (configsRes.data ?? []) as NfseConfiguracao[]
+    setConfiguracoes(lista)
+    setForm(prev => {
+      if (prev.id) {
+        const atualizada = lista.find(item => item.id === prev.id)
+        if (atualizada) return atualizada
+      }
+      return lista[0] ?? createEmptyFiscalForm()
+    })
+    if (modeloRes.data?.value) {
+      setModeloNota({ ...DEFAULT_NFSE_MODELO, ...modeloRes.data.value })
+    }
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  function selecionarConfiguracao(config: NfseConfiguracao) {
+    setOk(false)
+    setErro(null)
+    setShowSenhaPrefeitura(false)
+    setForm(config)
+  }
+
+  function novaConfiguracao(preset?: typeof NFSE_PRESETS[number]) {
+    setOk(false)
+    setErro(null)
+    setShowSenhaPrefeitura(false)
+    setForm(createEmptyFiscalForm(preset))
+  }
+
+  function updateField<K extends keyof NfseConfiguracao>(key: K, value: NfseConfiguracao[K]) {
+    setOk(false)
+    setForm(prev => ({ ...prev, [key]: value }))
+  }
+
+  async function uploadCertificado() {
+    if (!certFile || !form.cnpj_emitente?.trim()) {
+      setErro('Selecione um arquivo e certifique-se de que o CNPJ do emitente está preenchido.')
+      return
+    }
+    setUploadingCert(true)
+    setErro(null)
+    const cnpjClean = form.cnpj_emitente.replace(/\D/g, '')
+    const ext = certFile.name.split('.').pop()?.toLowerCase() ?? 'pfx'
+    const path = `${cnpjClean}/certificado.${ext}`
+    const { error: upErr } = await supabase.storage
+      .from('certificados-digitais')
+      .upload(path, certFile, { upsert: true, contentType: 'application/x-pkcs12' })
+    setUploadingCert(false)
+    if (upErr) { setErro('Erro ao enviar certificado: ' + upErr.message); return }
+    updateField('certificado_pfx_path', path)
+    setCertFile(null)
+  }
+
+  async function removerCertificado() {
+    if (!form.certificado_pfx_path) return
+    if (!confirm('Remover o certificado digital vinculado?')) return
+    await supabase.storage.from('certificados-digitais').remove([form.certificado_pfx_path])
+    updateField('certificado_pfx_path', null)
+    updateField('certificado_senha', null)
+  }
+
+  async function salvar() {
+    if (!isAdmin) return
+    setSaving(true)
+    setErro(null)
+    setOk(false)
+
+    if (!form.municipio_nome?.trim()) {
+      setErro('Informe o município da configuração fiscal.')
+      setSaving(false)
+      return
+    }
+
+    if (!form.cnpj_emitente?.trim()) {
+      setErro('CNPJ do emitente é obrigatório.')
+      setSaving(false)
+      return
+    }
+
+    const payload = {
+      ...createEmptyFiscalForm(),
+      ...form,
+      identificador: form.identificador?.trim() || null,
+      municipio_nome: form.municipio_nome?.trim() || '',
+      municipio_codigo_ibge: form.municipio_codigo_ibge?.trim() || null,
+      cnpj_emitente: form.cnpj_emitente?.trim() || '',
+      inscricao_municipal: form.inscricao_municipal?.trim() || null,
+      inscricao_estadual: form.inscricao_estadual?.trim() || null,
+      cnae: form.cnae?.trim() || null,
+      natureza_operacao: form.natureza_operacao?.trim() || null,
+      regime_especial: form.regime_especial?.trim() || null,
+      exigibilidade_iss: form.exigibilidade_iss?.trim() || null,
+      tipo_rps: form.tipo_rps?.trim() || null,
+      serie_rps: form.serie_rps?.trim() || null,
+      codigo_servico_municipio: form.codigo_servico_municipio?.trim() || null,
+      codigo_tributacao_municipio: form.codigo_tributacao_municipio?.trim() || null,
+      codigo_cfps: form.codigo_cfps?.trim() || null,
+      codigo_cst: form.codigo_cst?.trim() || null,
+      usuario_prefeitura: form.usuario_prefeitura?.trim() || null,
+      senha_prefeitura: form.senha_prefeitura?.trim() || null,
+      chave_autenticacao: form.chave_autenticacao?.trim() || null,
+      observacoes: form.observacoes?.trim() || null,
+      updated_by: profile?.id ?? null,
+      updated_at: new Date().toISOString(),
+    }
+
+    const query = form.id
+      ? supabase.from('nfse_configuracoes').update(payload).eq('id', form.id)
+      : supabase.from('nfse_configuracoes').insert([payload])
+
+    const { error } = await query
+    setSaving(false)
+    if (error) {
+      setErro(error.message)
+      return
+    }
+
+    setOk(true)
+    void load()
+  }
+
+  async function salvarModeloNota() {
+    if (!isAdmin) return
+    setSavingModelo(true)
+    setErro(null)
+    setOkModelo(false)
+    const { error } = await supabase
+      .from('app_settings')
+      .upsert({
+        key: 'nfse_modelo_layout',
+        value: modeloNota,
+        updated_by: profile?.id ?? null,
+      }, { onConflict: 'key' })
+    setSavingModelo(false)
+    if (error) {
+      setErro(error.message)
+      return
+    }
+    setOkModelo(true)
+  }
+
+  if (loading) return <div className="flex items-center justify-center py-16"><Loader2 size={24} className="animate-spin text-gray-400" /></div>
+
+  return (
+    <div className="max-w-5xl space-y-6">
+      <div>
+        <h2 className="font-semibold text-gray-800 dark:text-gray-200">Configurações Fiscais por Prefeitura</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          O sistema agora aceita múltiplos perfis fiscais por município. Isso é obrigatório para ligar São José dos Campos e São Bernardo do Campo separadamente.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-2 border-b border-gray-200 dark:border-gray-800 pb-2">
+        {[
+          { id: 'configuracoes', label: 'Perfis por prefeitura' },
+          { id: 'modelo', label: 'Modelo da nota' },
+        ].map(item => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => setSubtab(item.id as FiscalSubTab)}
+            className={cn(
+              'px-3 py-2 text-xs font-medium rounded-md transition-colors',
+              subtab === item.id
+                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'
+            )}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      {subtab === 'configuracoes' && (
+      <>
+      <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+        <div className="flex flex-wrap gap-2">
+          {NFSE_PRESETS.map(preset => (
+            <button
+              key={preset.id}
+              type="button"
+              onClick={() => novaConfiguracao(preset)}
+              className="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+            >
+              Novo perfil {preset.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => novaConfiguracao()}
+            className="px-3 py-2 rounded-lg border border-dashed border-gray-300 dark:border-gray-700 text-xs font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+          >
+            Nova configuração manual
+          </button>
+        </div>
+
+        {configuracoes.length > 0 && (
+          <div className="grid gap-3 md:grid-cols-2">
+            {configuracoes.map(config => {
+              const ativo = form.id === config.id
+              return (
+                <button
+                  key={config.id}
+                  type="button"
+                  onClick={() => selecionarConfiguracao(config)}
+                  className={cn(
+                    'text-left rounded-xl border p-4 transition-colors',
+                    ativo
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                      : 'border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 hover:bg-gray-100 dark:hover:bg-gray-900'
+                  )}
+                >
+                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">{config.identificador || config.municipio_nome}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {config.municipio_nome} • {NFSE_PROVIDER_LABELS[config.provedor]}
+                  </p>
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    CNPJ {config.cnpj_emitente} • {config.ambiente === 'producao' ? 'Produção' : 'Homologação'}
+                  </p>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-6">
+        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-100 dark:border-gray-800 pb-2 flex items-center gap-2">
+            <MapPin size={16} className="text-blue-500" /> Perfil da Prefeitura
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <ConfigInput label="Identificador interno" value={form.identificador || ''} onChange={v => updateField('identificador', v)} placeholder="Ex: Matriz SJC" />
+            <ConfigInput label="Município *" value={form.municipio_nome || ''} onChange={v => updateField('municipio_nome', v)} placeholder="Ex: São José dos Campos" />
+            <ConfigInput label="Código IBGE" value={form.municipio_codigo_ibge || ''} onChange={v => updateField('municipio_codigo_ibge', v)} placeholder="Ex: 3549904" />
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-gray-500 dark:text-gray-400">Provedor</span>
+              <select
+                value={form.provedor || 'municipal'}
+                onChange={e => updateField('provedor', e.target.value as ProvedorNfse)}
+                className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="nacional">Emissor Nacional</option>
+                <option value="gissonline">GISSONLINE</option>
+                <option value="municipal">Portal Municipal</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-100 dark:border-gray-800 pb-2 flex items-center gap-2">
+            <FileText size={16} className="text-blue-500" /> Dados do Emitente
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <ConfigInput label="CNPJ Emitente *" value={form.cnpj_emitente || ''} onChange={v => updateField('cnpj_emitente', v)} placeholder="00.000.000/0000-00" />
+            <ConfigInput label="Inscrição Municipal" value={form.inscricao_municipal || ''} onChange={v => updateField('inscricao_municipal', v)} placeholder="Insira a IM" />
+            <ConfigInput label="Inscrição Estadual" value={form.inscricao_estadual || ''} onChange={v => updateField('inscricao_estadual', v)} placeholder="Insira a IE" />
+            <ConfigInput label="CNAE Principal" value={form.cnae || ''} onChange={v => updateField('cnae', v)} placeholder="ex: 6202-3/00" />
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-100 dark:border-gray-800 pb-2 flex items-center gap-2">
+            <CreditCard size={16} className="text-green-500" /> Impostos e Alíquotas (%)
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            {[
+              ['aliquota_iss', 'Alíquota ISS (%)'],
+              ['aliquota_pis', 'PIS (%)'],
+              ['aliquota_cofins', 'COFINS (%)'],
+              ['aliquota_inss', 'INSS (%)'],
+              ['aliquota_ir', 'IR (%)'],
+              ['aliquota_csll', 'CSLL (%)'],
+            ].map(([field, label]) => (
+              <label key={field} className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500 dark:text-gray-400">{label}</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="100"
+                  value={Number(form[field as keyof NfseConfiguracao] ?? 0)}
+                  onChange={e => updateField(field as keyof NfseConfiguracao, (parseFloat(e.target.value) || 0) as never)}
+                  className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-100 dark:border-gray-800 pb-2 flex items-center gap-2">
+            <Webhook size={16} className="text-purple-500" /> Serviços e Enquadramentos
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <ConfigInput label="Código do Serviço" value={form.codigo_servico_municipio || ''} onChange={v => updateField('codigo_servico_municipio', v)} placeholder="ex: 1.05" />
+            <ConfigInput label="Código de Tributação" value={form.codigo_tributacao_municipio || ''} onChange={v => updateField('codigo_tributacao_municipio', v)} placeholder="ex: 620230000" />
+            <ConfigInput label="Código CFPS" value={form.codigo_cfps || ''} onChange={v => updateField('codigo_cfps', v)} placeholder="ex: 9201" />
+            <ConfigInput label="Código CST / CSOSN" value={form.codigo_cst || ''} onChange={v => updateField('codigo_cst', v)} placeholder="ex: 101" />
+            <ConfigInput label="Natureza da Operação" value={form.natureza_operacao || ''} onChange={v => updateField('natureza_operacao', v)} placeholder="ex: Tributação no município" />
+            <ConfigInput label="Regime Especial" value={form.regime_especial || ''} onChange={v => updateField('regime_especial', v)} placeholder="ex: Microempresa municipal" />
+            <ConfigInput label="Exigibilidade do ISS" value={form.exigibilidade_iss || ''} onChange={v => updateField('exigibilidade_iss', v)} placeholder="ex: Exigível" />
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-100 dark:border-gray-800 pb-2 flex items-center gap-2">
+            <KeyRound size={16} className="text-amber-500" /> RPS, acesso e autenticação
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <ConfigInput label="Série do RPS" value={form.serie_rps || ''} onChange={v => updateField('serie_rps', v)} placeholder="ex: NF" />
+            <ConfigInput label="Tipo do RPS" value={form.tipo_rps || ''} onChange={v => updateField('tipo_rps', v)} placeholder="ex: RPS" />
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-gray-500 dark:text-gray-400">Próximo Número RPS</span>
+              <input
+                type="number"
+                min="1"
+                value={form.numero_rps_atual || 1}
+                onChange={e => updateField('numero_rps_atual', parseInt(e.target.value) || 1)}
+                className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </label>
+            <ConfigInput label="Usuário da Prefeitura" value={form.usuario_prefeitura || ''} onChange={v => updateField('usuario_prefeitura', v)} placeholder="Login do portal ou API" />
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Senha da Prefeitura</label>
+              <div className="relative">
+                <input
+                  type={showSenhaPrefeitura ? 'text' : 'password'}
+                  value={form.senha_prefeitura || ''}
+                  onChange={e => updateField('senha_prefeitura', e.target.value)}
+                  className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 pr-10 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Senha ou token secreto"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowSenhaPrefeitura(v => !v)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                  title={showSenhaPrefeitura ? 'Ocultar senha da prefeitura' : 'Mostrar senha da prefeitura'}
+                >
+                  {showSenhaPrefeitura ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
+            </div>
+            <ConfigInput label="Chave de Autenticação" value={form.chave_autenticacao || ''} onChange={v => updateField('chave_autenticacao', v)} placeholder="Token, chave API ou código liberado" />
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-100 dark:border-gray-800 pb-2 flex items-center gap-2">
+            <ShieldCheck size={16} className="text-emerald-500" /> Certificado Digital A1
+          </h3>
+
+          {form.certificado_pfx_path ? (
+            <div className="flex items-center justify-between gap-3 p-3 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/10">
+              <div className="flex items-center gap-2 min-w-0">
+                <ShieldCheck size={16} className="text-emerald-600 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">Certificado vinculado</p>
+                  <p className="text-[11px] text-emerald-600/70 dark:text-emerald-400/70 truncate">{form.certificado_pfx_path}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void removerCertificado()}
+                className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 transition-colors"
+              >
+                <Trash2 size={13} /> Remover
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <label className="flex-1 flex items-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-950 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900 transition-colors">
+                  <Upload size={14} className="text-gray-400 shrink-0" />
+                  <span className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                    {certFile ? certFile.name : 'Selecionar arquivo .pfx ou .p12'}
+                  </span>
+                  <input
+                    type="file"
+                    accept=".pfx,.p12"
+                    className="sr-only"
+                    onChange={e => setCertFile(e.target.files?.[0] ?? null)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void uploadCertificado()}
+                  disabled={!certFile || uploadingCert}
+                  className="shrink-0 flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white transition-colors"
+                >
+                  {uploadingCert ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+                  {uploadingCert ? 'Enviando…' : 'Vincular'}
+                </button>
+              </div>
+              <p className="text-[11px] text-gray-400">Arquivo A1 (.pfx ou .p12) da empresa emitente. Armazenado em bucket privado — não fica exposto publicamente.</p>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Senha do certificado</label>
+            <div className="relative max-w-xs">
+              <input
+                type={showCertSenha ? 'text' : 'password'}
+                value={form.certificado_senha || ''}
+                onChange={e => updateField('certificado_senha', e.target.value || null)}
+                placeholder="Senha do arquivo .pfx"
+                className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 pr-10 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                type="button"
+                onClick={() => setShowCertSenha(v => !v)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                title={showCertSenha ? 'Ocultar senha' : 'Mostrar senha'}
+              >
+                {showCertSenha ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+            <p className="text-[11px] text-gray-400 mt-1">Salva junto com a configuração ao clicar em "Salvar Configuração Fiscal".</p>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-100 dark:border-gray-800 pb-2 flex items-center gap-2">
+            <Save size={16} className="text-blue-500" /> Operação automática
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-gray-500 dark:text-gray-400">Ambiente de Operação</span>
+              <select
+                value={form.ambiente || 'homologacao'}
+                onChange={e => updateField('ambiente', e.target.value as NfseConfiguracao['ambiente'])}
+                className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="homologacao">Homologação</option>
+                <option value="producao">Produção</option>
+              </select>
+            </label>
+            <div className="grid gap-3">
+              {[
+                ['ativo', 'Configuração ativa', 'Permite usar esse perfil nas emissões.'],
+                ['robo_ligado', 'Robô de faturamento ligado', 'Emite automaticamente após confirmação de pagamento.'],
+                ['simples_nacional', 'Optante pelo Simples Nacional', 'Usa o enquadramento simplificado na montagem fiscal.'],
+                ['incentivo_fiscal', 'Incentivo fiscal', 'Marca benefícios ou fomento municipal aplicável.'],
+                ['usa_certificado_digital', 'Usa certificado digital', 'Indica que esse município exige fluxo por certificado.'],
+              ].map(([field, title, desc]) => (
+                <div key={field} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-950 rounded-xl border border-gray-100 dark:border-gray-800">
+                  <div>
+                    <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">{title}</p>
+                    <p className="text-[10px] text-gray-400">{desc}</p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!isAdmin}
+                    onClick={() => updateField(field as keyof NfseConfiguracao, (!form[field as keyof NfseConfiguracao]) as never)}
+                    className={cn(
+                      'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 disabled:opacity-50',
+                      form[field as keyof NfseConfiguracao] ? 'bg-blue-600' : 'bg-gray-200 dark:bg-gray-700'
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200',
+                        form[field as keyof NfseConfiguracao] ? 'translate-x-5' : 'translate-x-0'
+                      )}
+                    />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Observações operacionais</label>
+              <textarea
+                value={form.observacoes || ''}
+                onChange={e => updateField('observacoes', e.target.value)}
+                rows={4}
+                placeholder="Ex: São José migra para Emissor Nacional em 01/07/2026. São Bernardo opera hoje com GISSONLINE."
+                className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+        </div>
+
+        {erro && <p className="text-xs text-red-600 dark:text-red-300 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">{erro}</p>}
+        {ok && <p className="text-xs text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-3 py-2">Configuração fiscal salva com sucesso.</p>}
+
+        <button
+          type="button"
+          onClick={salvar}
+          disabled={!isAdmin || saving}
+          className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors inline-flex items-center gap-2"
+        >
+          {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+          {saving ? 'Salvando...' : 'Salvar Configuração Fiscal'}
+        </button>
+      </div>
+      </>
+      )}
+
+      {subtab === 'modelo' && (
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Editor do modelo da nota</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Aqui você monta o padrão visual da sua nota. Esse modelo vai servir como base para o envio e para a futura geração do PDF próprio.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <ConfigInput label="Nome do modelo" value={modeloNota.nome_modelo} onChange={v => setModeloNota(prev => ({ ...prev, nome_modelo: v }))} placeholder="Ex: Modelo CertiID Premium" />
+              <ConfigInput label="Cor principal" value={modeloNota.cor_primaria} onChange={v => setModeloNota(prev => ({ ...prev, cor_primaria: v }))} placeholder="#1d4ed8" />
+              <ConfigInput label="Título" value={modeloNota.titulo} onChange={v => setModeloNota(prev => ({ ...prev, titulo: v }))} placeholder="Nota Fiscal de Serviços" />
+              <ConfigInput label="Subtítulo" value={modeloNota.subtitulo} onChange={v => setModeloNota(prev => ({ ...prev, subtitulo: v }))} placeholder="Descrição secundária da nota" />
+              <div className="md:col-span-2">
+                <ConfigInput label="Título do bloco de serviço" value={modeloNota.bloco_servico_titulo} onChange={v => setModeloNota(prev => ({ ...prev, bloco_servico_titulo: v }))} placeholder="Detalhamento do serviço prestado" />
+              </div>
+            </div>
+
+            <div className="grid gap-4">
+              {[
+                ['mensagem_destaque', 'Mensagem de destaque', 'Mensagem de abertura ou destaque fiscal/comercial.'],
+                ['observacao_padrao', 'Observação padrão', 'Texto padrão antes do fechamento da nota.'],
+                ['rodape', 'Rodapé', 'Informação final exibida no pé do documento.'],
+              ].map(([field, label, placeholder]) => (
+                <div key={field}>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{label}</label>
+                  <textarea
+                    value={modeloNota[field as keyof NfseModeloLayout] as string}
+                    onChange={e => setModeloNota(prev => ({ ...prev, [field]: e.target.value }))}
+                    rows={3}
+                    placeholder={placeholder}
+                    className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-950 rounded-xl border border-gray-100 dark:border-gray-800">
+              <div>
+                <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">Mostrar identidade visual no topo</p>
+                <p className="text-[10px] text-gray-400">Deixa o modelo pronto para exibir a logo interna da operação.</p>
+              </div>
+              <button
+                type="button"
+                disabled={!isAdmin}
+                onClick={() => setModeloNota(prev => ({ ...prev, mostrar_logo: !prev.mostrar_logo }))}
+                className={cn('relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 disabled:opacity-50',
+                  modeloNota.mostrar_logo ? 'bg-blue-600' : 'bg-gray-200 dark:bg-gray-700')}
+              >
+                <span className={cn('pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200',
+                  modeloNota.mostrar_logo ? 'translate-x-5' : 'translate-x-0')} />
+              </button>
+            </div>
+
+            {okModelo && <p className="text-xs text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-3 py-2">Modelo da nota salvo.</p>}
+
+            <button
+              type="button"
+              onClick={salvarModeloNota}
+              disabled={!isAdmin || savingModelo}
+              className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors inline-flex items-center gap-2"
+            >
+              {savingModelo ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+              {savingModelo ? 'Salvando...' : 'Salvar Modelo da Nota'}
+            </button>
+          </div>
+
+          <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-3">Prévia do modelo</p>
+            <div className="rounded-2xl overflow-hidden border border-gray-200 dark:border-gray-800">
+              <div className="p-5 text-white" style={{ backgroundColor: modeloNota.cor_primaria }}>
+                <p className="text-lg font-semibold">{modeloNota.titulo}</p>
+                <p className="text-sm text-white/85 mt-1">{modeloNota.subtitulo}</p>
+                {modeloNota.mostrar_logo && (
+                  <div className="mt-3 inline-flex px-3 py-1 rounded-full bg-white/15 text-[11px] font-medium">
+                    Identidade visual ativa
+                  </div>
+                )}
+              </div>
+              <div className="p-5 space-y-4 bg-gray-50 dark:bg-gray-950">
+                <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4">
+                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400">{modeloNota.bloco_servico_titulo}</p>
+                  <p className="text-sm text-gray-800 dark:text-gray-200 mt-2">{modeloNota.mensagem_destaque}</p>
+                </div>
+                <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4">
+                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400">Observação padrão</p>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 mt-2">{modeloNota.observacao_padrao}</p>
+                </div>
+                <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4">
+                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400">Rodapé</p>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 mt-2">{modeloNota.rodape}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
 export default function Configuracoes() {
-  const [tab, setTab] = useState<Tab>('geral')
+  const { profile } = useAuth()
+  const isAdmin = isAdminProfile(profile)
+  const tabsDisponiveis = TABS.filter(t => !ADMIN_ONLY_TABS.includes(t.id) || isAdmin)
+  const [tab, setTab] = useState<Tab>(tabsDisponiveis[0]?.id ?? 'geral')
+
+  useEffect(() => {
+    if (!tabsDisponiveis.some(t => t.id === tab)) {
+      setTab(tabsDisponiveis[0]?.id ?? 'geral')
+    }
+  }, [tab, tabsDisponiveis])
 
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-1 px-6 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-x-auto shrink-0">
-        {TABS.map(t => (
+        {tabsDisponiveis.map(t => (
           <button key={t.id} type="button" onClick={() => setTab(t.id)}
             className={cn('px-3 py-2 text-xs font-medium rounded-md whitespace-nowrap transition-colors',
               tab === t.id
@@ -1767,6 +3521,12 @@ export default function Configuracoes() {
 
         {/* PONTOS DE ATENDIMENTO */}
         {tab === 'pontos' && <AbaPontos />}
+
+        {/* PAGAMENTOS */}
+        {tab === 'pagamentos' && <AbaPagamentos />}
+
+        {/* FISCAL */}
+        {tab === 'fiscal' && <AbaFiscal />}
 
       </div>
     </div>

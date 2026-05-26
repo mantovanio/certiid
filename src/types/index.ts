@@ -185,6 +185,7 @@ export interface Certificado {
   modelo: string | null     // A1, A3
   categoria: string | null  // e-CPF, e-CNPJ, NF-e, SSL
   tipo_emissao_padrao: string | null
+  periodo_uso: string | null    // ex: "4 meses", "1 ano" — para produtos Fast/Online
   descricao_produto: string | null
   produto_vinculado_ac: string | null
   preco_venda: number

@@ -13,6 +13,12 @@ type LojaMarketplaceConfig = {
   item_fixo_id?: string | null
 }
 
+function labelEmissao(tipo: string | null | undefined): string | null {
+  if (!tipo) return null
+  if (/online|vídeo|video|remot|fast/i.test(tipo)) return 'Fast'
+  return tipo
+}
+
 export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -270,20 +276,40 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
               </div>
             ) : modoLinkDireto && itemSelecionado ? (
               <article className="rounded-[28px] border border-sky-200 bg-white p-7 shadow-sm">
-                <p className="text-xs uppercase tracking-[0.2em] text-sky-600 font-semibold">
-                  {itemSelecionado.certificados?.categoria ?? 'Certificação digital'}
-                </p>
-                <h4 className="text-2xl font-semibold mt-3">{itemSelecionado.certificados?.tipo ?? 'Produto'}</h4>
-                <p className="text-sm text-slate-500 mt-3">
-                  {itemSelecionado.certificados?.descricao_produto ?? itemSelecionado.certificados?.descricao ?? 'Produto disponível nesta loja.'}
-                </p>
-                <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <h4 className="text-2xl font-semibold">{itemSelecionado.certificados?.tipo ?? 'Produto'}</h4>
+                {(itemSelecionado.certificados?.descricao_produto ?? itemSelecionado.certificados?.descricao) && (
+                  <p className="text-sm text-slate-500 mt-3">
+                    {itemSelecionado.certificados?.descricao_produto ?? itemSelecionado.certificados?.descricao}
+                  </p>
+                )}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {itemSelecionado.certificados?.modelo && (
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                      {itemSelecionado.certificados.modelo}
+                    </span>
+                  )}
+                  {labelEmissao(itemSelecionado.certificados?.tipo_emissao_padrao) && (
+                    <span className="rounded-full bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700">
+                      {labelEmissao(itemSelecionado.certificados?.tipo_emissao_padrao)}
+                    </span>
+                  )}
+                  {itemSelecionado.certificados?.periodo_uso && (
+                    <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-medium text-violet-700">
+                      Uso: {itemSelecionado.certificados.periodo_uso}
+                    </span>
+                  )}
+                  {itemSelecionado.certificados?.validade && (
+                    <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+                      Validade: {itemSelecionado.certificados.validade}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <StatCard
                     label="Valor"
                     value={Number(itemSelecionado.valor).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
                   />
                   <StatCard label="Validade" value={itemSelecionado.certificados?.validade ?? '—'} />
-                  <StatCard label="Tabela" value={tabela.nome} />
                 </div>
                 {itemSelecionado.link_safeweb?.trim() && (
                   <button
@@ -307,24 +333,39 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                       'rounded-[28px] border bg-white p-6 shadow-sm hover:shadow-md transition-all',
                       ativo ? 'border-sky-500 ring-2 ring-sky-100' : 'border-slate-200'
                     )}>
-                      <p className="text-xs uppercase tracking-[0.2em] text-sky-600 font-semibold">
-                        {cert?.categoria ?? 'Certificação digital'}
-                      </p>
-                      <h4 className="text-xl font-semibold mt-3 min-h-[56px]">{cert?.tipo ?? 'Produto'}</h4>
-                      <p className="text-sm text-slate-500 mt-2 min-h-[42px]">
-                        {cert?.descricao_produto ?? cert?.descricao ?? 'Produto disponível nesta loja.'}
-                      </p>
-                      <div className="mt-5 flex items-center justify-between">
-                        <div>
-                          <p className="text-xs text-slate-400">Valor</p>
-                          <p className="text-2xl font-semibold text-emerald-600">
-                            {Number(item.valor).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
-                          </p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-xs text-slate-400">Validade</p>
-                          <p className="text-sm font-medium text-slate-700">{cert?.validade ?? '—'}</p>
-                        </div>
+                      <h4 className="text-xl font-semibold">{cert?.tipo ?? 'Produto'}</h4>
+                      {(cert?.descricao_produto ?? cert?.descricao) && (
+                        <p className="text-sm text-slate-500 mt-2">
+                          {cert?.descricao_produto ?? cert?.descricao}
+                        </p>
+                      )}
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {cert?.modelo && (
+                          <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600">
+                            {cert.modelo}
+                          </span>
+                        )}
+                        {labelEmissao(cert?.tipo_emissao_padrao) && (
+                          <span className="rounded-full bg-sky-50 px-2.5 py-0.5 text-xs font-medium text-sky-700">
+                            {labelEmissao(cert?.tipo_emissao_padrao)}
+                          </span>
+                        )}
+                        {cert?.periodo_uso && (
+                          <span className="rounded-full bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-700">
+                            Uso: {cert.periodo_uso}
+                          </span>
+                        )}
+                        {cert?.validade && (
+                          <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
+                            Validade: {cert.validade}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-5">
+                        <p className="text-xs text-slate-400">Valor</p>
+                        <p className="text-2xl font-semibold text-emerald-600 mt-0.5">
+                          {Number(item.valor).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                        </p>
                       </div>
                       <div className="mt-6 flex items-center gap-2">
                         <button
@@ -366,13 +407,39 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
 
             <div className="mt-5 rounded-2xl bg-slate-50 px-4 py-3">
               <p className="text-xs text-slate-400">Produto selecionado</p>
-              <p className="text-sm font-semibold text-slate-800 mt-1">
-                {itemSelecionado?.certificados?.tipo ?? 'Selecione um produto ao lado'}
-              </p>
-              {itemSelecionado && (
-                <p className="text-xs text-emerald-600 font-semibold mt-2">
-                  {Number(itemSelecionado.valor).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
-                </p>
+              {itemSelecionado ? (
+                <>
+                  <p className="text-sm font-semibold text-slate-800 mt-1">
+                    {itemSelecionado.certificados?.tipo}
+                  </p>
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {itemSelecionado.certificados?.modelo && (
+                      <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[11px] text-slate-600">
+                        {itemSelecionado.certificados.modelo}
+                      </span>
+                    )}
+                    {labelEmissao(itemSelecionado.certificados?.tipo_emissao_padrao) && (
+                      <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] text-sky-700">
+                        {labelEmissao(itemSelecionado.certificados?.tipo_emissao_padrao)}
+                      </span>
+                    )}
+                    {itemSelecionado.certificados?.periodo_uso && (
+                      <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] text-violet-700">
+                        Uso: {itemSelecionado.certificados.periodo_uso}
+                      </span>
+                    )}
+                    {itemSelecionado.certificados?.validade && (
+                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] text-emerald-700">
+                        {itemSelecionado.certificados.validade}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-emerald-600 font-semibold mt-2">
+                    {Number(itemSelecionado.valor).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-slate-500 mt-1">Selecione um produto ao lado</p>
               )}
             </div>
 

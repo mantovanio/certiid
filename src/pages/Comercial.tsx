@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import * as XLSX from 'xlsx'
 import { cn } from '@/lib/utils'
 import { generateAgendaSlotsPreview, resolveAgentesElegiveisPorTabela } from '@/lib/agenda'
@@ -419,7 +420,7 @@ const EMPTY_AGENDA: NovoAgendamento = {
 
 const EMPTY_CERTIFICADO: NovoCertificado = {
   codigo: null, tipo: '', descricao: null, validade: '1 Ano',
-  modelo: null, categoria: null, tipo_emissao_padrao: null, descricao_produto: null,
+  modelo: null, categoria: null, tipo_emissao_padrao: null, periodo_uso: null, descricao_produto: null,
   produto_vinculado_ac: null, preco_venda: 0, valor_custo_ac: 0, valor_custo: 0,
   agrupador: null, hash: null, estoque: 0, ativo: true,
 }
@@ -1989,7 +1990,7 @@ export default function Comercial() {
     setEditingCertId(c.id)
     setFormCert({
       codigo: c.codigo, tipo: c.tipo, descricao: c.descricao, validade: c.validade,
-      modelo: c.modelo, categoria: c.categoria, tipo_emissao_padrao: c.tipo_emissao_padrao,
+      modelo: c.modelo, categoria: c.categoria, tipo_emissao_padrao: c.tipo_emissao_padrao, periodo_uso: c.periodo_uso ?? null,
       descricao_produto: c.descricao_produto, produto_vinculado_ac: c.produto_vinculado_ac,
       preco_venda: c.preco_venda, valor_custo_ac: c.valor_custo_ac, valor_custo: c.valor_custo,
       agrupador: c.agrupador, hash: c.hash, estoque: c.estoque, ativo: c.ativo,
@@ -4482,32 +4483,6 @@ export default function Comercial() {
             {loadingCatalogo && <div className="flex items-center gap-2 text-gray-400 text-sm"><Loader2 size={16} className="animate-spin" /> Carregando...</div>}
             {catalogoErro && <div className="text-red-600 text-sm">{catalogoErro}</div>}
 
-            {showFormCert && (
-              <Panel title={editingCertId ? 'Editar Certificado' : 'Novo Certificado'} onClose={() => setShowFormCert(false)}>
-                <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-                  <NumberInput label="Código" value={formCert.codigo ?? 0} onChange={v => setFormCert(p => ({ ...p, codigo: v || null }))} step={1} />
-                  <TextInput label="Nome *" value={formCert.tipo} onChange={v => setFormCert(p => ({ ...p, tipo: v }))} className="md:col-span-3" />
-                  <TextInput label="Tipo Emissão" value={formCert.tipo_emissao_padrao ?? ''} onChange={v => setFormCert(p => ({ ...p, tipo_emissao_padrao: v || null }))} />
-                  <TextInput label="Validade *" value={formCert.validade} onChange={v => setFormCert(p => ({ ...p, validade: v }))} />
-                  <TextInput label="Tipo (Categoria)" value={formCert.categoria ?? ''} onChange={v => setFormCert(p => ({ ...p, categoria: v || null }))} />
-                  <TextInput label="Modelo" value={formCert.modelo ?? ''} onChange={v => setFormCert(p => ({ ...p, modelo: v || null }))} />
-                  <TextInput label="Agrupador (e-commerce)" value={formCert.agrupador ?? ''} onChange={v => setFormCert(p => ({ ...p, agrupador: v || null }))} className="md:col-span-2" />
-                  <ActiveSelect value={formCert.ativo} onChange={v => setFormCert(p => ({ ...p, ativo: v }))} />
-                  <TextInput label="Produto Vinculado na AC" value={formCert.produto_vinculado_ac ?? ''} onChange={v => setFormCert(p => ({ ...p, produto_vinculado_ac: v || null }))} className="md:col-span-3" />
-                  <TextInput label="Hash" value={formCert.hash ?? ''} onChange={v => setFormCert(p => ({ ...p, hash: v || null }))} className="md:col-span-2" />
-                  <NumberInput label="Preço de Venda (R$)" value={formCert.preco_venda} onChange={v => setFormCert(p => ({ ...p, preco_venda: v }))} />
-                  <NumberInput label="Valor Custo AC (R$)" value={formCert.valor_custo_ac} onChange={v => setFormCert(p => ({ ...p, valor_custo_ac: v }))} />
-                  <NumberInput label="Valor Custo (R$)" value={formCert.valor_custo} onChange={v => setFormCert(p => ({ ...p, valor_custo: v }))} />
-                  <TextInput label="Descrição" value={formCert.descricao ?? ''} onChange={v => setFormCert(p => ({ ...p, descricao: v || null }))} className="md:col-span-6" />
-                </div>
-                <label className="flex flex-col gap-1 mt-3">
-                  <span className="text-xs text-gray-500">Descrição do Produto</span>
-                  <textarea rows={2} value={formCert.descricao_produto ?? ''} onChange={e => setFormCert(p => ({ ...p, descricao_produto: e.target.value || null }))}
-                    className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
-                </label>
-                <FormActions onSave={salvarCertificado} onCancel={() => setShowFormCert(false)} saving={salvandoCatalogo} />
-              </Panel>
-            )}
 
             {(() => {
               const allIds = certificados.map(c => c.id)
@@ -5842,6 +5817,49 @@ export default function Comercial() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modal flutuante de edição de certificado */}
+      {showFormCert && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowFormCert(false)} />
+          <div className="relative z-[10000] w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-2xl">
+            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-100 dark:border-gray-800">
+              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                {editingCertId ? 'Editar Certificado' : 'Novo Certificado'}
+              </h3>
+              <button type="button" title="Fechar" onClick={() => setShowFormCert(false)}>
+                <X size={16} className="text-gray-400 hover:text-gray-600" />
+              </button>
+            </div>
+            <div className="p-5">
+              <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+                <NumberInput label="Código" value={formCert.codigo ?? 0} onChange={v => setFormCert(p => ({ ...p, codigo: v || null }))} step={1} />
+                <TextInput label="Nome *" value={formCert.tipo} onChange={v => setFormCert(p => ({ ...p, tipo: v }))} className="md:col-span-3" />
+                <TextInput label="Tipo Emissão" value={formCert.tipo_emissao_padrao ?? ''} onChange={v => setFormCert(p => ({ ...p, tipo_emissao_padrao: v || null }))} />
+                <TextInput label="Validade *" value={formCert.validade} onChange={v => setFormCert(p => ({ ...p, validade: v }))} />
+                <TextInput label="Período de Uso (Fast)" value={formCert.periodo_uso ?? ''} onChange={v => setFormCert(p => ({ ...p, periodo_uso: v || null }))} />
+                <TextInput label="Tipo (Categoria)" value={formCert.categoria ?? ''} onChange={v => setFormCert(p => ({ ...p, categoria: v || null }))} />
+                <TextInput label="Modelo" value={formCert.modelo ?? ''} onChange={v => setFormCert(p => ({ ...p, modelo: v || null }))} />
+                <TextInput label="Agrupador (e-commerce)" value={formCert.agrupador ?? ''} onChange={v => setFormCert(p => ({ ...p, agrupador: v || null }))} className="md:col-span-2" />
+                <ActiveSelect value={formCert.ativo} onChange={v => setFormCert(p => ({ ...p, ativo: v }))} />
+                <TextInput label="Produto Vinculado na AC" value={formCert.produto_vinculado_ac ?? ''} onChange={v => setFormCert(p => ({ ...p, produto_vinculado_ac: v || null }))} className="md:col-span-3" />
+                <TextInput label="Hash" value={formCert.hash ?? ''} onChange={v => setFormCert(p => ({ ...p, hash: v || null }))} className="md:col-span-2" />
+                <NumberInput label="Preço de Venda (R$)" value={formCert.preco_venda} onChange={v => setFormCert(p => ({ ...p, preco_venda: v }))} />
+                <NumberInput label="Valor Custo AC (R$)" value={formCert.valor_custo_ac} onChange={v => setFormCert(p => ({ ...p, valor_custo_ac: v }))} />
+                <NumberInput label="Valor Custo (R$)" value={formCert.valor_custo} onChange={v => setFormCert(p => ({ ...p, valor_custo: v }))} />
+                <TextInput label="Descrição" value={formCert.descricao ?? ''} onChange={v => setFormCert(p => ({ ...p, descricao: v || null }))} className="md:col-span-6" />
+              </div>
+              <label className="flex flex-col gap-1 mt-3">
+                <span className="text-xs text-gray-500">Descrição do Produto</span>
+                <textarea rows={2} value={formCert.descricao_produto ?? ''} onChange={e => setFormCert(p => ({ ...p, descricao_produto: e.target.value || null }))}
+                  className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
+              </label>
+              <FormActions onSave={salvarCertificado} onCancel={() => setShowFormCert(false)} saving={salvandoCatalogo} />
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
 
       {toast && (

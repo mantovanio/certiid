@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import {
   AlertTriangle,
   Building2,
@@ -52,6 +52,16 @@ type AgendaSlot = {
   ponto_nome: string
 }
 
+type AgendaAgent = {
+  id: string
+  nome: string
+}
+
+type AgendaPoint = {
+  id: string
+  nome: string
+}
+
 type PaymentRuntime = {
   modo_teste_geral: boolean
   bloquear_integracoes_reais: boolean
@@ -62,6 +72,8 @@ type ContextResponse = {
   ok: boolean
   payment_runtime: PaymentRuntime
   pagamentos: PaymentOption[]
+  agentes: AgendaAgent[]
+  pontos: AgendaPoint[]
   slots: AgendaSlot[]
 }
 
@@ -189,7 +201,7 @@ function resolveInitialItemId(items: LojaItemRow[], lojaData: LojaMarketplace | 
   const idsValidos = new Set(items.map(item => item.id))
   if (produtoParam && idsValidos.has(produtoParam)) return produtoParam
   if (config.item_fixo_id && idsValidos.has(config.item_fixo_id)) return config.item_fixo_id
-  return items[0]?.id ?? ''
+  return ''
 }
 
 function buildSlotKey(slot: AgendaSlot | null | undefined) {
@@ -339,6 +351,8 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
   const [itens, setItens] = useState<LojaItemRow[]>([])
   const [selectedItemId, setSelectedItemId] = useState('')
   const [pagamentos, setPagamentos] = useState<PaymentOption[]>([])
+  const [agendaAgents, setAgendaAgents] = useState<AgendaAgent[]>([])
+  const [agendaPoints, setAgendaPoints] = useState<AgendaPoint[]>([])
   const [paymentRuntime, setPaymentRuntime] = useState<PaymentRuntime>({
     modo_teste_geral: false,
     bloquear_integracoes_reais: false,
@@ -353,10 +367,14 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
   const [isSchedulingOpen, setIsSchedulingOpen] = useState(false)
   const [selectedSlotKey, setSelectedSlotKey] = useState('')
   const [draftSlotKey, setDraftSlotKey] = useState('')
+  const [draftAgentId, setDraftAgentId] = useState('')
+  const [draftPointId, setDraftPointId] = useState('')
   const [selectedDay, setSelectedDay] = useState('')
   const [draftDay, setDraftDay] = useState('')
   const [cepLoading, setCepLoading] = useState(false)
+  const [cadastroLoading, setCadastroLoading] = useState(false)
   const [cnpjLoading, setCnpjLoading] = useState(false)
+  const formStartRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     let active = true
@@ -437,6 +455,8 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
       setItens(itensAtivos)
       setSelectedItemId(initialItemId)
       setPagamentos(contextBody.pagamentos)
+      setAgendaAgents(contextBody.agentes ?? [])
+      setAgendaPoints(contextBody.pontos ?? [])
       setPaymentRuntime(contextBody.payment_runtime)
       setSlots(contextBody.slots)
       setSelectedDay(firstDay)
@@ -489,9 +509,52 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
     [form]
   )
 
+  const agentOptions = useMemo(() => {
+    const fallbackMap = new Map<string, string>()
+    for (const slot of slots) {
+      if (!fallbackMap.has(slot.agente_registro_id)) fallbackMap.set(slot.agente_registro_id, slot.agente_nome)
+    }
+    const merged = agendaAgents.length
+      ? agendaAgents.map(agent => ({ id: agent.id, nome: agent.nome }))
+      : Array.from(fallbackMap.entries()).map(([id, nome]) => ({ id, nome }))
+    return merged.filter(agent => slots.some(slot => slot.agente_registro_id === agent.id))
+  }, [agendaAgents, slots])
+
+  const pointOptionsForDraftAgent = useMemo(() => {
+    if (!draftAgentId) return [] as AgendaPoint[]
+
+    const pointIds = Array.from(new Set(
+      slots
+        .filter(slot => slot.agente_registro_id === draftAgentId)
+        .map(slot => slot.ponto_atendimento_id)
+    ))
+
+    const fallbackMap = new Map<string, string>()
+    for (const slot of slots) {
+      if (slot.agente_registro_id !== draftAgentId) continue
+      if (!fallbackMap.has(slot.ponto_atendimento_id)) fallbackMap.set(slot.ponto_atendimento_id, slot.ponto_nome)
+    }
+
+    const merged = agendaPoints.length
+      ? agendaPoints
+          .filter(point => pointIds.includes(point.id))
+          .map(point => ({ id: point.id, nome: point.nome }))
+      : Array.from(fallbackMap.entries()).map(([id, nome]) => ({ id, nome }))
+
+    return merged
+  }, [agendaPoints, draftAgentId, slots])
+
+  const filteredSlots = useMemo(() => {
+    if (!draftAgentId || !draftPointId) return [] as AgendaSlot[]
+    return slots.filter(slot =>
+      slot.agente_registro_id === draftAgentId
+      && slot.ponto_atendimento_id === draftPointId
+    )
+  }, [draftAgentId, draftPointId, slots])
+
   const slotsByDay = useMemo(() => {
     const grouped = new Map<string, AgendaSlot[]>()
-    for (const slot of slots) {
+    for (const slot of filteredSlots) {
       const day = slot.inicio.slice(0, 10)
       const list = grouped.get(day) ?? []
       list.push(slot)
@@ -501,7 +564,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
       day,
       slots: daySlots.sort((a, b) => new Date(a.inicio).getTime() - new Date(b.inicio).getTime()),
     }))
-  }, [slots])
+  }, [filteredSlots])
 
   useEffect(() => {
     if (slotsByDay.length === 0) {
@@ -528,6 +591,38 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
     () => slots.find(slot => buildSlotKey(slot) === draftSlotKey) ?? null,
     [draftSlotKey, slots]
   )
+
+  useEffect(() => {
+    if (!isSchedulingOpen) return
+    if (draftSlotKey && !filteredSlots.some(slot => buildSlotKey(slot) === draftSlotKey)) {
+      setDraftSlotKey('')
+    }
+  }, [draftSlotKey, filteredSlots, isSchedulingOpen])
+
+  useEffect(() => {
+    if (!isSchedulingOpen) return
+
+    const hasSelectedAgent = draftAgentId && agentOptions.some(agent => agent.id === draftAgentId)
+    if (!hasSelectedAgent) {
+      const nextAgentId = selectedSlot?.agente_registro_id ?? agentOptions[0]?.id ?? ''
+      if (nextAgentId && nextAgentId !== draftAgentId) {
+        setDraftAgentId(nextAgentId)
+      }
+    }
+  }, [agentOptions, draftAgentId, isSchedulingOpen, selectedSlot])
+
+  useEffect(() => {
+    if (!isSchedulingOpen || !draftAgentId) return
+    const pointStillValid = draftPointId && pointOptionsForDraftAgent.some(point => point.id === draftPointId)
+    if (!pointStillValid) {
+      const nextPointId = selectedSlot?.agente_registro_id === draftAgentId
+        ? selectedSlot?.ponto_atendimento_id ?? ''
+        : ''
+      const fallbackPointId = pointOptionsForDraftAgent[0]?.id ?? ''
+      const resolved = pointOptionsForDraftAgent.some(point => point.id === nextPointId) ? nextPointId : fallbackPointId
+      if (resolved !== draftPointId) setDraftPointId(resolved)
+    }
+  }, [draftAgentId, draftPointId, isSchedulingOpen, pointOptionsForDraftAgent, selectedSlot])
 
   const nextFieldId = useMemo(() => {
     if (focusedField) return focusedField
@@ -597,6 +692,77 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
     }
   }
 
+  async function reaproveitarCadastroExistente(documento: string) {
+    const digits = onlyDigits(documento)
+    if (![11, 14].includes(digits.length)) return false
+
+    const candidatos = Array.from(new Set([digits, formatCpfCnpj(digits)]))
+    setCadastroLoading(true)
+
+    const { data, error: cadastroError } = await supabase
+      .from('cadastros_base')
+      .select('tipo_cliente, cpf_cnpj, nome, nome_fantasia, email, telefone, cep, logradouro, numero, complemento, bairro, cidade, uf')
+      .eq('status', 'ativo')
+      .in('cpf_cnpj', candidatos)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    setCadastroLoading(false)
+
+    if (cadastroError || !data) return false
+
+    const telefoneFormatado = data.telefone ? formatPhone(data.telefone) : ''
+    const cepFormatado = data.cep ? formatCep(data.cep) : ''
+    const tipoCliente = data.tipo_cliente ?? inferTipoPessoa(digits)
+
+    setForm(prev => ({
+      ...prev,
+      comprador: {
+        ...prev.comprador,
+        tipo: tipoCliente,
+        cpf_cnpj: formatCpfCnpj(data.cpf_cnpj || digits),
+        nome: data.nome || '',
+        nome_fantasia: data.nome_fantasia || '',
+        email: data.email || '',
+        telefone: telefoneFormatado,
+        cep: cepFormatado,
+        logradouro: data.logradouro || '',
+        numero: data.numero || '',
+        complemento: data.complemento || '',
+        bairro: data.bairro || '',
+        cidade: data.cidade || '',
+        uf: (data.uf || '').toUpperCase(),
+      },
+      titular: tipoCliente === 'pessoa_fisica' && prev.titularMesmoFaturamento
+        ? {
+            ...prev.titular,
+            nome: data.nome || prev.titular.nome,
+            cpf: formatCpfCnpj(data.cpf_cnpj || digits),
+            email: data.email || prev.titular.email,
+            telefone: telefoneFormatado || prev.titular.telefone,
+          }
+        : prev.titular,
+    }))
+
+    setFieldErrors(prev => {
+      const next = { ...prev }
+      delete next['comprador.cpf_cnpj']
+      delete next['comprador.nome']
+      delete next['comprador.email']
+      delete next['comprador.telefone']
+      delete next['comprador.cep']
+      delete next['comprador.logradouro']
+      delete next['comprador.numero']
+      delete next['comprador.bairro']
+      delete next['comprador.cidade']
+      if (tipoCliente === 'pessoa_fisica') delete next['titular.cpf']
+      return next
+    })
+
+    return true
+  }
+
   async function handleCepBlur() {
     const cep = onlyDigits(form.comprador.cep)
     if (cep.length !== 8) return
@@ -616,9 +782,8 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
     }))
   }
 
-  async function handleCnpjBlur() {
-    if (form.comprador.tipo !== 'pessoa_juridica') return
-    const cnpj = onlyDigits(form.comprador.cpf_cnpj)
+  async function handleCnpjBlur(cnpjValue?: string) {
+    const cnpj = onlyDigits(cnpjValue ?? form.comprador.cpf_cnpj)
     if (cnpj.length !== 14) return
 
     setCnpjLoading(true)
@@ -643,8 +808,33 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
     }))
   }
 
+  async function handleDocumentoBlur() {
+    const documento = onlyDigits(form.comprador.cpf_cnpj)
+    if (![11, 14].includes(documento.length)) return
+
+    const inferred = inferTipoPessoa(documento)
+    if (inferred !== form.comprador.tipo) {
+      setForm(prev => ({ ...prev, comprador: { ...prev.comprador, tipo: inferred } }))
+    }
+
+    await reaproveitarCadastroExistente(documento)
+
+    if (inferred === 'pessoa_juridica') {
+      await handleCnpjBlur(documento)
+    }
+  }
+
+  function handleSelectProduct(itemId: string) {
+    setSelectedItemId(itemId)
+    requestAnimationFrame(() => {
+      formStartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
+
   function openSchedulingModal() {
     setDraftSlotKey(selectedSlotKey)
+    setDraftAgentId(selectedSlot?.agente_registro_id ?? agentOptions[0]?.id ?? '')
+    setDraftPointId(selectedSlot?.ponto_atendimento_id ?? '')
     setDraftDay(selectedSlot?.inicio.slice(0, 10) ?? selectedDay)
     setIsSchedulingOpen(true)
   }
@@ -658,6 +848,8 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
   function clearScheduling() {
     setDraftSlotKey('')
     setSelectedSlotKey('')
+    setDraftAgentId(selectedSlot?.agente_registro_id ?? agentOptions[0]?.id ?? '')
+    setDraftPointId(selectedSlot?.ponto_atendimento_id ?? '')
     setIsSchedulingOpen(false)
   }
 
@@ -795,7 +987,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-2 rounded-full bg-[#fff4ea] px-3 py-2 text-xs font-semibold text-[#ad5207]">
               <ShieldCheck size={14} />
-              Experiência guiada para cliente final
+              Atendimento online
             </span>
             {paymentRuntime.modo_teste_geral && (
               <span className="inline-flex items-center gap-2 rounded-full bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-800">
@@ -810,29 +1002,29 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
         <section className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.35fr)_380px] gap-6 items-start">
           <div className="space-y-6">
-            <div className="rounded-[30px] bg-[linear-gradient(135deg,#17346b_0%,#10234d_58%,#0b1734_100%)] text-white p-6 sm:p-8 shadow-xl shadow-slate-200/70">
+            <div className="rounded-[30px] border border-slate-200 bg-white p-6 sm:p-8 shadow-sm">
               <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
                 <div className="max-w-3xl">
-                  <p className="text-[11px] uppercase tracking-[0.28em] text-sky-200 font-semibold">Venda completa no mesmo link</p>
-                  <h2 className="text-2xl sm:text-3xl font-semibold mt-3 leading-tight">
-                    Seu cliente escolhe o produto, paga e já pode sair com a validação organizada.
+                  <p className="text-[11px] uppercase tracking-[0.28em] text-[#ea7b18] font-semibold">Solicitação online</p>
+                  <h2 className="text-2xl sm:text-3xl font-semibold mt-3 leading-tight text-slate-900">
+                    Solicitação de certificado digital
                   </h2>
-                  <p className="text-sm sm:text-[15px] text-slate-200 mt-4 leading-relaxed">
-                    Esta tela foi pensada para ser intuitiva no computador e no celular, com preenchimento guiado, destaque no campo atual e avisos claros para o cliente não se perder.
+                  <p className="text-sm sm:text-[15px] text-slate-600 mt-4 leading-relaxed">
+                    Preencha seus dados abaixo para continuar sua compra com segurança. Se desejar, você também pode deixar seu atendimento agendado nesta mesma etapa.
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-3 w-full lg:w-[320px]">
                   {sectionStatuses.map(section => (
-                    <div key={section.label} className="rounded-2xl bg-white/10 border border-white/15 px-4 py-3">
+                    <div key={section.label} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                       <div className="flex items-center justify-between gap-3">
-                        <section.icon size={16} className="text-sky-200" />
+                        <section.icon size={16} className="text-[#17346b]" />
                         {section.done ? (
-                          <CheckCircle2 size={16} className="text-emerald-300" />
+                          <CheckCircle2 size={16} className="text-emerald-600" />
                         ) : (
-                          <span className="text-[10px] uppercase tracking-[0.18em] text-slate-300">Em aberto</span>
+                          <span className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Em aberto</span>
                         )}
                       </div>
-                      <p className="text-sm font-medium mt-3">{section.label}</p>
+                      <p className="text-sm font-medium mt-3 text-slate-800">{section.label}</p>
                     </div>
                   ))}
                 </div>
@@ -886,7 +1078,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                           </div>
                           <button
                             type="button"
-                            onClick={() => setSelectedItemId(item.id)}
+                            onClick={() => handleSelectProduct(item.id)}
                             className={cn(
                               'inline-flex items-center justify-center rounded-2xl px-4 py-3 text-sm font-semibold min-w-[160px]',
                               active ? 'bg-slate-900 text-white' : 'bg-[#17346b] text-white hover:bg-[#102654]'
@@ -913,9 +1105,16 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
               )}
             </SectionCard>
 
+            <div
+              ref={formStartRef}
+              className={cn(
+                'space-y-6 transition-opacity',
+                !itemSelecionado && 'opacity-60 pointer-events-none select-none'
+              )}
+            >
             <SectionCard
               title="Dados do faturamento"
-              description="Aqui ficam os dados de quem está comprando e de quem vai receber o faturamento e a nota."
+              description="Informe aqui os dados de faturamento e da nota fiscal."
               icon={Building2}
               highlight={nextFieldId?.startsWith('comprador.')}
               done={faturamentoDone}
@@ -924,7 +1123,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <ChoiceCard
                     label="Pessoa Jurídica"
-                    helper="Empresa comprando o certificado"
+                    helper="Use esta opção se a compra for em nome da empresa."
                     active={form.comprador.tipo === 'pessoa_juridica'}
                     onClick={() => setForm(prev => ({
                       ...prev,
@@ -936,7 +1135,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                   />
                   <ChoiceCard
                     label="Pessoa Física"
-                    helper="Compra em nome da própria pessoa"
+                    helper="Use esta opção se a compra for em seu nome."
                     active={form.comprador.tipo === 'pessoa_fisica'}
                     onClick={() => setForm(prev => ({
                       ...prev,
@@ -954,23 +1153,17 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                     label={form.comprador.tipo === 'pessoa_juridica' ? 'CNPJ *' : 'CPF *'}
                     value={form.comprador.cpf_cnpj}
                     onChange={value => updateComprador('cpf_cnpj', formatCpfCnpj(value))}
-                    onBlur={async () => {
-                      const inferred = inferTipoPessoa(form.comprador.cpf_cnpj)
-                      if (form.comprador.cpf_cnpj.replace(/\D/g, '').length >= 11 && inferred !== form.comprador.tipo) {
-                        setForm(prev => ({ ...prev, comprador: { ...prev.comprador, tipo: inferred } }))
-                      }
-                      if (inferred === 'pessoa_juridica') await handleCnpjBlur()
-                    }}
+                    onBlur={handleDocumentoBlur}
                     helper={form.comprador.tipo === 'pessoa_juridica'
-                      ? 'Digite o CNPJ. Buscamos os dados públicos da Receita automaticamente.'
-                      : 'Digite apenas os números que formatamos para você.'}
+                      ? 'Se este CNPJ já existir no sistema, os dados anteriores serão reaproveitados antes da consulta pública da Receita.'
+                      : 'Se este CPF já existir no sistema, seus dados anteriores serão carregados automaticamente.'}
                     error={fieldErrors['comprador.cpf_cnpj']}
                     focused={focusedField === 'comprador.cpf_cnpj'}
                     highlight={nextFieldId === 'comprador.cpf_cnpj'}
                     onFocus={() => setFocusedField('comprador.cpf_cnpj')}
                     onBlurField={() => setFocusedField(null)}
-                    loading={cnpjLoading}
-                    loadingLabel="Consultando Receita"
+                    loading={cadastroLoading || cnpjLoading}
+                    loadingLabel={cadastroLoading ? 'Buscando cadastro' : 'Consultando Receita'}
                   />
 
                   {form.comprador.tipo === 'pessoa_juridica' ? (
@@ -979,7 +1172,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                       label="Nome do responsável *"
                       value={form.comprador.responsavel_nome}
                       onChange={value => updateComprador('responsavel_nome', value)}
-                      helper="Pessoa que receberá nosso contato e pode acompanhar a compra."
+                      helper="Informe quem vai acompanhar esta compra e receber nosso contato."
                       error={fieldErrors['comprador.responsavel_nome']}
                       focused={focusedField === 'comprador.responsavel_nome'}
                       highlight={nextFieldId === 'comprador.responsavel_nome'}
@@ -1008,7 +1201,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                         label="Razão social *"
                         value={form.comprador.nome}
                         onChange={value => updateComprador('nome', value)}
-                        helper="Nome que será usado para faturamento e NF."
+                        helper="Este nome será usado no faturamento e na nota fiscal."
                         error={fieldErrors['comprador.nome']}
                         focused={focusedField === 'comprador.nome'}
                         highlight={nextFieldId === 'comprador.nome'}
@@ -1020,7 +1213,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                         label="Nome fantasia"
                         value={form.comprador.nome_fantasia}
                         onChange={value => updateComprador('nome_fantasia', value)}
-                        helper="Opcional, mas ajuda a identificar a empresa."
+                        helper="Se quiser, informe o nome fantasia para facilitar a identificação."
                         focused={focusedField === 'comprador.nome_fantasia'}
                         onFocus={() => setFocusedField('comprador.nome_fantasia')}
                         onBlurField={() => setFocusedField(null)}
@@ -1034,7 +1227,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                     value={form.comprador.email}
                     onChange={value => updateComprador('email', value)}
                     type="email"
-                    helper="Usaremos este e-mail para confirmação e orientações."
+                    helper="Informe seu e-mail para receber confirmação e orientações."
                     error={fieldErrors['comprador.email']}
                     focused={focusedField === 'comprador.email'}
                     highlight={nextFieldId === 'comprador.email'}
@@ -1047,7 +1240,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                     label="Telefone com WhatsApp *"
                     value={form.comprador.telefone}
                     onChange={value => updateComprador('telefone', formatPhone(value))}
-                    helper="Esse número é essencial para o contato no momento da validação."
+                    helper="Informe seu WhatsApp para receber contato no momento da validação."
                     error={fieldErrors['comprador.telefone']}
                     focused={focusedField === 'comprador.telefone'}
                     highlight={nextFieldId === 'comprador.telefone'}
@@ -1061,7 +1254,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-semibold text-slate-800">Endereço do faturamento</p>
-                      <p className="text-xs text-slate-500 mt-1">Assim que você informar o CEP, tentamos completar parte do endereço automaticamente.</p>
+                      <p className="text-xs text-slate-500 mt-1">Ao informar o CEP, parte do endereço pode ser preenchida automaticamente.</p>
                     </div>
                     {(cepLoading || cnpjLoading) && (
                       <div className="inline-flex items-center gap-2 text-xs text-slate-500">
@@ -1079,7 +1272,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                         value={form.comprador.cep}
                         onChange={value => updateComprador('cep', formatCep(value))}
                         onBlur={handleCepBlur}
-                        helper="Use o CEP do faturamento."
+                        helper="Informe o CEP do faturamento."
                         error={fieldErrors['comprador.cep']}
                         focused={focusedField === 'comprador.cep'}
                         highlight={nextFieldId === 'comprador.cep'}
@@ -1171,7 +1364,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
 
             <SectionCard
               title="Dados do titular do certificado"
-              description="Nesta parte fica claro quem realmente terá o certificado emitido, mesmo quando outra pessoa ou empresa fizer o pagamento."
+              description="Informe aqui quem realmente receberá o certificado, mesmo que outra pessoa ou empresa faça o pagamento."
               icon={UserRound}
               highlight={nextFieldId?.startsWith('titular.')}
               done={titularDone}
@@ -1191,8 +1384,8 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
                     {form.comprador.tipo === 'pessoa_fisica'
-                      ? 'Simplifica a compra quando a mesma pessoa paga e também receberá o certificado.'
-                      : 'Copiamos os dados de contato do responsável informado acima para facilitar a emissão.'}
+                      ? 'Use esta opção se você for pagar e também receber o certificado.'
+                      : 'Use esta opção se o responsável informado acima também for o titular do certificado.'}
                   </p>
                 </div>
               </label>
@@ -1224,6 +1417,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                         value={form.titular.cpf}
                         onChange={value => updateTitular('cpf', formatCpfCnpj(value))}
                         helper="Mesmo quando a empresa paga, o certificado será emitido para uma pessoa física."
+                        
                         error={fieldErrors['titular.cpf']}
                         focused={focusedField === 'titular.cpf'}
                         highlight={nextFieldId === 'titular.cpf'}
@@ -1236,7 +1430,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                         value={form.titular.data_nascimento}
                         onChange={value => updateTitular('data_nascimento', value)}
                         type="date"
-                        helper="Opcional nesta etapa, mas útil para a emissão."
+                        helper="Se você informar agora, essa etapa fica mais adiantada."
                         focused={focusedField === 'titular.data_nascimento'}
                         onFocus={() => setFocusedField('titular.data_nascimento')}
                         onBlurField={() => setFocusedField(null)}
@@ -1252,7 +1446,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                         value={form.titular.data_nascimento}
                         onChange={value => updateTitular('data_nascimento', value)}
                         type="date"
-                        helper="Opcional nesta etapa."
+                        helper="Se quiser, você já pode informar agora."
                         focused={focusedField === 'titular.data_nascimento'}
                         onFocus={() => setFocusedField('titular.data_nascimento')}
                         onBlurField={() => setFocusedField(null)}
@@ -1267,7 +1461,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                     label="Nome do titular *"
                     value={form.titular.nome}
                     onChange={value => updateTitular('nome', value)}
-                    helper="Pessoa que realmente receberá o certificado."
+                    helper="Informe o nome de quem vai receber o certificado."
                     error={fieldErrors['titular.nome']}
                     focused={focusedField === 'titular.nome'}
                     highlight={nextFieldId === 'titular.nome'}
@@ -1301,7 +1495,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                     value={form.titular.email}
                     onChange={value => updateTitular('email', value)}
                     type="email"
-                    helper="Se for diferente do comprador, informe aqui."
+                    helper="Se este e-mail for diferente do faturamento, informe aqui."
                     focused={focusedField === 'titular.email'}
                     icon={Mail}
                     onFocus={() => setFocusedField('titular.email')}
@@ -1312,7 +1506,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                     label="WhatsApp do titular"
                     value={form.titular.telefone}
                     onChange={value => updateTitular('telefone', formatPhone(value))}
-                    helper="Ajuda no contato direto para a validação."
+                    helper="Se este WhatsApp for diferente do faturamento, informe aqui."
                     focused={focusedField === 'titular.telefone'}
                     icon={Phone}
                     onFocus={() => setFocusedField('titular.telefone')}
@@ -1324,7 +1518,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
 
             <SectionCard
               title="Forma de pagamento"
-              description="Escolha como o cliente vai pagar. O atendimento só será liberado depois da compensação."
+              description="Escolha como você vai pagar. O atendimento só será liberado depois da compensação."
               icon={Wallet}
               highlight={nextFieldId === 'forma_pagamento_id'}
               done={pagamentoDone}
@@ -1371,7 +1565,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
 
             <SectionCard
               title="Agendamento da validação"
-              description="O cliente pode agendar agora para adiantar o processo, mas a validação só acontecerá depois da confirmação do pagamento."
+              description="Você pode agendar agora para adiantar o processo, mas a validação só acontecerá depois da confirmação do pagamento."
               icon={CalendarDays}
               highlight={!selectedSlot}
               done={agendamentoDone}
@@ -1385,7 +1579,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                     <p className="text-sm text-slate-600 leading-relaxed">
                       {selectedSlot
                         ? `${formatDateTime(selectedSlot.inicio)} com ${selectedSlot.agente_nome} em ${selectedSlot.ponto_nome}.`
-                        : 'Se o cliente não agendar agora, a compra pode seguir, mas ele precisará voltar depois para escolher um horário e ser atendido.'}
+                        : 'Você pode seguir sem agendar agora, mas será necessário voltar depois para escolher um horário e ser atendido.'}
                     </p>
                     <div className="flex flex-wrap gap-2 text-xs">
                       <span className="inline-flex items-center gap-2 rounded-full bg-white border border-[#f7d9bc] px-3 py-1.5 text-slate-700">
@@ -1422,12 +1616,12 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
 
             <SectionCard
               title="Avisos importantes"
-              description="Mensagens que precisam ficar muito claras para o cliente antes de concluir a compra."
+              description="Revise estes avisos antes de concluir a compra."
               icon={AlertTriangle}
             >
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <WarningCard text={paymentRuntime.aviso_checkout} />
-                <WarningCard text="Se o cliente não agendar agora, precisará voltar depois para escolher um horário antes do atendimento." />
+                <WarningCard text="Se você não agendar agora, será necessário voltar depois para escolher um horário antes do atendimento." />
                 <WarningCard text="Informe e-mail e telefone com WhatsApp válidos para a equipe entrar em contato no momento da validação." />
               </div>
 
@@ -1438,13 +1632,14 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                   value={form.observacoes}
                   onChange={value => setForm(prev => ({ ...prev, observacoes: value }))}
                   multiline
-                  helper="Opcional. Use este espaço para recados, observações do cliente ou contexto da emissão."
+                  helper="Se quiser, use este espaço para deixar algum recado sobre a emissão."
                   focused={focusedField === 'observacoes'}
                   onFocus={() => setFocusedField('observacoes')}
                   onBlurField={() => setFocusedField(null)}
                 />
               </div>
             </SectionCard>
+            </div>
           </div>
 
           <aside className="xl:sticky xl:top-24 space-y-4">
@@ -1491,9 +1686,9 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
             <div className="rounded-[30px] border border-[#fde4cf] bg-[#fffaf4] p-5 shadow-sm">
               <p className="text-sm font-semibold text-slate-900">Antes de finalizar</p>
               <ul className="mt-3 space-y-2 text-sm text-slate-600">
-                <li>Confirme e-mail e WhatsApp para nossa equipe conseguir falar com o cliente.</li>
-                <li>Se o pagador for diferente do titular, revise os dois blocos com atenção.</li>
-                <li>A validação só é atendida após compensação do pagamento.</li>
+                <li>Confirme seu e-mail e seu WhatsApp para receber nosso contato.</li>
+                <li>Se quem paga for diferente de quem recebe o certificado, revise os dois blocos com atenção.</li>
+                <li>Sua validação só será atendida após a compensação do pagamento.</li>
               </ul>
             </div>
 
@@ -1556,9 +1751,9 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
             <div className="flex items-start justify-between gap-4 px-5 sm:px-6 py-5 border-b border-slate-200">
               <div>
                 <p className="text-[11px] uppercase tracking-[0.22em] text-[#ea7b18] font-semibold">Agendamento da validação</p>
-                <h3 className="text-xl font-semibold mt-1">Escolha um horário para o cliente</h3>
+                <h3 className="text-xl font-semibold mt-1">Escolha seu horário de atendimento</h3>
                 <p className="text-sm text-slate-500 mt-2">
-                  O cliente pode seguir sem agendar, mas precisará voltar depois para definir o atendimento.
+                  Você pode seguir sem agendar, mas será necessário voltar depois para definir seu atendimento.
                 </p>
               </div>
               <button
@@ -1570,19 +1765,49 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)]">
-              <div className="border-b lg:border-b-0 lg:border-r border-slate-200 bg-slate-50/80 p-5 space-y-4">
-                <div className="rounded-[22px] border border-[#fde4cf] bg-[#fffaf4] p-4 text-sm text-slate-700">
-                  <p className="font-semibold text-slate-900">Aviso importante</p>
-                  <p className="mt-2 leading-relaxed">
-                    O atendimento da validação só é realizado após a compensação do pagamento.
-                  </p>
-                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)]">
+                  <div className="border-b lg:border-b-0 lg:border-r border-slate-200 bg-slate-50/80 p-5 space-y-4">
+                    <div className="rounded-[22px] border border-[#fde4cf] bg-[#fffaf4] p-4 text-sm text-slate-700">
+                      <p className="font-semibold text-slate-900">Aviso importante</p>
+                      <p className="mt-2 leading-relaxed">
+                        O atendimento da validação só é realizado após a compensação do pagamento.
+                      </p>
+                    </div>
 
-                <div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-slate-400 font-semibold">Datas disponíveis</p>
-                  <div className="mt-3 flex lg:flex-col gap-2 overflow-auto pb-1">
-                    {slotsByDay.map(({ day }) => (
+                    <div className="space-y-4">
+                      <SelectField
+                        label="Atendente"
+                        value={draftAgentId}
+                        onChange={value => {
+                          setDraftAgentId(value)
+                          setDraftPointId('')
+                          setDraftSlotKey('')
+                        }}
+                        options={[
+                          { value: '', label: 'Selecione o atendente' },
+                          ...agentOptions.map(agent => ({ value: agent.id, label: agent.nome })),
+                        ]}
+                      />
+
+                      <SelectField
+                        label="Local / ponto"
+                        value={draftPointId}
+                        onChange={value => {
+                          setDraftPointId(value)
+                          setDraftSlotKey('')
+                        }}
+                        options={[
+                          { value: '', label: draftAgentId ? 'Selecione o local' : 'Escolha primeiro o atendente' },
+                          ...pointOptionsForDraftAgent.map(point => ({ value: point.id, label: point.nome })),
+                        ]}
+                        disabled={!draftAgentId}
+                      />
+                    </div>
+
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-slate-400 font-semibold">Datas disponíveis</p>
+                      <div className="mt-3 flex lg:flex-col gap-2 overflow-auto pb-1">
+                        {slotsByDay.map(({ day }) => (
                       <button
                         key={day}
                         type="button"
@@ -1596,74 +1821,78 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                       >
                         {formatDayLabel(day)}
                       </button>
-                    ))}
-                    {slotsByDay.length === 0 && (
-                      <div className="rounded-2xl bg-white border border-slate-200 px-4 py-3 text-sm text-slate-500">
-                        Sem horários liberados no momento.
+                        ))}
+                        {slotsByDay.length === 0 && (
+                          <div className="rounded-2xl bg-white border border-slate-200 px-4 py-3 text-sm text-slate-500">
+                            {draftAgentId && draftPointId
+                              ? 'Sem horários liberados para esta combinação.'
+                              : 'Escolha atendente e local para liberar os horários.'}
+                          </div>
+                        )}
                       </div>
+                    </div>
+                  </div>
+
+                  <div className="p-5 sm:p-6 overflow-auto max-h-[68vh]">
+                    {!draftAgentId || !draftPointId ? (
+                      <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-6 text-sm text-slate-600">
+                        Escolha primeiro o atendente e o local para liberar os dias e horários disponíveis.
+                      </div>
+                    ) : slotsByDay.length === 0 ? (
+                      <div className="rounded-[24px] border border-amber-200 bg-amber-50 px-5 py-6 text-sm text-amber-900">
+                        Nenhum horário está disponível para esta combinação agora. Você ainda pode concluir a compra e deixar o agendamento para depois.
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">Horários de {draftDay ? formatDayLabel(draftDay) : 'seleção atual'}</p>
+                            <p className="text-sm text-slate-500 mt-1">Agora basta escolher o melhor dia e horário. Se preferir, você também pode sair sem reservar agora.</p>
+                          </div>
+                          {draftSelectedSlot && (
+                            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                              {formatDateTime(draftSelectedSlot.inicio)}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                          {draftSlots.map(slot => {
+                            const active = draftSlotKey === buildSlotKey(slot)
+                            return (
+                              <button
+                                key={buildSlotKey(slot)}
+                                type="button"
+                                onClick={() => setDraftSlotKey(buildSlotKey(slot))}
+                                className={cn(
+                                  'rounded-[24px] border px-4 py-4 text-left transition-all',
+                                  active
+                                    ? 'border-[#ea7b18] bg-[#fff8f1] ring-2 ring-[#fde4cf]'
+                                    : 'border-slate-200 bg-white hover:border-slate-300'
+                                )}
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <p className="text-lg font-semibold text-slate-900">{formatTimeRange(slot.inicio, slot.fim)}</p>
+                                    <p className="text-xs text-slate-500 mt-2">
+                                      {slot.tipo_atendimento === 'videoconferencia' ? 'Validação por vídeo' : (slot.tipo_atendimento ?? 'Atendimento')}
+                                    </p>
+                                  </div>
+                                  {active && <CheckCircle2 size={18} className="text-[#ea7b18] shrink-0" />}
+                                </div>
+                                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                                  <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-700">
+                                    {slot.vagas_restantes} vaga(s)
+                                  </span>
+                                </div>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </>
                     )}
                   </div>
                 </div>
-              </div>
-
-              <div className="p-5 sm:p-6 overflow-auto max-h-[68vh]">
-                {slotsByDay.length === 0 ? (
-                  <div className="rounded-[24px] border border-amber-200 bg-amber-50 px-5 py-6 text-sm text-amber-900">
-                    Nenhum horário está disponível agora. Você ainda pode concluir a compra e deixar o agendamento pendente para depois.
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">Horários de {draftDay ? formatDayLabel(draftDay) : 'seleção atual'}</p>
-                        <p className="text-sm text-slate-500 mt-1">Escolha o melhor horário para o cliente. Se quiser, também é possível sair sem reservar agora.</p>
-                      </div>
-                      {draftSelectedSlot && (
-                        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                          {formatDateTime(draftSelectedSlot.inicio)} com {draftSelectedSlot.agente_nome}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                      {draftSlots.map(slot => {
-                        const active = draftSlotKey === buildSlotKey(slot)
-                        return (
-                          <button
-                            key={buildSlotKey(slot)}
-                            type="button"
-                            onClick={() => setDraftSlotKey(buildSlotKey(slot))}
-                            className={cn(
-                              'rounded-[24px] border px-4 py-4 text-left transition-all',
-                              active
-                                ? 'border-[#ea7b18] bg-[#fff8f1] ring-2 ring-[#fde4cf]'
-                                : 'border-slate-200 bg-white hover:border-slate-300'
-                            )}
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p className="text-lg font-semibold text-slate-900">{formatTimeRange(slot.inicio, slot.fim)}</p>
-                                <p className="text-sm text-slate-600 mt-2">{slot.agente_nome}</p>
-                                <p className="text-xs text-slate-500 mt-1">{slot.ponto_nome}</p>
-                              </div>
-                              {active && <CheckCircle2 size={18} className="text-[#ea7b18] shrink-0" />}
-                            </div>
-                            <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-slate-600">
-                                {slot.tipo_atendimento === 'videoconferencia' ? 'Validação por vídeo' : (slot.tipo_atendimento ?? 'Atendimento')}
-                              </span>
-                              <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-700">
-                                {slot.vagas_restantes} vaga(s)
-                              </span>
-                            </div>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
 
             <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-between gap-3 px-5 sm:px-6 py-4 border-t border-slate-200 bg-white">
               <button
@@ -1800,7 +2029,7 @@ function GuidedField({
   }
 
   return (
-    <label data-field-anchor={id} className="block">
+    <label data-field-anchor={id} className="relative block group">
       <div className="flex items-center justify-between gap-3 mb-1.5">
         <span className="text-sm font-medium text-slate-700">{label}</span>
         <div className="flex items-center gap-2">
@@ -1829,9 +2058,12 @@ function GuidedField({
       </div>
       {error ? (
         <p className="mt-1.5 text-sm text-red-600">{error}</p>
-      ) : helper ? (
-        <p className="mt-1.5 text-xs text-slate-500 leading-relaxed">{helper}</p>
       ) : null}
+      {!error && helper && (
+        <div className="pointer-events-none absolute left-0 top-full z-20 mt-2 hidden max-w-xs rounded-2xl border border-slate-200 bg-slate-900 px-3 py-2 text-xs leading-relaxed text-white shadow-xl group-hover:block group-focus-within:block">
+          {helper}
+        </div>
+      )}
     </label>
   )
 }
@@ -1866,6 +2098,38 @@ function ChoiceCard({
         {active && <CheckCircle2 size={18} className="text-[#ea7b18] shrink-0" />}
       </div>
     </button>
+  )
+}
+
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+  disabled = false,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  options: Array<{ value: string; label: string }>
+  disabled?: boolean
+}) {
+  return (
+    <label className="block">
+      <span className="text-xs uppercase tracking-[0.18em] text-slate-400 font-semibold">{label}</span>
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        disabled={disabled}
+        className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none focus:border-[#17346b] focus:ring-2 focus:ring-sky-100 disabled:bg-slate-100 disabled:text-slate-400"
+      >
+        {options.map(option => (
+          <option key={`${label}-${option.value || 'empty'}`} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
   )
 }
 

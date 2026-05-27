@@ -128,6 +128,11 @@ type ParceiroSimples = {
   nome: string
   nome_fantasia: string | null
   tipo_parceiro: TipoParceiro | null
+  gestor_1_id: string | null
+  gestor_2_id: string | null
+  gestor_3_id: string | null
+  gestor_4_id: string | null
+  gestor_5_id: string | null
 }
 
 type PagamentoForm = {
@@ -549,6 +554,7 @@ export default function Comercial() {
   const [showFormV, setShowFormV]       = useState(false)
   const [formV2, setFormV2]             = useState<LocalFormVenda>(EMPTY_VENDA_V2)
   const [contadorSearch, setContadorSearch] = useState('')
+  const [contadorDropdownOpen, setContadorDropdownOpen] = useState(false)
   const [contadorStepHandled, setContadorStepHandled] = useState(false)
   const [showClienteForm, setShowClienteForm] = useState(false)
   const [editingClienteId, setEditingClienteId] = useState<string | null>(null)
@@ -645,6 +651,8 @@ export default function Comercial() {
   const [showFormLoja, setShowFormLoja] = useState(false)
   const [editingLojaId, setEditingLojaId] = useState<string | null>(null)
   const [formLoja, setFormLoja] = useState<LojaMarketplaceForm>(EMPTY_LOJA_MARKETPLACE)
+  const [showLinksProdutosPanel, setShowLinksProdutosPanel] = useState(false)
+  const [selectedLinksLojaId, setSelectedLinksLojaId] = useState<string>('')
   const [slotPreviewParceiroId, setSlotPreviewParceiroId] = useState<string>('')
   const [pricingMatrixForm, setPricingMatrixForm] = useState<{ tabela_base_id: string; ajuste_percentual: number }>({
     tabela_base_id: '',
@@ -795,16 +803,82 @@ export default function Comercial() {
     () => formV2.tabela_preco_item_id ? tabelaItens.find(item => item.id === formV2.tabela_preco_item_id) ?? null : null,
     [formV2.tabela_preco_item_id, tabelaItens]
   )
+  const lojasMarketplaceDoUsuario = useMemo(() => {
+    if (!currentUserId) return [] as LojaMarketplace[]
+    if (isAdmin) {
+      return lojasMarketplace.filter(loja => loja.ativo && loja.owner_tipo === 'vendedor')
+    }
+    if (profile?.perfil === 'vendedor') {
+      return lojasMarketplace.filter(loja =>
+        loja.ativo
+        && loja.owner_tipo === 'vendedor'
+        && loja.owner_profile_id === currentUserId
+      )
+    }
+    return [] as LojaMarketplace[]
+  }, [currentUserId, isAdmin, lojasMarketplace, profile?.perfil])
+  const lojaLinksSelecionada = useMemo(
+    () => lojasMarketplaceDoUsuario.find(loja => loja.id === selectedLinksLojaId) ?? lojasMarketplaceDoUsuario[0] ?? null,
+    [lojasMarketplaceDoUsuario, selectedLinksLojaId]
+  )
+  const produtosLinksDaLojaSelecionada = useMemo(() => {
+    if (!lojaLinksSelecionada) return [] as Array<{ item: TabelaPrecoItem; cert: Certificado | null; link: string }>
+    return tabelaItens
+      .filter(item => item.tabela_preco_id === lojaLinksSelecionada.tabela_preco_id && item.ativo)
+      .map(item => ({
+        item,
+        cert: certificadoById.get(item.certificado_id) ?? null,
+        link: buildLojaProdutoUrl(lojaLinksSelecionada, item.id),
+      }))
+      .sort((a, b) => (a.cert?.tipo ?? '').localeCompare(b.cert?.tipo ?? '', 'pt-BR'))
+  }, [certificadoById, lojaLinksSelecionada, tabelaItens])
 
-  // parceiros filtrados para busca de contador
+  const parceiroIdsPermitidosAgente = useMemo(() => {
+    if (profile?.perfil !== 'agente_registro' || !currentUserId) return new Set<string>()
+    return new Set(
+      parceirosAgentesPermitidos
+        .filter(item => item.ativo && item.agente_registro_id === currentUserId)
+        .map(item => item.parceiro_id)
+    )
+  }, [currentUserId, parceirosAgentesPermitidos, profile?.perfil])
+
+  const parceirosVinculadosAoUsuario = useMemo(() => {
+    if (isAdmin) return parceiros
+    if (!currentUserId) return [] as ParceiroSimples[]
+
+    if (profile?.perfil === 'agente_registro') {
+      return parceiros.filter(parceiro => parceiroIdsPermitidosAgente.has(parceiro.id))
+    }
+
+    if (profile?.perfil === 'vendedor') {
+      return parceiros.filter(parceiro => (
+        [
+          parceiro.gestor_1_id,
+          parceiro.gestor_2_id,
+          parceiro.gestor_3_id,
+          parceiro.gestor_4_id,
+          parceiro.gestor_5_id,
+        ].includes(currentUserId)
+      ))
+    }
+
+    return parceiros
+  }, [currentUserId, isAdmin, parceiroIdsPermitidosAgente, parceiros, profile?.perfil])
+
   const parceirosParaContador = useMemo(() => {
-    const q = contadorSearch.toLowerCase()
-    return q.length < 2 ? [] : parceiros.filter(p =>
-      p.nome.toLowerCase().includes(q) ||
-      (p.cpf_cnpj ?? '').includes(q) ||
-      (p.nome_fantasia ?? '').toLowerCase().includes(q)
-    ).slice(0, 10)
-  }, [parceiros, contadorSearch])
+    const origem = parceirosVinculadosAoUsuario
+    const q = contadorSearch.trim().toLowerCase()
+
+    if (!q) return origem.slice(0, 20)
+
+    return origem
+      .filter(p =>
+        p.nome.toLowerCase().includes(q) ||
+        (p.cpf_cnpj ?? '').includes(q) ||
+        (p.nome_fantasia ?? '').toLowerCase().includes(q)
+      )
+      .slice(0, 20)
+  }, [contadorSearch, parceirosVinculadosAoUsuario])
 
   function showMsg(msg: string, type: 'ok' | 'err' = 'err') {
     setToast({ msg, type })
@@ -1178,7 +1252,7 @@ export default function Comercial() {
       supabase.from('parceiros_agentes_permitidos').select('*').order('created_at', { ascending: true }),
       supabase.from('faixas_comissao').select('*').order('ordem', { ascending: true }),
       supabase.from('formas_pagamento_v2').select('*').order('nome', { ascending: true }),
-      supabase.from('parceiros').select('id, cpf_cnpj, nome, nome_fantasia, tipo_parceiro').eq('status', 'ativo').order('nome'),
+      supabase.from('parceiros').select('id, cpf_cnpj, nome, nome_fantasia, tipo_parceiro, gestor_1_id, gestor_2_id, gestor_3_id, gestor_4_id, gestor_5_id').eq('status', 'ativo').order('nome'),
       supabase.from('profiles').select('id, nome, perfil').in('perfil', ['admin', 'vendedor']).eq('status', 'ativo').order('nome'),
       supabase.from('app_settings').select('value').eq('key', 'payment_methods').maybeSingle(),
       supabase.from('app_settings').select('value').eq('key', 'payment_runtime').maybeSingle(),
@@ -1238,6 +1312,16 @@ export default function Comercial() {
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setCurrentUserId(data.user?.id ?? null))
   }, [])
+
+  useEffect(() => {
+    if (!lojasMarketplaceDoUsuario.length) {
+      setSelectedLinksLojaId('')
+      return
+    }
+    if (!selectedLinksLojaId || !lojasMarketplaceDoUsuario.some(loja => loja.id === selectedLinksLojaId)) {
+      setSelectedLinksLojaId(lojasMarketplaceDoUsuario[0]?.id ?? '')
+    }
+  }, [lojasMarketplaceDoUsuario, selectedLinksLojaId])
 
   useEffect(() => {
     if (pontosAtivos.length > 0 && !formV2.ponto_atendimento_id) {
@@ -1477,6 +1561,8 @@ export default function Comercial() {
 
     setShowFormV(false)
     setFormV2({ ...EMPTY_VENDA_V2, ponto_atendimento_id: pontosAtivos[0]?.id ?? '' })
+    setContadorSearch('')
+    setContadorDropdownOpen(false)
     setContadorStepHandled(false)
     setClienteSelecionadoObj(null)
     setClienteSearch('')
@@ -1546,6 +1632,8 @@ export default function Comercial() {
       status: cliente.status,
       metadata: cliente.metadata ?? {},
     })
+    setContadorSearch('')
+    setContadorDropdownOpen(false)
     setContadorStepHandled(false)
     setShowFormV(true)
     setShowClienteForm(true)
@@ -1555,6 +1643,8 @@ export default function Comercial() {
     setFormV2(p => ({ ...p, cadastro_base_id: cadastroId }))
     const c = clientes.find(x => x.id === cadastroId)
     setClienteSelecionadoObj(c ?? null)
+    setContadorSearch('')
+    setContadorDropdownOpen(false)
     setContadorStepHandled(false)
     setShowFormV(true)
     setShowClienteForm(false)
@@ -2844,7 +2934,9 @@ export default function Comercial() {
 
   function resolveMarketplaceLink(link?: string | null) {
     const finalLink = link?.trim()
-    return finalLink || null
+    if (finalLink) return finalLink
+    if (lojaLinksSelecionada) return resolveLojaBaseUrl(lojaLinksSelecionada)
+    return null
   }
 
   async function copiarMarketplaceLink(link?: string | null, contexto = 'Link do marketplace') {
@@ -3147,6 +3239,18 @@ export default function Comercial() {
       </div>
 
       <div className="flex-1 overflow-auto p-6">
+        {lojasMarketplaceDoUsuario.length > 0 && (
+          <div className="mb-4 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setShowLinksProdutosPanel(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors shadow-sm"
+            >
+              <ShoppingBag size={15} />
+              Links Produtos
+            </button>
+          </div>
+        )}
 
         {/* ── VENDAS ─────────────────────────────────────────── */}
         {tab === 'vendas' && (
@@ -3169,7 +3273,7 @@ export default function Comercial() {
             )}
 
             {showFormV && (
-              <Panel title="Lançar Venda" onClose={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorStepHandled(false) }}>
+              <Panel title="Lançar Venda" onClose={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}>
                 <div className="grid grid-cols-1 md:grid-cols-4 xl:grid-cols-8 gap-2 mb-4">
                   {vendaSteps.steps.map((step, index) => (
                     <div key={step.key} className={cn(
@@ -3287,21 +3391,28 @@ export default function Comercial() {
                         : contadorSearch}
                       onChange={e => {
                         const v = e.target.value
+                        if (formV2.contador_id) {
+                          setFormV2(p => ({ ...p, contador_id: null }))
+                        }
                         setContadorSearch(v)
+                        setContadorDropdownOpen(true)
                         setContadorStepHandled(false)
-                        if (!v) setFormV2(p => ({ ...p, contador_id: null }))
                       }}
+                      onFocus={() => setContadorDropdownOpen(true)}
+                      onBlur={() => setTimeout(() => setContadorDropdownOpen(false), 150)}
                       placeholder="Nenhum selecionado"
                       className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
-                    {parceirosParaContador.length > 0 && (
+                    {contadorDropdownOpen && parceirosParaContador.length > 0 && (
                       <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-48 overflow-y-auto">
                         {parceirosParaContador.map(p => (
                           <button key={p.id} type="button"
+                            onMouseDown={e => e.preventDefault()}
                             onClick={() => {
                               setFormV2(prev => ({ ...prev, contador_id: p.id }))
                               setContadorStepHandled(true)
                               setContadorSearch('')
+                              setContadorDropdownOpen(false)
                             }}
                             className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800">
                             {p.cpf_cnpj ?? ''} - {(p.tipo_parceiro ?? '').toUpperCase()} - {p.nome}{p.nome_fantasia ? ` - ${p.nome_fantasia}` : ''}
@@ -3309,15 +3420,22 @@ export default function Comercial() {
                         ))}
                       </div>
                     )}
+                    {contadorDropdownOpen && parceirosParaContador.length === 0 && (
+                      <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg px-3 py-2.5 text-sm text-gray-500 dark:text-gray-400">
+                        {contadorSearch.trim()
+                          ? 'Nenhum parceiro vinculado corresponde a esta busca.'
+                          : 'Nenhum parceiro vinculado foi encontrado para o seu usuário.'}
+                      </div>
+                    )}
                     {formV2.contador_id && (
-                      <button type="button" onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorStepHandled(false) }}
+                      <button type="button" onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}
                         className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><X size={14} /></button>
                     )}
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorStepHandled(true) }}
+                      onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(true) }}
                       className={cn(
                         'px-3 py-2 text-xs rounded-lg border transition-colors',
                         vendaStepStatus.contadorOk && !formV2.contador_id
@@ -3572,7 +3690,7 @@ export default function Comercial() {
 
                 <FormActions
                   onSave={salvarVendaV2}
-                  onCancel={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorStepHandled(false) }}
+                  onCancel={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}
                   saving={salvandoV}
                   disabled={!vendaStepStatus.pontoOk}
                 />
@@ -3649,6 +3767,7 @@ export default function Comercial() {
                     setClienteSelecionadoObj(null)
                     setClienteSearch('')
                     setContadorSearch('')
+                    setContadorDropdownOpen(false)
                     setContadorStepHandled(false)
                     return
                   }
@@ -3656,6 +3775,7 @@ export default function Comercial() {
                   setClienteSelecionadoObj(null)
                   setClienteSearch('')
                   setContadorSearch('')
+                  setContadorDropdownOpen(false)
                   setContadorStepHandled(false)
                   setShowClienteForm(false)
                   setShowFormV(true)
@@ -4452,6 +4572,79 @@ export default function Comercial() {
               )}
             </div>
           </CatalogSection>
+        )}
+
+        {showLinksProdutosPanel && (
+          <Panel title="Links Produtos" onClose={() => setShowLinksProdutosPanel(false)}>
+            <div className="space-y-4">
+              <div className="rounded-xl border border-blue-100 dark:border-blue-900/20 bg-blue-50/50 dark:bg-blue-950/10 px-4 py-3">
+                <p className="text-sm font-medium text-blue-700 dark:text-blue-300">
+                  Escolha o produto para abrir o link de compra do seu marketplace.
+                </p>
+                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                  Cada vendedor acessa apenas os links vinculados às próprias lojas ativas.
+                </p>
+              </div>
+
+              {lojasMarketplaceDoUsuario.length > 1 && (
+                <SelectInput
+                  label="Loja / Link do vendedor"
+                  value={selectedLinksLojaId}
+                  onChange={setSelectedLinksLojaId}
+                  options={[
+                    { value: '', label: 'Selecione' },
+                    ...lojasMarketplaceDoUsuario.map(loja => ({ value: loja.id, label: loja.nome_loja })),
+                  ]}
+                />
+              )}
+
+              {lojaLinksSelecionada && (
+                <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-800/30 px-4 py-3">
+                  <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Loja selecionada</p>
+                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 mt-1">{lojaLinksSelecionada.nome_loja}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 break-all">{resolveLojaBaseUrl(lojaLinksSelecionada)}</p>
+                </div>
+              )}
+
+              {!lojaLinksSelecionada ? (
+                <EmptyBlock label="Nenhuma loja de marketplace disponível para este usuário." />
+              ) : produtosLinksDaLojaSelecionada.length === 0 ? (
+                <EmptyBlock label="Essa loja ainda não possui produtos ativos para gerar links." />
+              ) : (
+                <div className="space-y-2">
+                  {produtosLinksDaLojaSelecionada.map(({ item, cert, link }) => (
+                    <div key={item.id} className="flex flex-col md:flex-row md:items-center justify-between gap-3 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-4 py-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">{cert?.tipo ?? 'Produto'}</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                          {cert?.validade ?? 'Validade não informada'} · {formatCurrency(item.valor)}
+                        </p>
+                        <p className="text-[11px] text-gray-400 mt-1 break-all">{link}</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => abrirMarketplaceLink(link)}
+                          className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors"
+                        >
+                          <ExternalLink size={13} />
+                          Abrir link
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { void copiarMarketplaceLink(link, `Link de ${cert?.tipo ?? 'produto'}`) }}
+                          className="flex items-center gap-1.5 px-3 py-2 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-xs font-medium rounded-lg transition-colors"
+                        >
+                          <Copy size={13} />
+                          Copiar
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Panel>
         )}
 
         {/* ── CERTIFICADOS ───────────────────────────────────── */}

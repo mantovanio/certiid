@@ -445,8 +445,26 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
         return
       }
 
-      const itensAtivos = (itensRes.data ?? []) as unknown as LojaItemRow[]
-      const produtosAtivos = itensAtivos.filter(item => item.certificados?.ativo)
+      const itensBrutos = (itensRes.data ?? []) as unknown as LojaItemRow[]
+      const certificadoIds = Array.from(new Set(itensBrutos.map(item => item.certificado_id).filter(Boolean)))
+      let certificadosMap = new Map<string, Certificado>()
+
+      if (certificadoIds.length > 0) {
+        const { data: certificadosData } = await supabase
+          .from('certificados')
+          .select('*')
+          .in('id', certificadoIds)
+
+        certificadosMap = new Map(
+          ((certificadosData ?? []) as Certificado[]).map(certificado => [certificado.id, certificado])
+        )
+      }
+
+      const itensAtivos = itensBrutos.map(item => ({
+        ...item,
+        certificados: certificadosMap.get(item.certificado_id) ?? item.certificados ?? null,
+      }))
+      const produtosAtivos = itensAtivos.filter(item => item.certificados ? item.certificados.ativo : true)
       const initialItemId = resolveInitialItemId(produtosAtivos, lojaData as LojaMarketplace)
       const firstDay = (contextBody.slots[0]?.inicio ?? '').slice(0, 10)
 
@@ -478,7 +496,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
   }, [isSchedulingOpen])
 
   const produtosAtivos = useMemo(
-    () => itens.filter(item => item.certificados?.ativo),
+    () => itens.filter(item => item.certificados ? item.certificados.ativo : true),
     [itens]
   )
 
@@ -652,11 +670,18 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
   const agendamentoDone = !!selectedSlot
 
   const sectionStatuses: SectionStatus[] = [
+    { label: '1. Produto', done: !!itemSelecionado, icon: Store },
     { label: 'Faturamento', done: faturamentoDone, icon: Building2 },
     { label: 'Titular', done: titularDone, icon: UserRound },
     { label: 'Pagamento', done: pagamentoDone, icon: CreditCard },
     { label: 'Agendamento', done: agendamentoDone, icon: CalendarDays },
   ]
+
+  const canShowFaturamento = !!itemSelecionado
+  const canShowTitular = canShowFaturamento && faturamentoDone
+  const canShowPagamento = canShowTitular && titularDone
+  const canShowAgendamento = canShowPagamento && pagamentoDone
+  const canShowAvisos = canShowPagamento
 
   function updateComprador<K extends keyof FormState['comprador']>(key: K, value: FormState['comprador'][K]) {
     setForm(prev => ({
@@ -976,12 +1001,13 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
       <header className="border-b border-slate-200/80 bg-white/95 backdrop-blur-md sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-2xl bg-[linear-gradient(135deg,#17346b,#ea7b18)] text-white flex items-center justify-center shadow-lg shadow-slate-200">
-              <Store size={20} />
+            <div className="w-14 h-14 rounded-2xl border border-slate-200 bg-white flex items-center justify-center shadow-sm p-2">
+              <img src="/favicon.svg" alt="CertiID" className="w-full h-full object-contain" />
             </div>
             <div>
               <p className="text-[11px] uppercase tracking-[0.24em] text-[#ea7b18] font-semibold">Checkout por link</p>
-              <h1 className="text-xl font-semibold leading-tight">{loja.nome_loja}</h1>
+              <h1 className="text-xl font-semibold leading-tight">CertiID</h1>
+              <p className="text-sm text-slate-500 mt-0.5">{loja.nome_loja}</p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1000,10 +1026,10 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-        <section className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.35fr)_380px] gap-6 items-start">
+        <section className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_340px] gap-6 items-start">
           <div className="space-y-6">
             <div className="rounded-[30px] border border-slate-200 bg-white p-6 sm:p-8 shadow-sm">
-              <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+              <div className="flex flex-col gap-6">
                 <div className="max-w-3xl">
                   <p className="text-[11px] uppercase tracking-[0.28em] text-[#ea7b18] font-semibold">Solicitação online</p>
                   <h2 className="text-2xl sm:text-3xl font-semibold mt-3 leading-tight text-slate-900">
@@ -1013,9 +1039,9 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                     Preencha seus dados abaixo para continuar sua compra com segurança. Se desejar, você também pode deixar seu atendimento agendado nesta mesma etapa.
                   </p>
                 </div>
-                <div className="grid grid-cols-2 gap-3 w-full lg:w-[320px]">
+                <div className="flex flex-wrap gap-3">
                   {sectionStatuses.map(section => (
-                    <div key={section.label} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <div key={section.label} className="min-w-[120px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                       <div className="flex items-center justify-between gap-3">
                         <section.icon size={16} className="text-[#17346b]" />
                         {section.done ? (
@@ -1024,7 +1050,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                           <span className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Em aberto</span>
                         )}
                       </div>
-                      <p className="text-sm font-medium mt-3 text-slate-800">{section.label}</p>
+                      <p className="text-sm font-medium mt-3 text-slate-800 break-words leading-snug">{section.label}</p>
                     </div>
                   ))}
                 </div>
@@ -1105,12 +1131,10 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
               )}
             </SectionCard>
 
+            {canShowFaturamento && (
             <div
               ref={formStartRef}
-              className={cn(
-                'space-y-6 transition-opacity',
-                !itemSelecionado && 'opacity-60 pointer-events-none select-none'
-              )}
+              className="space-y-6"
             >
             <SectionCard
               title="Dados do faturamento"
@@ -1362,6 +1386,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
               </div>
             </SectionCard>
 
+            {canShowTitular && (
             <SectionCard
               title="Dados do titular do certificado"
               description="Informe aqui quem realmente receberá o certificado, mesmo que outra pessoa ou empresa faça o pagamento."
@@ -1515,7 +1540,9 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                 </div>
               )}
             </SectionCard>
+            )}
 
+            {canShowPagamento && (
             <SectionCard
               title="Forma de pagamento"
               description="Escolha como você vai pagar. O atendimento só será liberado depois da compensação."
@@ -1562,7 +1589,9 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                 <p className="mt-3 text-sm text-red-600">{fieldErrors['forma_pagamento_id']}</p>
               )}
             </SectionCard>
+            )}
 
+            {canShowAgendamento && (
             <SectionCard
               title="Agendamento da validação"
               description="Você pode agendar agora para adiantar o processo, mas a validação só acontecerá depois da confirmação do pagamento."
@@ -1613,7 +1642,9 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                 </div>
               </div>
             </SectionCard>
+            )}
 
+            {canShowAvisos && (
             <SectionCard
               title="Avisos importantes"
               description="Revise estes avisos antes de concluir a compra."
@@ -1639,7 +1670,9 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
                 />
               </div>
             </SectionCard>
+            )}
             </div>
+            )}
           </div>
 
           <aside className="xl:sticky xl:top-24 space-y-4">
@@ -2084,16 +2117,16 @@ function ChoiceCard({
       type="button"
       onClick={onClick}
       className={cn(
-        'rounded-[24px] border px-4 py-4 text-left transition-all',
+        'w-full min-h-[96px] rounded-[24px] border px-4 py-4 text-left transition-all',
         active
           ? 'border-[#ea7b18] bg-[#fff8f1] ring-2 ring-[#fde4cf]'
           : 'border-slate-200 bg-white hover:border-slate-300'
       )}
     >
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-slate-900">{label}</p>
-          <p className="text-xs text-slate-500 mt-1">{helper}</p>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-900 break-words">{label}</p>
+          <p className="text-xs text-slate-500 mt-1 leading-relaxed break-words">{helper}</p>
         </div>
         {active && <CheckCircle2 size={18} className="text-[#ea7b18] shrink-0" />}
       </div>

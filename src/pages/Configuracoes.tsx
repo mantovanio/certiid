@@ -19,6 +19,7 @@ import {
 } from '@/lib/nfse'
 import { useAuth } from '@/contexts/AuthContext'
 import type {
+  AmbienteNfse,
   AutomationRule,
   CommunicationOutbox,
   ExternalIntegration,
@@ -2771,6 +2772,12 @@ const NFSE_PROVIDER_LABELS: Record<ProvedorNfse, string> = {
   municipal: 'Portal Municipal',
 }
 
+const NFSE_AMBIENTE_LABELS: Record<AmbienteNfse, string> = {
+  homologacao: 'Homologação',
+  producao_restrita: 'Produção restrita',
+  producao: 'Produção real',
+}
+
 type NfsePreset = {
   id: string
   label: string
@@ -2809,6 +2816,7 @@ const NFSE_PRESETS: NfsePreset[] = [
       planned_activation_date: '2026-09-01',
       national_portal_url: 'https://www.nfse.gov.br/EmissorNacional/Login',
       municipal_portal_url: 'https://notajoseense.sjc.sp.gov.br/notafiscal/paginas/portal/#/login',
+      suggested_environment: 'producao_restrita',
     },
   },
   {
@@ -2822,6 +2830,7 @@ const NFSE_PRESETS: NfsePreset[] = [
 ]
 
 function createEmptyFiscalForm(preset?: typeof NFSE_PRESETS[number]): Partial<NfseConfiguracao> {
+  const suggestedEnvironment = String(preset?.payload_reforma_tributaria?.suggested_environment ?? '').trim() as AmbienteNfse
   return {
     identificador: preset ? `Perfil ${preset.label}` : '',
     municipio_nome: preset?.municipio_nome ?? '',
@@ -2833,7 +2842,7 @@ function createEmptyFiscalForm(preset?: typeof NFSE_PRESETS[number]): Partial<Nf
     inscricao_municipal: '',
     inscricao_estadual: '',
     cnae: '',
-    ambiente: 'homologacao',
+    ambiente: suggestedEnvironment || 'homologacao',
     natureza_operacao: '',
     simples_nacional: false,
     regime_especial: '',
@@ -3238,7 +3247,7 @@ function AbaFiscal() {
                     {config.municipio_nome} • {NFSE_PROVIDER_LABELS[config.provedor]}
                   </p>
                   <p className="text-[11px] text-gray-400 mt-1">
-                    CNPJ {config.cnpj_emitente} • {config.ambiente === 'producao' ? 'Produção' : 'Homologação'}
+                    CNPJ {config.cnpj_emitente} • {NFSE_AMBIENTE_LABELS[config.ambiente] ?? 'Homologação'}
                   </p>
                 </button>
               )
@@ -3460,6 +3469,12 @@ function AbaFiscal() {
                   </p>
                 </div>
               </div>
+              <div className="rounded-lg border border-amber-200 dark:border-amber-900/40 bg-amber-50/80 dark:bg-amber-950/20 p-3">
+                <p className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">Para emitir uma nota real ainda esta semana</p>
+                <p className="text-[11px] text-amber-700/80 dark:text-amber-300/80 mt-1">
+                  Use o portal atual da Nota Joseense com valor baixo e cliente real de teste operacional. Essa emissão será fiscalmente válida e é o caminho mais seguro enquanto a automação do portal municipal ainda depende do manual oficial.
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={() => void testarConexaoNotaJoseense()}
@@ -3534,6 +3549,24 @@ function AbaFiscal() {
               <div className="text-[11px] text-emerald-900 dark:text-emerald-200">
                 Portal nacional: {portalNacionalUrl || 'Não informado'}
               </div>
+            </div>
+          )}
+
+          {form.provedor === 'nacional' && form.ambiente === 'producao_restrita' && (
+            <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/40 bg-indigo-50 dark:bg-indigo-950/20 p-4 space-y-2">
+              <p className="text-xs font-semibold text-indigo-800 dark:text-indigo-300">Ambiente de testes sem valor fiscal</p>
+              <p className="text-[11px] text-indigo-700/80 dark:text-indigo-300/80">
+                Use este ambiente para emissão e cancelamento de testes no Emissor Nacional sem gerar nota fiscal real em produção.
+              </p>
+            </div>
+          )}
+
+          {form.provedor === 'nacional' && form.ambiente === 'producao' && (
+            <div className="rounded-xl border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/20 p-4 space-y-2">
+              <p className="text-xs font-semibold text-red-800 dark:text-red-300">Atenção ao ambiente real</p>
+              <p className="text-[11px] text-red-700/80 dark:text-red-300/80">
+                Toda emissão neste ambiente terá efeito fiscal real. Use produção apenas quando quiser gerar documento válido e definitivo.
+              </p>
             </div>
           )}
 
@@ -3694,6 +3727,7 @@ function AbaFiscal() {
                 className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="homologacao">Homologação</option>
+                <option value="producao_restrita">Produção restrita</option>
                 <option value="producao">Produção</option>
               </select>
             </label>

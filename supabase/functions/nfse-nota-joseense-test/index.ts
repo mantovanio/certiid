@@ -45,6 +45,10 @@ function isUnknownIssuerError(error: unknown) {
   return /UnknownIssuer|invalid peer certificate/i.test(message)
 }
 
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error ?? 'erro desconhecido')
+}
+
 async function fetchNotaJoseenseUrl(url: string) {
   try {
     const response = await fetch(url, {
@@ -215,10 +219,24 @@ Deno.serve(async (req: Request) => {
     }
     checks.portal_app = true
   } catch (error) {
+    if (isUnknownIssuerError(error)) {
+      return json({
+        ok: true,
+        stage: 'conectividade_parcial',
+        message: 'Seu perfil da Nota Joseense está pronto no que depende do seu sistema. A verificação automática do portal ficou pendente por causa do certificado SSL público da prefeitura.',
+        checks,
+        certificado: certSummary,
+        login_status: loginStatus || null,
+        portal_status: portalStatus || null,
+        tls_warning: 'O portal da prefeitura apresentou certificado SSL com cadeia não reconhecida pelo ambiente técnico. Isso não invalida o seu perfil fiscal nem o certificado A1 salvo no sistema.',
+        manual_status: 'O município prevê conversão de RPS via webservice, mas o formato do arquivo, o upload e o procedimento dependem do manual oficial da Nota Joseense.',
+        next_step: 'Você pode seguir com a validação interna do perfil. Para emissão automática real, ainda será necessário o manual oficial de RPS/upload e, em paralelo, a preparação para o Emissor Nacional.',
+      })
+    }
     return json({
       ok: false,
       stage: 'portal',
-      error: `Não foi possível alcançar o portal atual da Nota Joseense: ${error instanceof Error ? error.message : 'erro desconhecido'}.`,
+      error: `Não foi possível alcançar o portal atual da Nota Joseense: ${errorMessage(error)}.`,
       checks,
     }, 502)
   }

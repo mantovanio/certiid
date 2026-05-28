@@ -386,24 +386,24 @@ async function enqueueMessages(input: {
     `Certificado: ${input.productName}.`,
     `Valor: ${formatCurrency.format(Number(input.valorVenda ?? 0))}.`,
     `Forma de pagamento: ${input.formaPagamento}.`,
-    'O atendimento será realizado somente após a confirmação do pagamento.',
+    'Seu atendimento será liberado somente após a confirmação do pagamento.',
   ]
 
   const scheduleMessage = input.agendamento
     ? [
         ...common,
-        `Agendamento da validação por vídeo: ${formatDateTime(input.agendamento.data_agendada)}.`,
-        `Agente responsável: ${input.agendamento.agente_nome}.`,
+        `Sua validação por vídeo foi agendada para ${formatDateTime(input.agendamento.data_agendada)}.`,
+        `Seu atendimento será com ${input.agendamento.agente_nome}.`,
       ].join(' ')
     : [
         ...common,
-        'Seu agendamento da validação ainda está pendente.',
-        'Nossa equipe enviará orientações pelos canais informados para você concluir essa etapa.',
+        'Seu agendamento ainda está pendente.',
+        'Você receberá orientações pelos canais informados para concluir essa etapa.',
       ].join(' ')
 
   const emailSubject = input.agendamento
-    ? `Compra confirmada e agendamento da validação - ${input.productName}`
-    : `Compra confirmada - agendamento pendente - ${input.productName}`
+    ? `Sua compra foi confirmada e sua validação foi agendada - ${input.productName}`
+    : `Sua compra foi confirmada - agendamento pendente - ${input.productName}`
 
   const rows: Record<string, unknown>[] = []
   if (input.telefone) {
@@ -753,7 +753,7 @@ async function handleSubmit(body: Record<string, unknown>) {
     status_agendamento: agendamentoSelecionado ? 'confirmado' : 'pendente',
     observacoes: agendamentoSelecionado
       ? 'Agendamento criado pelo checkout público do marketplace.'
-      : 'Compra concluída sem agendamento imediato. Cliente precisa concluir a validação por vídeo.',
+      : 'Compra concluída sem agendamento imediato. Você ainda precisa concluir a validação por vídeo.',
     metadata: {
       origem: 'marketplace_publico',
       loja_slug: slug || loja.slug,
@@ -793,8 +793,8 @@ async function handleSubmit(body: Record<string, unknown>) {
     cliente_id: cadastro.id,
     agendamento_status: agendamentoSelecionado ? 'confirmado' : 'pendente',
     message: agendamentoSelecionado
-      ? 'Compra concluída com agendamento da validação por vídeo.'
-      : 'Compra concluída. O agendamento da validação ficou pendente e será necessário antes do atendimento.',
+      ? 'Sua compra foi concluída e sua validação por vídeo já ficou agendada.'
+      : 'Sua compra foi concluída. Seu agendamento ficou pendente e ainda será necessário antes do atendimento.',
   })
 }
 

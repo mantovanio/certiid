@@ -593,6 +593,8 @@ export default function Comercial() {
   const [salvandoV, setSalvandoV]       = useState(false)
   const [salvandoCliente, setSalvandoCliente] = useState(false)
   const [vendaFilters, setVendaFilters] = useState<VendaFilters>(EMPTY_VENDA_FILTERS)
+  const [showVendaFiltrosExtras, setShowVendaFiltrosExtras] = useState(false)
+  const [showVendaAcoesExtras, setShowVendaAcoesExtras] = useState(false)
   const [selectedIds, setSelectedIds]           = useState<Set<string>>(new Set())
   const [nfseAutomationSettings, setNfseAutomationSettings] = useState<NfseAutomationSettings>(DEFAULT_NFSE_AUTOMATION_SETTINGS)
   const [agendamentoStatusPorVenda, setAgendamentoStatusPorVenda] = useState<Record<string, StatusAgendamentoValidacao | null>>({})
@@ -3932,12 +3934,10 @@ export default function Comercial() {
         {tab === 'vendas' && (
           <div className="space-y-4">
             {paymentRuntime.modo_teste_geral && (
-              <div className="flex items-start gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
-                <AlertCircle size={16} className="mt-0.5 shrink-0" />
-                <div>
-                  <p className="font-medium">Ambiente de testes ativo</p>
-                  <p className="text-xs mt-1">{paymentRuntime.aviso_checkout}</p>
-                </div>
+              <div className="flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300">
+                <AlertCircle size={15} className="shrink-0" />
+                <p className="font-medium">Ambiente de testes ativo.</p>
+                <p className="text-xs opacity-90">{paymentRuntime.aviso_checkout}</p>
               </div>
             )}
 
@@ -4375,25 +4375,89 @@ export default function Comercial() {
 
             {/* ── PAINEL DE FILTROS ─────────────────────────── */}
             <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4 space-y-3">
-              {/* Linha 1: datas + PA + botões Agenda / Pesquisar */}
               <div className="flex flex-wrap items-end gap-3">
+                <TextInput label="Cliente / Documento" value={vendaFilters.cliente}
+                  onChange={v => setVendaFilters(p => ({ ...p, cliente: v }))} className="flex-1 min-w-[280px]" />
+                <SelectInput label="Status" value={vendaFilters.status}
+                  onChange={v => setVendaFilters(p => ({ ...p, status: v }))}
+                  options={[{ value: '', label: 'Todos' }, ...STATUS_VENDA_V2_OPTIONS.map(s => ({ value: s, label: STATUS_VENDA_LABEL[s] }))]}
+                  className="min-w-[200px]"
+                />
                 <label className="flex flex-col gap-1">
-                  <span className="text-xs text-gray-500">Filtro data</span>
+                  <span className="text-xs text-gray-500">Período</span>
                   <select value={vendaFilters.filtroData} onChange={e => aplicarPresetData(e.target.value)}
-                    className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[120px]">
+                    className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[140px]">
                     <option value="geral">Geral</option>
                     <option value="hoje">Hoje</option>
                     <option value="semana">Esta semana</option>
                     <option value="mes">Este mês</option>
                   </select>
                 </label>
-                <TextInput label="Data Inicial" type="date" value={vendaFilters.dataInicial}
-                  onChange={v => setVendaFilters(p => ({ ...p, dataInicial: v, filtroData: 'personalizado' }))} />
-                <TextInput label="Data Final" type="date" value={vendaFilters.dataFinal}
-                  onChange={v => setVendaFilters(p => ({ ...p, dataFinal: v, filtroData: 'personalizado' }))} />
-                <TextInput label="PA/Emissor" value={vendaFilters.pa}
-                  onChange={v => setVendaFilters(p => ({ ...p, pa: v }))} className="flex-1 min-w-[180px]" />
-                <div className="flex gap-2 ml-auto">
+                <div className="flex flex-wrap gap-2 ml-auto">
+                  <button type="button" onClick={() => setShowVendaFiltrosExtras(prev => !prev)}
+                    className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                    {showVendaFiltrosExtras ? 'Ocultar filtros' : 'Mais filtros'}
+                  </button>
+                  <button type="button" onClick={() => setShowVendaAcoesExtras(prev => !prev)}
+                    className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                    {showVendaAcoesExtras ? 'Ocultar ações' : 'Ações rápidas'}
+                  </button>
+                  <button type="button" onClick={() => void fetchVendasV2()}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
+                    <Search size={14} /> Pesquisar
+                  </button>
+                  <button type="button" onClick={() => {
+                    if (showFormV) {
+                      setShowFormV(false)
+                      setClienteSelecionadoObj(null)
+                      setClienteSearch('')
+                      setContadorSearch('')
+                      setContadorDropdownOpen(false)
+                      setContadorStepHandled(false)
+                      return
+                    }
+                    setFormV2({ ...EMPTY_VENDA_V2, ponto_atendimento_id: pontosAtivos[0]?.id ?? '' })
+                    setClienteSelecionadoObj(null)
+                    setClienteSearch('')
+                    setContadorSearch('')
+                    setContadorDropdownOpen(false)
+                    setContadorStepHandled(false)
+                    setShowClienteForm(false)
+                    setShowFormV(true)
+                  }}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-xl shadow-sm shadow-blue-600/20 transition-all">
+                    <PlusCircle size={16} /> Nova Venda
+                  </button>
+                </div>
+              </div>
+
+              {showVendaFiltrosExtras && (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+                  <TextInput label="Data Inicial" type="date" value={vendaFilters.dataInicial}
+                    onChange={v => setVendaFilters(p => ({ ...p, dataInicial: v, filtroData: 'personalizado' }))} />
+                  <TextInput label="Data Final" type="date" value={vendaFilters.dataFinal}
+                    onChange={v => setVendaFilters(p => ({ ...p, dataFinal: v, filtroData: 'personalizado' }))} />
+                  <TextInput label="PA/Emissor" value={vendaFilters.pa}
+                    onChange={v => setVendaFilters(p => ({ ...p, pa: v }))} />
+                  <TextInput label="Pedido" value={vendaFilters.pedido}
+                    onChange={v => setVendaFilters(p => ({ ...p, pedido: v }))} />
+                  <TextInput label="Protocolo" value={vendaFilters.protocolo}
+                    onChange={v => setVendaFilters(p => ({ ...p, protocolo: v }))} />
+                  <div className="flex items-end gap-2">
+                    <button type="button" onClick={() => setTab('agenda')}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors">
+                      <Calendar size={14} /> Agenda
+                    </button>
+                    <button type="button" onClick={() => setVendaFilters(EMPTY_VENDA_FILTERS)}
+                      className="flex items-center gap-1 px-3 py-2 rounded-lg text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 border border-gray-300 dark:border-gray-700">
+                      <X size={12} /> Limpar
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {showVendaAcoesExtras && (
+                <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-gray-100 dark:border-gray-800">
                   <button type="button" onClick={() => abrirMarketplaceLink()}
                     className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition-colors">
                     <ExternalLink size={14} /> Marketplace
@@ -4402,70 +4466,19 @@ export default function Comercial() {
                     className="flex items-center gap-1.5 px-4 py-2 border border-emerald-300 text-emerald-700 dark:text-emerald-300 text-sm font-medium rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors">
                     <Copy size={14} /> Copiar link
                   </button>
-                  <button type="button" onClick={() => setTab('agenda')}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors">
-                    <Calendar size={14} /> Agenda
-                  </button>
-                  <button type="button" onClick={() => void fetchVendasV2()}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
-                    <Search size={14} /> Pesquisar
-                  </button>
+                  {nfseAutomationSettings.permitir_emissao_lote_comercial && (
+                    <VendaActionBtn
+                      icon={FileText}
+                      label={emitindoNfseLote ? 'Emitindo lote...' : `Emitir NFS-e${selectedIds.size ? ` (${selectedIds.size})` : ''}`}
+                      onClick={() => void emitirNfseSelecionadas()}
+                    />
+                  )}
+                  <VendaActionBtn icon={RefreshCcw} label="Atualizar Faturas"   onClick={() => openFeatureNotice('Atualização de faturas', 'O módulo de cobrança ainda não está fechado ponta a ponta. Esta ação será conectada quando o fluxo de pagamentos/webhook estiver pronto.', 'Próximo bloco: criar cobrança + webhook + conciliação.')} />
+                  <VendaActionBtn icon={List}       label="Protocolos em Lote"  onClick={() => openFeatureNotice('Protocolos em lote', 'A emissão unitária já existe, mas o processamento em lote ainda precisa de regras de validação e fila operacional.', 'Próximo bloco: desenhar fila segura para operações em massa.')} />
+                  <VendaActionBtn icon={UserCheck}  label="Consulta CPF PSBio"  onClick={() => openFeatureNotice('Consulta CPF PSBio', 'Essa ação depende de integração externa específica. O botão foi mantido como referência operacional do fluxo.', 'Entrará na fase de integrações externas reais.')} />
+                  <VendaActionBtn icon={Download}   label="Exportar CSV"        onClick={exportarCSV} />
                 </div>
-              </div>
-              {/* Linha 2: Pedido, Protocolo, Cliente, Status */}
-              <div className="flex flex-wrap gap-3">
-                <TextInput label="Pedido" value={vendaFilters.pedido}
-                  onChange={v => setVendaFilters(p => ({ ...p, pedido: v }))} className="min-w-[130px]" />
-                <TextInput label="Protocolo" value={vendaFilters.protocolo}
-                  onChange={v => setVendaFilters(p => ({ ...p, protocolo: v }))} className="min-w-[130px]" />
-                <TextInput label="Cliente / Documento" value={vendaFilters.cliente}
-                  onChange={v => setVendaFilters(p => ({ ...p, cliente: v }))} className="flex-1 min-w-[200px]" />
-                <SelectInput label="Status" value={vendaFilters.status}
-                  onChange={v => setVendaFilters(p => ({ ...p, status: v }))}
-                  options={[{ value: '', label: 'Todos' }, ...STATUS_VENDA_V2_OPTIONS.map(s => ({ value: s, label: STATUS_VENDA_LABEL[s] }))]} />
-                <div className="flex items-end">
-                  <button type="button" onClick={() => setVendaFilters(EMPTY_VENDA_FILTERS)}
-                    className="flex items-center gap-1 px-3 py-2 rounded-lg text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 border border-gray-300 dark:border-gray-700">
-                    <X size={12} /> Limpar
-                  </button>
-                </div>
-              </div>
-              {/* Linha 3: botões de ação */}
-              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100 dark:border-gray-800">
-                {nfseAutomationSettings.permitir_emissao_lote_comercial && (
-                  <VendaActionBtn
-                    icon={FileText}
-                    label={emitindoNfseLote ? 'Emitindo lote...' : `Emitir NFS-e${selectedIds.size ? ` (${selectedIds.size})` : ''}`}
-                    onClick={() => void emitirNfseSelecionadas()}
-                  />
-                )}
-                <VendaActionBtn icon={RefreshCcw} label="Atualizar Faturas"   onClick={() => openFeatureNotice('Atualização de faturas', 'O módulo de cobrança ainda não está fechado ponta a ponta. Esta ação será conectada quando o fluxo de pagamentos/webhook estiver pronto.', 'Próximo bloco: criar cobrança + webhook + conciliação.')} />
-                <VendaActionBtn icon={List}       label="Protocolos em Lote"  onClick={() => openFeatureNotice('Protocolos em lote', 'A emissão unitária já existe, mas o processamento em lote ainda precisa de regras de validação e fila operacional.', 'Próximo bloco: desenhar fila segura para operações em massa.')} />
-                <VendaActionBtn icon={UserCheck}  label="Consulta CPF PSBio"  onClick={() => openFeatureNotice('Consulta CPF PSBio', 'Essa ação depende de integração externa específica. O botão foi mantido como referência operacional do fluxo.', 'Entrará na fase de integrações externas reais.')} />
-                <VendaActionBtn icon={Download}   label="Exportar CSV"        onClick={exportarCSV} />
-                <button type="button" onClick={() => {
-                  if (showFormV) {
-                    setShowFormV(false)
-                    setClienteSelecionadoObj(null)
-                    setClienteSearch('')
-                    setContadorSearch('')
-                    setContadorDropdownOpen(false)
-                    setContadorStepHandled(false)
-                    return
-                  }
-                  setFormV2({ ...EMPTY_VENDA_V2, ponto_atendimento_id: pontosAtivos[0]?.id ?? '' })
-                  setClienteSelecionadoObj(null)
-                  setClienteSearch('')
-                  setContadorSearch('')
-                  setContadorDropdownOpen(false)
-                  setContadorStepHandled(false)
-                  setShowClienteForm(false)
-                  setShowFormV(true)
-                }}
-                  className="ml-auto flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-xl shadow-md shadow-blue-600/20 hover:shadow-lg hover:shadow-blue-600/30 transition-all">
-                  <PlusCircle size={16} /> Nova Venda
-                </button>
-              </div>
+              )}
             </div>
 
             {/* ── LEGENDA ──────────────────────────────────────── */}
@@ -7001,11 +7014,15 @@ function NumberInput({ label, value, onChange, step = 0.01 }: {
   )
 }
 
-function SelectInput({ label, value, onChange, options }: {
-  label: string; value: string; onChange: (value: string) => void; options: { value: string; label: string }[]
+function SelectInput({ label, value, onChange, options, className }: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  options: { value: string; label: string }[]
+  className?: string
 }) {
   return (
-    <label className="flex flex-col gap-1">
+    <label className={cn('flex flex-col gap-1', className)}>
       <span className="text-xs text-gray-500">{label}</span>
       <select value={value} onChange={e => onChange(e.target.value)}
         className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500">

@@ -2,6 +2,7 @@ import { Fragment, useState, useEffect, useCallback } from 'react'
 import { Search, X, ChevronDown, ChevronUp, Loader2, RefreshCcw, Plus, Pencil, MessageCircle, Mail, LifeBuoy, Save } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import { buscarCep } from '@/lib/cep'
 import ChatPanel, { type EvolutionCfg } from '@/components/ChatPanel'
 import { loadActiveWhatsAppIntegration } from '@/lib/whatsappIntegration'
 import { useAuth } from '@/contexts/AuthContext'
@@ -18,8 +19,16 @@ interface Cliente {
   nome_fantasia: string | null
   email: string | null
   telefone: string | null
+  cep: string | null
+  logradouro: string | null
+  numero: string | null
+  complemento: string | null
+  bairro: string | null
   cidade: string | null
   uf: string | null
+  inscricao_municipal: string | null
+  inscricao_estadual: string | null
+  iss_retido: boolean | null
   status: 'ativo' | 'inativo'
   created_at: string
 }
@@ -73,8 +82,16 @@ type ClienteFormState = {
   nome_fantasia: string
   email: string
   telefone: string
+  cep: string
+  logradouro: string
+  numero: string
+  complemento: string
+  bairro: string
   cidade: string
   uf: string
+  inscricao_municipal: string
+  inscricao_estadual: string
+  iss_retido: boolean
   status: 'ativo' | 'inativo'
 }
 
@@ -90,8 +107,16 @@ function emptyClienteForm(): ClienteFormState {
     nome_fantasia: '',
     email: '',
     telefone: '',
+    cep: '',
+    logradouro: '',
+    numero: '',
+    complemento: '',
+    bairro: '',
     cidade: '',
     uf: '',
+    inscricao_municipal: '',
+    inscricao_estadual: '',
+    iss_retido: false,
     status: 'ativo',
   }
 }
@@ -183,7 +208,7 @@ export default function Clientes() {
     try {
       let q = supabase
         .from('cadastros_base')
-        .select('id, tipo_cliente, cpf_cnpj, nome, nome_fantasia, email, telefone, cidade, uf, status, created_at', { count: 'exact' })
+        .select('id, tipo_cliente, cpf_cnpj, nome, nome_fantasia, email, telefone, cep, logradouro, numero, complemento, bairro, cidade, uf, inscricao_municipal, inscricao_estadual, iss_retido, status, created_at', { count: 'exact' })
         .order('nome')
         .range(page * pageSize, page * pageSize + pageSize - 1)
 
@@ -388,8 +413,16 @@ export default function Clientes() {
       nome_fantasia: cliente.nome_fantasia ?? '',
       email: cliente.email ?? '',
       telefone: cliente.telefone ?? '',
+      cep: cliente.cep ?? '',
+      logradouro: cliente.logradouro ?? '',
+      numero: cliente.numero ?? '',
+      complemento: cliente.complemento ?? '',
+      bairro: cliente.bairro ?? '',
       cidade: cliente.cidade ?? '',
       uf: cliente.uf ?? '',
+      inscricao_municipal: cliente.inscricao_municipal ?? '',
+      inscricao_estadual: cliente.inscricao_estadual ?? '',
+      iss_retido: cliente.iss_retido ?? false,
       status: cliente.status,
     })
   }
@@ -403,8 +436,16 @@ export default function Clientes() {
       nome_fantasia: clienteForm.nome_fantasia.trim() || null,
       email: clienteForm.email.trim() || null,
       telefone: clienteForm.telefone.trim() || null,
+      cep: clienteForm.cep.trim() || null,
+      logradouro: clienteForm.logradouro.trim() || null,
+      numero: clienteForm.numero.trim() || null,
+      complemento: clienteForm.complemento.trim() || null,
+      bairro: clienteForm.bairro.trim() || null,
       cidade: clienteForm.cidade.trim() || null,
-      uf: clienteForm.uf.trim() || null,
+      uf: clienteForm.uf.trim().toUpperCase() || null,
+      inscricao_municipal: clienteForm.inscricao_municipal.trim() || null,
+      inscricao_estadual: clienteForm.inscricao_estadual.trim() || null,
+      iss_retido: clienteForm.iss_retido,
       status: clienteForm.status,
     }
 
@@ -918,7 +959,7 @@ function ClienteEditorModal({
 }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="w-full max-w-3xl rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-2xl overflow-hidden">
+      <div className="w-full max-w-5xl max-h-[92vh] rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-2xl overflow-hidden flex flex-col">
         <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
           <div>
             <h3 className="font-semibold text-gray-900 dark:text-gray-100">{mode === 'novo' ? 'Novo cliente' : 'Editar cliente'}</h3>
@@ -929,7 +970,8 @@ function ClienteEditorModal({
           </button>
         </div>
 
-        <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="flex-1 overflow-y-auto p-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <ModalField label="Tipo">
             <select
               value={form.tipo_cliente}
@@ -955,11 +997,57 @@ function ClienteEditorModal({
           <ModalField label="Telefone">
             <input value={form.telefone} onChange={e => onChange({ ...form, telefone: e.target.value })} className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm" />
           </ModalField>
+          <ModalField label="CEP">
+            <input
+              value={form.cep}
+              onChange={e => onChange({ ...form, cep: e.target.value })}
+              onBlur={async () => {
+                const r = await buscarCep(form.cep)
+                if (!r) return
+                onChange({
+                  ...form,
+                  logradouro: r.logradouro || form.logradouro,
+                  bairro: r.bairro || form.bairro,
+                  cidade: r.localidade || form.cidade,
+                  uf: r.uf || form.uf,
+                })
+              }}
+              className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm"
+            />
+          </ModalField>
           <ModalField label="Cidade">
             <input value={form.cidade} onChange={e => onChange({ ...form, cidade: e.target.value })} className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm" />
           </ModalField>
           <ModalField label="UF">
             <input value={form.uf} onChange={e => onChange({ ...form, uf: e.target.value })} className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm" />
+          </ModalField>
+          <ModalField label="Inscrição Municipal">
+            <input value={form.inscricao_municipal} onChange={e => onChange({ ...form, inscricao_municipal: e.target.value })} className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm" />
+          </ModalField>
+          <ModalField label="Inscrição Estadual">
+            <input value={form.inscricao_estadual} onChange={e => onChange({ ...form, inscricao_estadual: e.target.value })} className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm" />
+          </ModalField>
+          <ModalField label="Logradouro" className="md:col-span-2">
+            <input value={form.logradouro} onChange={e => onChange({ ...form, logradouro: e.target.value })} className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm" />
+          </ModalField>
+          <ModalField label="Número">
+            <input value={form.numero} onChange={e => onChange({ ...form, numero: e.target.value })} className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm" />
+          </ModalField>
+          <ModalField label="Bairro">
+            <input value={form.bairro} onChange={e => onChange({ ...form, bairro: e.target.value })} className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm" />
+          </ModalField>
+          <ModalField label="Complemento" className="md:col-span-2">
+            <input value={form.complemento} onChange={e => onChange({ ...form, complemento: e.target.value })} className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm" />
+          </ModalField>
+          <ModalField label="Retém ISS?">
+            <label className="flex items-center gap-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-3 text-sm text-gray-700 dark:text-gray-200">
+              <input
+                type="checkbox"
+                checked={form.iss_retido}
+                onChange={e => onChange({ ...form, iss_retido: e.target.checked })}
+              />
+              Marque quando o cliente tiver ISS retido
+            </label>
           </ModalField>
           <ModalField label="Status">
             <select
@@ -971,6 +1059,7 @@ function ClienteEditorModal({
               <option value="inativo">Inativo</option>
             </select>
           </ModalField>
+        </div>
         </div>
 
         <div className="px-5 py-4 border-t border-gray-100 dark:border-gray-800 flex items-center justify-end gap-3">
@@ -987,9 +1076,9 @@ function ClienteEditorModal({
   )
 }
 
-function ModalField({ label, children }: { label: string; children: React.ReactNode }) {
+function ModalField({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
-    <label className="block">
+    <label className={cn('block', className)}>
       <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{label}</span>
       <div className="mt-1.5">{children}</div>
     </label>

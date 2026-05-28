@@ -93,6 +93,29 @@ import type {
   ParceiroAgentePermitido,
 } from '@/types'
 
+// Mapeia erros do Supabase/PostgreSQL para mensagens claras em português.
+// Loga o erro técnico no console para debug sem expô-lo ao usuário.
+function traduzirErroDb(error: { code?: string; message?: string }, contexto: string): string {
+  console.error(`[${contexto}]`, error)
+  const c = error.code ?? ''
+  const m = (error.message ?? '').toLowerCase()
+  if (c === '42501' || m.includes('row-level security') || m.includes('permission denied'))
+    return 'Sem permissão para esta operação. Verifique seu perfil de acesso com o administrador.'
+  if (c === '23505' || m.includes('unique') || m.includes('duplicate'))
+    return 'Já existe um registro com esses dados. Verifique se a venda já foi lançada.'
+  if (c === '23503' || m.includes('foreign key') || m.includes('violates foreign'))
+    return 'Um dos itens selecionados (cliente, tabela ou ponto) não é mais válido. Recarregue e tente novamente.'
+  if (c === '23502' || m.includes('not-null') || m.includes('null value'))
+    return 'Campo obrigatório não preenchido. Verifique se todos os passos do formulário foram concluídos.'
+  if (c === '23514' || m.includes('check constraint'))
+    return 'Valor inválido em um dos campos. Verifique os dados e tente novamente.'
+  if (m.includes('jwt') || m.includes('token') || c === 'PGRST301')
+    return 'Sessão expirada. Recarregue a página e faça login novamente.'
+  if (m.includes('network') || m.includes('fetch'))
+    return 'Erro de conexão. Verifique sua internet e tente novamente.'
+  return 'Não foi possível salvar. Tente novamente ou contate o suporte se o erro persistir.'
+}
+
 // ── local types ────────────────────────────────────────────────
 type VendaRow = VendaCertificado & {
   cadastros_base: { nome: string; cpf_cnpj: string } | null
@@ -1585,7 +1608,7 @@ export default function Comercial() {
       .select('*')
       .single()
     setSalvandoV(false)
-    if (error) { showMsg('Não foi possível salvar a venda. Verifique os dados e tente novamente.'); return }
+    if (error) { showMsg(traduzirErroDb(error, 'salvarVendaV2')); return }
 
     let comunicacaoResumo = 'sem contato do cliente para disparo automático'
     if (vendaCriada) {
@@ -1670,7 +1693,7 @@ export default function Comercial() {
       : supabase.from('cadastros_base').insert([payload]).select('id').single()
     const { data, error } = await query
     setSalvandoCliente(false)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'comercial')); return }
     setFormCliente({ ...EMPTY_CLIENTE_BASE })
     setShowClienteForm(false)
     setEditingClienteId(null)
@@ -1886,7 +1909,7 @@ export default function Comercial() {
     setSalvandoA(true)
     const { error } = await supabase.from('agendamentos').insert([formA])
     setSalvandoA(false)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'comercial')); return }
     setShowFormA(false)
     setFormA({ ...EMPTY_AGENDA, servico: certificados[0]?.tipo ?? 'e-CPF A1' })
     void fetchAgenda()
@@ -2181,7 +2204,7 @@ export default function Comercial() {
       ? await supabase.from('certificados').update(payload).eq('id', editingCertId)
       : await supabase.from('certificados').insert([payload])
     setSalvandoCatalogo(false)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'comercial')); return }
     setShowFormCert(false); setEditingCertId(null); setFormCert({ ...EMPTY_CERTIFICADO }); void fetchCatalogo()
   }
 
@@ -2193,7 +2216,7 @@ export default function Comercial() {
   async function excluirCertificado(id: string) {
     if (!confirm('Excluir este certificado do catálogo? Esta ação não pode ser desfeita.')) return
     const { error } = await supabase.from('certificados').delete().eq('id', id)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'comercial')); return }
     setCertificados(prev => prev.filter(c => c.id !== id))
     setSelectedCertIds(prev => { const s = new Set(prev); s.delete(id); return s })
   }
@@ -2203,7 +2226,7 @@ export default function Comercial() {
     if (!confirm(`Excluir ${selectedCertIds.size} certificado(s) selecionado(s)? Esta ação não pode ser desfeita.`)) return
     const ids = [...selectedCertIds]
     const { error } = await supabase.from('certificados').delete().in('id', ids)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'comercial')); return }
     setCertificados(prev => prev.filter(c => !selectedCertIds.has(c.id)))
     setSelectedCertIds(new Set())
   }
@@ -2328,7 +2351,7 @@ export default function Comercial() {
     const { data, error } = editingTabelaId
       ? await supabase.from('tabelas_preco').update(payload).eq('id', editingTabelaId).select().single()
       : await supabase.from('tabelas_preco').insert([payload]).select().single()
-    if (error) { setSalvandoCatalogo(false); showMsg('Erro: ' + error.message); return }
+    if (error) { setSalvandoCatalogo(false); showMsg(traduzirErroDb(error, 'comercial')); return }
     let produtosAutoVinculados = 0
     if (!editingTabelaId && data?.id) {
       const autoLinkRes = await criarVinculosBaseDaTabela(data.id, certificadosAtivos)
@@ -2580,7 +2603,7 @@ export default function Comercial() {
       ? await supabase.from('tabelas_preco_itens').update(formItem).eq('id', editingItemId)
       : await supabase.from('tabelas_preco_itens').insert([formItem])
     setSalvandoCatalogo(false)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'comercial')); return }
     setShowFormItem(false); setEditingItemId(null); void fetchCatalogo()
   }
   async function excluirItem(id: string) {
@@ -2595,7 +2618,7 @@ export default function Comercial() {
     if (!confirm(`Remover ${selectedItemIds.size} produto(s) selecionado(s) da tabela?`)) return
     const ids = [...selectedItemIds]
     const { error } = await supabase.from('tabelas_preco_itens').delete().in('id', ids)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'comercial')); return }
     setTabelaItens(prev => prev.filter(x => !selectedItemIds.has(x.id)))
     setSelectedItemIds(new Set())
   }
@@ -2942,7 +2965,7 @@ export default function Comercial() {
     setSalvandoCatalogo(true)
     const { error } = await supabase.from('tabelas_preco_participantes').insert([payload])
     setSalvandoCatalogo(false)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'comercial')); return }
     setShowFormParticipante(false); void fetchCatalogo()
   }
   async function excluirParticipante(id: string) {
@@ -2966,7 +2989,7 @@ export default function Comercial() {
       ? await supabase.from('faixas_comissao').update(payload).eq('id', editingComissaoId)
       : await supabase.from('faixas_comissao').insert([payload])
     setSalvandoCatalogo(false)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'comercial')); return }
     setShowFormComissao(false); setEditingComissaoId(null); setFormComissao({ ...EMPTY_COMISSAO }); void fetchCatalogo()
   }
 
@@ -3005,7 +3028,7 @@ export default function Comercial() {
       ? await supabase.from('formas_pagamento_v2').update(payload).eq('id', editingPagamentoId)
       : await supabase.from('formas_pagamento_v2').insert([payload])
     setSalvandoCatalogo(false)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'comercial')); return }
     setShowFormPagamento(false); setEditingPagamentoId(null); setFormPagamento({ ...EMPTY_PAGAMENTO }); void fetchCatalogo()
   }
 
@@ -3902,7 +3925,7 @@ export default function Comercial() {
 
   async function liberarEmissao(v: VendaRow) {
     const { error } = await supabase.from('vendas_certificados').update({ status_venda: 'emitido' }).eq('id', v.id)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'comercial')); return }
     setVendasV2(prev => prev.map(r => r.id === v.id ? { ...r, status_venda: 'emitido' } : r))
   }
 

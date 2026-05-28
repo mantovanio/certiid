@@ -4,6 +4,7 @@ import {
   normalizeNfseModeloLayout,
   type NfseModeloLayout,
 } from '@/lib/nfse'
+import type { AgencyConfig } from '@/lib/agencyConfig'
 import type { NfseConfiguracao, NfseEmitida, VendaCertificado } from '@/types'
 
 type Props = {
@@ -12,6 +13,7 @@ type Props = {
   nota?: Partial<NfseEmitida> | null
   venda?: Partial<VendaCertificado> | null
   fallbackDiscriminacao?: string | null
+  agency?: Partial<AgencyConfig> | null
   logoUrl?: string | null
   className?: string
 }
@@ -63,11 +65,12 @@ export default function NfseDocumentPreview({
   nota,
   venda,
   fallbackDiscriminacao,
+  agency,
   logoUrl = '/favicon.svg',
   className,
 }: Props) {
   const layout = normalizeNfseModeloLayout(modelo)
-  const data = buildNfsePreviewData({ modelo, configuracao, nota, venda, fallbackDiscriminacao })
+  const data = buildNfsePreviewData({ modelo, configuracao, nota, venda, fallbackDiscriminacao, agency })
 
   return (
     <div className={cn('rounded-2xl border border-gray-400 bg-white text-gray-950 shadow-sm overflow-hidden', className)}>
@@ -118,7 +121,7 @@ export default function NfseDocumentPreview({
         <SectionTitle>Dados do Prestador de Servicos</SectionTitle>
         <div className="grid grid-cols-[1.3fr_1fr] border-b border-gray-500">
           <Row label="Razao Social / Nome" value={data.prestador.nome} />
-          <Row label="Nome Fantasia" value={configuracao?.identificador?.trim() || 'CertiID'} />
+          <Row label="Nome Fantasia" value={String((configuracao?.payload_reforma_tributaria as Record<string, unknown> | undefined)?.nome_fantasia ?? agency?.nome_agencia ?? configuracao?.identificador ?? '—')} />
         </div>
         <div className="grid grid-cols-[1fr_140px_1fr] border-b border-gray-500">
           <Row label="CNPJ / CPF" value={data.prestador.documento} />

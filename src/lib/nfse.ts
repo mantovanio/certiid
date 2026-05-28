@@ -1,4 +1,5 @@
 import type { LancamentoV2, NfseConfiguracao, NfseEmitida, VendaCertificado } from '@/types'
+import type { AgencyConfig } from '@/lib/agencyConfig'
 
 export type NfseModeloLayout = {
   nome_modelo: string
@@ -97,7 +98,9 @@ export function formatTipoEmissaoLabel(value: string | null | undefined) {
 
 type NfseDiscriminacaoVendaOptions = {
   produtoDescricao?: string | null
+  produtoModelo?: string | null
   validade?: string | null
+  tipoEmissao?: string | null
 }
 
 export function buildNfseDiscriminacaoFromVenda(
@@ -107,24 +110,16 @@ export function buildNfseDiscriminacaoFromVenda(
   const produtoBase = options?.produtoDescricao?.trim()
     || venda?.tipo_produto?.trim()
     || 'certificado digital'
+  const produtoModelo = options?.produtoModelo?.trim()
   const validade = options?.validade?.trim()
+  const tipoEmissao = formatTipoEmissaoLabel(options?.tipoEmissao ?? venda?.tipo_emissao)
+
   const linhas = [
-    `Servico de validacao e emissao de ${produtoBase}${validade ? ` com validade de ${validade}` : ''}.`,
-  ]
-
-  const tipoEmissao = formatTipoEmissaoLabel(venda?.tipo_emissao)
-  if (tipoEmissao) {
-    linhas.push(`Modalidade de atendimento: ${tipoEmissao}.`)
-  }
-
-  const pedidoOuProtocolo = venda?.protocolo_numero?.trim() || venda?.pedido_numero?.trim()
-  if (pedidoOuProtocolo) {
-    linhas.push(`Identificacao do atendimento: ${pedidoOuProtocolo}.`)
-  }
-
-  if (venda?.observacoes?.trim()) {
-    linhas.push(`Observacoes complementares: ${venda.observacoes.trim()}.`)
-  }
+    `Tipo: ${produtoBase}.`,
+    produtoModelo ? `Modelo: ${produtoModelo}.` : '',
+    validade ? `Validade: ${validade}.` : '',
+    tipoEmissao ? `Tipo de emissao: ${tipoEmissao}.` : '',
+  ].filter(Boolean)
 
   return linhas.join('\n')
 }
@@ -195,7 +190,7 @@ function buildPreviewPartyFromVenda(venda: Partial<VendaCertificado> | null | un
 function buildPreviewPartyFromConfig(configuracao: Partial<NfseConfiguracao> | null | undefined): PreviewParty {
   const metadata = ((configuracao?.payload_reforma_tributaria ?? {}) as Record<string, unknown>)
   return {
-    nome: String(metadata.razao_social ?? 'Emitente nao configurado'),
+    nome: String(metadata.razao_social ?? metadata.nome_emitente ?? configuracao?.identificador ?? 'Emitente nao configurado'),
     documento: formatDocument(configuracao?.cnpj_emitente),
     inscricaoMunicipal: configuracao?.inscricao_municipal?.trim() || '',
     telefone: String(metadata.telefone ?? ''),
@@ -237,6 +232,7 @@ export function buildNfsePreviewData(params: {
   nota?: Partial<NfseEmitida> | null
   venda?: Partial<VendaCertificado> | null
   fallbackDiscriminacao?: string | null
+  agency?: Partial<AgencyConfig> | null
 }) {
   const modelo = normalizeNfseModeloLayout(params.modelo)
   const notaPayload = extractNestedObject(params.nota?.payload_envio)
@@ -297,8 +293,10 @@ export function buildNfsePreviewData(params: {
     prestador: {
       ...prestadorBase,
       ...emitentePayload,
-      nome: emitentePayload.nome || prestadorBase.nome,
+      nome: emitentePayload.nome || prestadorBase.nome || params.agency?.nome_agencia?.trim() || 'Emitente nao configurado',
       documento: formatDocument(emitentePayload.documento || prestadorBase.documento),
+      telefone: emitentePayload.telefone || prestadorBase.telefone || params.agency?.telefone?.trim() || '',
+      municipio: emitentePayload.municipio || prestadorBase.municipio || params.agency?.cidade?.trim() || '',
     },
     tomador: {
       ...tomadorBase,

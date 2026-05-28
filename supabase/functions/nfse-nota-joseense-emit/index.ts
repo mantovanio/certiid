@@ -104,15 +104,16 @@ function normalizeByte(value: unknown, fallback: string) {
 
 function buildDiscriminacao(venda: Record<string, unknown>) {
   const linhas = [
-    `Servico de validacao e emissao de ${onlyText(venda.tipo_produto ?? 'certificado digital')}.`,
+    `Tipo: ${onlyText(venda.produto_tipo ?? venda.tipo_produto ?? 'certificado digital')}.`,
   ]
-  if (String(venda.protocolo_numero ?? '').trim()) {
-    linhas.push(`Protocolo: ${onlyText(venda.protocolo_numero)}.`)
-  } else if (String(venda.pedido_numero ?? '').trim()) {
-    linhas.push(`Pedido: ${onlyText(venda.pedido_numero)}.`)
+  if (String(venda.produto_modelo ?? '').trim()) {
+    linhas.push(`Modelo: ${onlyText(venda.produto_modelo)}.`)
   }
-  if (String(venda.observacoes ?? '').trim()) {
-    linhas.push(`Observacoes: ${onlyText(venda.observacoes)}.`)
+  if (String(venda.produto_validade ?? '').trim()) {
+    linhas.push(`Validade: ${onlyText(venda.produto_validade)}.`)
+  }
+  if (String(venda.tipo_emissao ?? '').trim()) {
+    linhas.push(`Tipo de emissao: ${onlyText(venda.tipo_emissao)}.`)
   }
   return linhas.join('\n').slice(0, 1900)
 }
@@ -158,6 +159,40 @@ function buildTomadorXml(venda: Record<string, unknown>) {
       </Contato>
     </Tomador>
   `.replace(/\n\s+/g, '').trim()
+}
+
+function buildTomadorSnapshot(venda: Record<string, unknown>) {
+  const endereco = [
+    String(venda.logradouro ?? '').trim(),
+    String(venda.numero ?? '').trim(),
+    String(venda.bairro ?? '').trim(),
+    String(venda.cep ?? '').trim() ? `CEP ${String(venda.cep).trim()}` : '',
+  ].filter(Boolean).join(', ')
+
+  return {
+    nome: String(venda.nome_faturamento ?? '').trim(),
+    documento: String(venda.documento_faturamento ?? '').trim(),
+    inscricao_municipal: String(venda.inscricao_municipal ?? '').trim(),
+    telefone: String(venda.telefone_faturamento ?? '').trim(),
+    email: String(venda.email_faturamento ?? '').trim(),
+    endereco,
+    complemento: String(venda.complemento ?? '').trim(),
+    municipio: [String(venda.cidade ?? '').trim(), String(venda.uf ?? '').trim()].filter(Boolean).join(' - '),
+  }
+}
+
+function buildEmitenteSnapshot(config: Record<string, unknown>) {
+  const payload = (config.payload_reforma_tributaria ?? {}) as Record<string, unknown>
+  return {
+    nome: String(payload.razao_social ?? payload.nome_emitente ?? config.identificador ?? '').trim(),
+    documento: String(config.cnpj_emitente ?? '').trim(),
+    inscricao_municipal: String(config.inscricao_municipal ?? '').trim(),
+    telefone: String(payload.telefone ?? '').trim(),
+    email: String(payload.email ?? '').trim(),
+    endereco: String(payload.endereco ?? '').trim(),
+    complemento: String(payload.complemento ?? '').trim(),
+    municipio: String(payload.municipio ?? config.municipio_nome ?? '').trim(),
+  }
 }
 
 function buildGerarNfseXml(config: Record<string, unknown>, venda: Record<string, unknown>) {
@@ -314,6 +349,10 @@ Deno.serve(async (req: Request) => {
 
   const vendaId = String(body.venda_certificado_id ?? '').trim()
   const justificativaForaEtapa = String(body.justificativa_fora_etapa ?? '').trim() || null
+  const produtoTipo = String(body.produto_tipo ?? '').trim() || null
+  const produtoModelo = String(body.produto_modelo ?? '').trim() || null
+  const produtoValidade = String(body.produto_validade ?? '').trim() || null
+  const tipoEmissao = String(body.tipo_emissao ?? '').trim() || null
   if (!vendaId) {
     return json({ ok: false, error: 'Informe a venda que será enviada à Nota Joseense.' }, 400)
   }
@@ -342,6 +381,14 @@ Deno.serve(async (req: Request) => {
   })
   if (!config) {
     return json({ ok: false, error: 'Nenhuma configuração ativa da Nota Joseense foi encontrada.' }, 404)
+  }
+
+  const vendaFiscal = {
+    ...(venda as Record<string, unknown>),
+    produto_tipo: produtoTipo,
+    produto_modelo: produtoModelo,
+    produto_validade: produtoValidade,
+    tipo_emissao: tipoEmissao,
   }
 
   const obrigatorios = [
@@ -385,7 +432,7 @@ Deno.serve(async (req: Request) => {
   let dadosXml = ''
   let numeroRps = 0
   try {
-    const generated = buildGerarNfseXml(config as Record<string, unknown>, venda as Record<string, unknown>)
+    const generated = buildGerarNfseXml(config as Record<string, unknown>, vendaFiscal)
     dadosXml = signGerarNfseXml(generated.xml, certPem, keyPem)
     numeroRps = generated.numeroRps
   } catch (error) {
@@ -440,6 +487,9 @@ Deno.serve(async (req: Request) => {
     }, 400)
   }
 
+  const emitenteSnapshot = buildEmitenteSnapshot(config as Record<string, unknown>)
+  const tomadorSnapshot = buildTomadorSnapshot(venda as Record<string, unknown>)
+
   const { data: nota, error: notaError } = await adminDb
     .from('nfse_emitidas')
     .insert([{
@@ -455,6 +505,9 @@ Deno.serve(async (req: Request) => {
         endpoint,
         operation: 'GerarNfse',
         dados_xml: dadosXml,
+        discriminacao_servicos: buildDiscriminacao(vendaFiscal),
+        emitente: emitenteSnapshot,
+        tomador: tomadorSnapshot,
       },
       payload_retorno: {
         raw_xml: rawXml,

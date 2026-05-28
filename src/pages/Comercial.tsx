@@ -39,6 +39,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import NfseDocumentPreview from '@/components/NfseDocumentPreview'
+import { DEFAULT_AGENCY_CONFIG, fetchAgencyConfig, type AgencyConfig } from '@/lib/agencyConfig'
 import {
   buildNfseDiscriminacaoFromVenda,
   DEFAULT_NFSE_AUTOMATION_SETTINGS,
@@ -694,6 +695,8 @@ export default function Comercial() {
   const [loadingVendaNfse, setLoadingVendaNfse]             = useState(false)
   const [vendaNfseModal, setVendaNfseModal]                 = useState<VendaNfseModal>(null)
   const [showVendaNfsePreviewTelaCheia, setShowVendaNfsePreviewTelaCheia] = useState(false)
+  const [agencyConfig, setAgencyConfig] = useState<AgencyConfig>(DEFAULT_AGENCY_CONFIG)
+  const [nfseConfiguracaoAtiva, setNfseConfiguracaoAtiva] = useState<NfseConfiguracao | null>(null)
   const [nfseOverrideModal, setNfseOverrideModal] = useState<NfseOverrideModal>(null)
   // protocolo modal
   const [showProtocolo, setShowProtocolo]         = useState(false)
@@ -1131,6 +1134,10 @@ export default function Comercial() {
       .order('nome', { ascending: true })
       .limit(200)
     setClientes((data ?? []) as CadastroBase[])
+  }, [])
+
+  useEffect(() => {
+    void fetchAgencyConfig().then(({ data }) => setAgencyConfig(data))
   }, [])
 
   const fetchPontos = useCallback(async () => {
@@ -3053,13 +3060,17 @@ export default function Comercial() {
     setLoadingVendaNfse(true)
     setVendaNfseModal(null)
 
-    const { data, error } = await supabase
-      .from('nfse_emitidas')
-      .select('*')
-      .eq('venda_certificado_id', venda.id)
-      .order('created_at', { ascending: false })
+    const [{ data, error }, configuracaoFiscal] = await Promise.all([
+      supabase
+        .from('nfse_emitidas')
+        .select('*')
+        .eq('venda_certificado_id', venda.id)
+        .order('created_at', { ascending: false }),
+      fetchConfiguracaoFiscalAtiva(),
+    ])
 
     setLoadingVendaNfse(false)
+    setNfseConfiguracaoAtiva(configuracaoFiscal)
 
     if (error) {
       openFeatureNotice(
@@ -3076,7 +3087,7 @@ export default function Comercial() {
     })
   }
 
-  function resolveDescricaoProdutoNfse(venda: VendaRow) {
+  function resolveProdutoResumoNfse(venda: VendaRow) {
     const item = venda.tabela_preco_item_id
       ? tabelaItens.find(entry => entry.id === venda.tabela_preco_item_id)
       : null
@@ -3084,12 +3095,15 @@ export default function Comercial() {
       ? certificados.find(entry => entry.id === venda.certificado_id)
       : null
 
-    return cert?.descricao_produto?.trim()
-      || cert?.descricao?.trim()
-      || cert?.tipo?.trim()
-      || venda.tipo_produto?.trim()
-      || item?.link_safeweb?.trim()
-      || 'certificado digital'
+    return {
+      tipo: cert?.tipo?.trim()
+        || venda.tipo_produto?.trim()
+        || item?.link_safeweb?.trim()
+        || 'certificado digital',
+      modelo: cert?.modelo?.trim() || null,
+      validade: cert?.validade?.trim() || null,
+      tipoEmissao: venda.tipo_emissao?.trim() || cert?.tipo_emissao_padrao?.trim() || null,
+    }
   }
 
   function buildVendaTomadorSnapshot(venda: VendaRow) {
@@ -3114,15 +3128,23 @@ export default function Comercial() {
 
   function buildEmitenteSnapshot(config: Partial<NfseConfiguracao> | null | undefined) {
     const payload = (config?.payload_reforma_tributaria ?? {}) as Record<string, unknown>
+    const nomeEmitente = String(payload.razao_social ?? payload.nome_emitente ?? '').trim()
+      || agencyConfig.nome_agencia
+      || config?.identificador
+      || 'Emitente nao configurado'
+    const municipioEmitente = String(payload.municipio ?? '').trim()
+      || config?.municipio_nome?.trim()
+      || agencyConfig.cidade
+      || ''
     return {
-      nome: String(payload.razao_social ?? 'Emitente nao configurado'),
+      nome: nomeEmitente,
       documento: config?.cnpj_emitente?.trim() || '',
       inscricao_municipal: config?.inscricao_municipal?.trim() || '',
-      telefone: String(payload.telefone ?? ''),
+      telefone: String(payload.telefone ?? agencyConfig.telefone ?? ''),
       email: String(payload.email ?? ''),
       endereco: String(payload.endereco ?? ''),
       complemento: String(payload.complemento ?? ''),
-      municipio: config?.municipio_nome?.trim() || '',
+      municipio: municipioEmitente,
     }
   }
 
@@ -3179,6 +3201,7 @@ export default function Comercial() {
   }
 
   async function emitirNfseViaNotaJoseense(venda: VendaRow) {
+    const produtoResumo = resolveProdutoResumoNfse(venda)
     const accessToken = await getSupabaseAccessToken()
     const response = await fetch(getEdgeFunctionUrl('nfse-nota-joseense-emit'), {
       method: 'POST',
@@ -3189,6 +3212,10 @@ export default function Comercial() {
       body: JSON.stringify({
         venda_certificado_id: venda.id,
         justificativa_fora_etapa: (venda.metadata as Record<string, unknown> | null)?.nfse_justificativa_fora_etapa ?? null,
+        produto_tipo: produtoResumo.tipo,
+        produto_modelo: produtoResumo.modelo,
+        produto_validade: produtoResumo.validade,
+        tipo_emissao: produtoResumo.tipoEmissao,
       }),
       signal: AbortSignal.timeout(45000),
     })
@@ -3213,9 +3240,12 @@ export default function Comercial() {
   async function emitirNfseMock(venda: VendaRow, options?: { silent?: boolean }) {
     const numeroMock = 'MOCK-' + Date.now().toString(36).toUpperCase()
     const configuracaoFiscal = await fetchConfiguracaoFiscalAtiva()
-    const produtoDescricao = resolveDescricaoProdutoNfse(venda)
+    const produtoResumo = resolveProdutoResumoNfse(venda)
     const discriminacaoServicos = buildNfseDiscriminacaoFromVenda(venda, {
-      produtoDescricao,
+      produtoDescricao: produtoResumo.tipo,
+      produtoModelo: produtoResumo.modelo,
+      validade: produtoResumo.validade,
+      tipoEmissao: produtoResumo.tipoEmissao,
     })
     const tomador = buildVendaTomadorSnapshot(venda)
     const emitente = buildEmitenteSnapshot(configuracaoFiscal)
@@ -3229,7 +3259,7 @@ export default function Comercial() {
       payload_envio: {
         modo: 'mock',
         discriminacao_servicos: discriminacaoServicos,
-        produto_descricao: produtoDescricao,
+        produto_descricao: produtoResumo.tipo,
         codigo_servico_municipio: configuracaoFiscal?.codigo_servico_municipio ?? null,
         tomador,
         emitente,
@@ -6017,11 +6047,17 @@ export default function Comercial() {
                 </div>
                 <div className="overflow-x-auto bg-gray-50 dark:bg-gray-950 p-4">
                   <NfseDocumentPreview
+                    configuracao={nfseConfiguracaoAtiva}
                     nota={vendaNfseModal.notas[0] ?? null}
                     venda={vendaNfseModal.venda}
                     fallbackDiscriminacao={buildNfseDiscriminacaoFromVenda(vendaNfseModal.venda, {
-                      produtoDescricao: resolveDescricaoProdutoNfse(vendaNfseModal.venda),
+                      produtoDescricao: resolveProdutoResumoNfse(vendaNfseModal.venda).tipo,
+                      produtoModelo: resolveProdutoResumoNfse(vendaNfseModal.venda).modelo,
+                      validade: resolveProdutoResumoNfse(vendaNfseModal.venda).validade,
+                      tipoEmissao: resolveProdutoResumoNfse(vendaNfseModal.venda).tipoEmissao,
                     })}
+                    agency={agencyConfig}
+                    logoUrl={agencyConfig.logo_interna_url || agencyConfig.logo_url}
                     className="min-w-[820px]"
                   />
                 </div>
@@ -6113,11 +6149,17 @@ export default function Comercial() {
               </div>
               <div className="flex-1 overflow-auto bg-gray-100 dark:bg-gray-950 p-5">
                 <NfseDocumentPreview
+                  configuracao={nfseConfiguracaoAtiva}
                   nota={vendaNfseModal.notas[0] ?? null}
                   venda={vendaNfseModal.venda}
                   fallbackDiscriminacao={buildNfseDiscriminacaoFromVenda(vendaNfseModal.venda, {
-                    produtoDescricao: resolveDescricaoProdutoNfse(vendaNfseModal.venda),
+                    produtoDescricao: resolveProdutoResumoNfse(vendaNfseModal.venda).tipo,
+                    produtoModelo: resolveProdutoResumoNfse(vendaNfseModal.venda).modelo,
+                    validade: resolveProdutoResumoNfse(vendaNfseModal.venda).validade,
+                    tipoEmissao: resolveProdutoResumoNfse(vendaNfseModal.venda).tipoEmissao,
                   })}
+                  agency={agencyConfig}
+                  logoUrl={agencyConfig.logo_interna_url || agencyConfig.logo_url}
                   className="min-w-[1100px] mx-auto"
                 />
               </div>

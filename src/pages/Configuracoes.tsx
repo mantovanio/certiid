@@ -2746,6 +2746,7 @@ type FiscalProviderTestResult = {
   message?: string
   error?: string
   next_step?: string
+  tls_warning?: string | null
   checks?: Record<string, boolean>
   certificado?: {
     commonName?: string
@@ -2787,12 +2788,12 @@ const NFSE_PRESETS: NfsePreset[] = [
     municipio_nome: 'São José dos Campos',
     municipio_codigo_ibge: '3549904',
     provedor: 'municipal',
-    observacoes: 'Perfil para a Nota Joseense, que continua valendo até 30 de junho de 2026.',
+    observacoes: 'Perfil para a Nota Joseense, que continua valendo até 31 de agosto de 2026.',
     payload_reforma_tributaria: {
       municipal_adapter: 'nota_joseense',
       municipal_portal_url: 'https://notajoseense.sjc.sp.gov.br/notafiscal/paginas/portal/#/login',
       planned_migration_provider: 'nacional',
-      planned_migration_date: '2026-07-01',
+      planned_migration_date: '2026-09-01',
       national_portal_url: 'https://www.nfse.gov.br/EmissorNacional/Login',
     },
   },
@@ -2802,10 +2803,10 @@ const NFSE_PRESETS: NfsePreset[] = [
     municipio_nome: 'São José dos Campos',
     municipio_codigo_ibge: '3549904',
     provedor: 'nacional',
-    observacoes: 'Deixe este perfil pronto agora e ative somente em 1º de julho de 2026.',
+    observacoes: 'Deixe este perfil pronto agora e ative somente em 1º de setembro de 2026.',
     payload_reforma_tributaria: {
       source_transition: 'nota_joseense',
-      planned_activation_date: '2026-07-01',
+      planned_activation_date: '2026-09-01',
       national_portal_url: 'https://www.nfse.gov.br/EmissorNacional/Login',
       municipal_portal_url: 'https://notajoseense.sjc.sp.gov.br/notafiscal/paginas/portal/#/login',
     },
@@ -3420,7 +3421,7 @@ function AbaFiscal() {
             <div className="rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-950/20 p-4 space-y-2">
               <p className="text-xs font-semibold text-blue-800 dark:text-blue-300">Fluxo atual de São José dos Campos</p>
               <p className="text-[11px] text-blue-700/80 dark:text-blue-300/80">
-                Use este perfil para a Nota Joseense até 30 de junho de 2026. Deixe o perfil do Emissor Nacional salvo em paralelo e ative a troca somente em 1º de julho de 2026.
+                Use este perfil para a Nota Joseense até 31 de agosto de 2026. Deixe o perfil do Emissor Nacional salvo em paralelo e ative a troca somente em 1º de setembro de 2026.
               </p>
               <div className="grid gap-2 md:grid-cols-2 text-[11px] text-blue-900 dark:text-blue-200">
                 <div>Portal atual: {portalMunicipalUrl || 'Não informado'}</div>
@@ -3515,6 +3516,10 @@ function AbaFiscal() {
                   {resultadoTesteNotaJoseense.next_step && (
                     <p className="text-[11px] text-gray-600 dark:text-gray-400">{resultadoTesteNotaJoseense.next_step}</p>
                   )}
+
+                  {resultadoTesteNotaJoseense.tls_warning && (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-300">{resultadoTesteNotaJoseense.tls_warning}</p>
+                  )}
                 </div>
               )}
             </div>
@@ -3524,7 +3529,7 @@ function AbaFiscal() {
             <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/20 p-4 space-y-2">
               <p className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">Perfil preparado para a virada</p>
               <p className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80">
-                Para São José dos Campos, deixe este perfil salvo agora e faça a ativação somente quando a mudança oficial entrar em vigor em 1º de julho de 2026.
+                Para São José dos Campos, deixe este perfil salvo agora e faça a ativação somente quando a mudança oficial entrar em vigor em 1º de setembro de 2026.
               </p>
               <div className="text-[11px] text-emerald-900 dark:text-emerald-200">
                 Portal nacional: {portalNacionalUrl || 'Não informado'}
@@ -3730,7 +3735,7 @@ function AbaFiscal() {
                 value={form.observacoes || ''}
                 onChange={e => updateField('observacoes', e.target.value)}
                 rows={4}
-                placeholder="Ex: São José migra para Emissor Nacional em 01/07/2026. São Bernardo opera hoje com GISSONLINE."
+                placeholder="Ex: São José migra para Emissor Nacional em 01/09/2026. São Bernardo opera hoje com GISSONLINE."
                 className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>

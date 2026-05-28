@@ -40,6 +40,32 @@ function normalizeUrl(value: unknown, fallback: string) {
   return text || fallback
 }
 
+function isUnknownIssuerError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /UnknownIssuer|invalid peer certificate/i.test(message)
+}
+
+async function fetchNotaJoseenseUrl(url: string) {
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { 'User-Agent': 'CertiID-NotaJoseense-Test/1.0' },
+    })
+    return { response, tlsBypassed: false }
+  } catch (error) {
+    if (!isUnknownIssuerError(error)) throw error
+    const client = Deno.createHttpClient({
+      unsafelyIgnoreCertificateErrors: ['notajoseense.sjc.sp.gov.br'],
+    })
+    const response = await fetch(url, {
+      method: 'GET',
+      client,
+      headers: { 'User-Agent': 'CertiID-NotaJoseense-Test/1.0' },
+    })
+    return { response, tlsBypassed: true }
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS })
@@ -155,11 +181,11 @@ Deno.serve(async (req: Request) => {
 
   let loginStatus = 0
   let portalStatus = 0
+  let tlsBypassed = false
   try {
-    const loginResponse = await fetch(loginPageUrl, {
-      method: 'GET',
-      headers: { 'User-Agent': 'CertiID-NotaJoseense-Test/1.0' },
-    })
+    const loginAttempt = await fetchNotaJoseenseUrl(loginPageUrl)
+    const loginResponse = loginAttempt.response
+    tlsBypassed = tlsBypassed || loginAttempt.tlsBypassed
     loginStatus = loginResponse.status
     const loginHtml = await loginResponse.text()
     if (!loginResponse.ok || !/Acesso via Senha|Certificado Digital|Nota Fiscal de Servi[cç]o Eletr[oô]nica/i.test(loginHtml)) {
@@ -173,10 +199,9 @@ Deno.serve(async (req: Request) => {
     }
     checks.portal_login = true
 
-    const portalResponse = await fetch(portalLoginUrl, {
-      method: 'GET',
-      headers: { 'User-Agent': 'CertiID-NotaJoseense-Test/1.0' },
-    })
+    const portalAttempt = await fetchNotaJoseenseUrl(portalLoginUrl)
+    const portalResponse = portalAttempt.response
+    tlsBypassed = tlsBypassed || portalAttempt.tlsBypassed
     portalStatus = portalResponse.status
     const portalHtml = await portalResponse.text()
     if (!portalResponse.ok || !/portal n[aã]o funciona corretamente sem o JavaScript ativado|login|nota fiscal/i.test(portalHtml)) {
@@ -206,6 +231,9 @@ Deno.serve(async (req: Request) => {
     certificado: certSummary,
     login_status: loginStatus,
     portal_status: portalStatus,
+    tls_warning: tlsBypassed
+      ? 'O portal respondeu, mas o certificado SSL público exigiu tolerância técnica no teste por causa da cadeia do emissor.'
+      : null,
     manual_status: 'O município prevê conversão de RPS via webservice, mas o formato do arquivo, o upload e o procedimento dependem do manual oficial da Nota Joseense.',
     next_step: 'Agora o próximo passo é obter com a prefeitura o manual oficial de RPS/upload ou o endpoint técnico liberado para integração, para então ligar a emissão automática real.',
   })

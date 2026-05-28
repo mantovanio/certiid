@@ -2741,7 +2741,7 @@ function AbaPagamentos() {
 // ── Aba Fiscal / NFS-e ───────────────────────────────────────
 type FiscalSubTab = 'configuracoes' | 'modelo'
 
-type GissOnlineTestResult = {
+type FiscalProviderTestResult = {
   ok: boolean
   message?: string
   error?: string
@@ -2770,21 +2770,45 @@ const NFSE_PROVIDER_LABELS: Record<ProvedorNfse, string> = {
   municipal: 'Portal Municipal',
 }
 
-const NFSE_PRESETS: Array<{
+type NfsePreset = {
   id: string
   label: string
   municipio_nome: string
   municipio_codigo_ibge: string
   provedor: ProvedorNfse
   observacoes: string
-}> = [
+  payload_reforma_tributaria?: Record<string, unknown>
+}
+
+const NFSE_PRESETS: NfsePreset[] = [
   {
-    id: 'sjc',
-    label: 'São José dos Campos',
+    id: 'sjc-atual',
+    label: 'São José dos Campos - modelo atual',
+    municipio_nome: 'São José dos Campos',
+    municipio_codigo_ibge: '3549904',
+    provedor: 'municipal',
+    observacoes: 'Perfil para a Nota Joseense, que continua valendo até 30 de junho de 2026.',
+    payload_reforma_tributaria: {
+      municipal_adapter: 'nota_joseense',
+      municipal_portal_url: 'https://notajoseense.sjc.sp.gov.br/notafiscal/paginas/portal/#/login',
+      planned_migration_provider: 'nacional',
+      planned_migration_date: '2026-07-01',
+      national_portal_url: 'https://www.nfse.gov.br/EmissorNacional/Login',
+    },
+  },
+  {
+    id: 'sjc-nacional',
+    label: 'São José dos Campos - Emissor Nacional',
     municipio_nome: 'São José dos Campos',
     municipio_codigo_ibge: '3549904',
     provedor: 'nacional',
-    observacoes: 'A partir de 1º de julho de 2026, o município passa a usar exclusivamente o Emissor Nacional.',
+    observacoes: 'Deixe este perfil pronto agora e ative somente em 1º de julho de 2026.',
+    payload_reforma_tributaria: {
+      source_transition: 'nota_joseense',
+      planned_activation_date: '2026-07-01',
+      national_portal_url: 'https://www.nfse.gov.br/EmissorNacional/Login',
+      municipal_portal_url: 'https://notajoseense.sjc.sp.gov.br/notafiscal/paginas/portal/#/login',
+    },
   },
   {
     id: 'sbc',
@@ -2835,7 +2859,7 @@ function createEmptyFiscalForm(preset?: typeof NFSE_PRESETS[number]): Partial<Nf
     certificado_senha: null,
     observacoes: preset?.observacoes ?? '',
     robo_ligado: false,
-    payload_reforma_tributaria: {},
+    payload_reforma_tributaria: preset?.payload_reforma_tributaria ?? {},
   }
 }
 
@@ -2851,7 +2875,9 @@ function AbaFiscal() {
   const [okModelo, setOkModelo] = useState(false)
   const [showPreviewNotaTelaCheia, setShowPreviewNotaTelaCheia] = useState(false)
   const [testandoGissOnline, setTestandoGissOnline] = useState(false)
-  const [resultadoTesteGissOnline, setResultadoTesteGissOnline] = useState<GissOnlineTestResult | null>(null)
+  const [resultadoTesteGissOnline, setResultadoTesteGissOnline] = useState<FiscalProviderTestResult | null>(null)
+  const [testandoNotaJoseense, setTestandoNotaJoseense] = useState(false)
+  const [resultadoTesteNotaJoseense, setResultadoTesteNotaJoseense] = useState<FiscalProviderTestResult | null>(null)
   const [showSenhaPrefeitura, setShowSenhaPrefeitura] = useState(false)
   const [showCertSenha, setShowCertSenha] = useState(false)
   const [certFile, setCertFile] = useState<File | null>(null)
@@ -2913,6 +2939,11 @@ function AbaFiscal() {
   useEffect(() => {
     void load()
   }, [load])
+
+  const payloadFiscal = (form.payload_reforma_tributaria ?? {}) as Record<string, unknown>
+  const municipalAdapter = String(payloadFiscal.municipal_adapter ?? 'generico')
+  const portalMunicipalUrl = String(payloadFiscal.municipal_portal_url ?? '')
+  const portalNacionalUrl = String(payloadFiscal.national_portal_url ?? '')
 
   function selecionarConfiguracao(config: NfseConfiguracao) {
     setOk(false)
@@ -3082,7 +3113,7 @@ function AbaFiscal() {
         signal: AbortSignal.timeout(20000),
       })
 
-      const data = await response.json() as GissOnlineTestResult
+      const data = await response.json() as FiscalProviderTestResult
       setResultadoTesteGissOnline(data)
       if (!response.ok || !data.ok) {
         setErro(data.error ?? 'Seu teste com o GISSONLINE não foi concluído.')
@@ -3092,6 +3123,41 @@ function AbaFiscal() {
       setErro(`Não foi possível executar o teste com o GISSONLINE: ${message}`)
     } finally {
       setTestandoGissOnline(false)
+    }
+  }
+
+  async function testarConexaoNotaJoseense() {
+    if (!form.id) {
+      setErro('Salve a configuração fiscal antes de testar a Nota Joseense.')
+      return
+    }
+
+    setTestandoNotaJoseense(true)
+    setResultadoTesteNotaJoseense(null)
+    setErro(null)
+
+    try {
+      const accessToken = await getSupabaseAccessToken()
+      const response = await fetch(getEdgeFunctionUrl('nfse-nota-joseense-test'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ configuracao_id: form.id }),
+        signal: AbortSignal.timeout(20000),
+      })
+
+      const data = await response.json() as FiscalProviderTestResult
+      setResultadoTesteNotaJoseense(data)
+      if (!response.ok || !data.ok) {
+        setErro(data.error ?? 'Seu teste com a Nota Joseense não foi concluído.')
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha de comunicação.'
+      setErro(`Não foi possível executar o teste com a Nota Joseense: ${message}`)
+    } finally {
+      setTestandoNotaJoseense(false)
     }
   }
 
@@ -3299,18 +3365,172 @@ function AbaFiscal() {
               </div>
             </div>
             <ConfigInput label="Chave de Autenticação" value={form.chave_autenticacao || ''} onChange={v => updateField('chave_autenticacao', v)} placeholder="Token, chave API ou código liberado" />
+            {form.provedor === 'municipal' && (
+              <>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">Adaptador municipal</span>
+                  <select
+                    value={municipalAdapter}
+                    onChange={e => updateField('payload_reforma_tributaria', {
+                      ...payloadFiscal,
+                      municipal_adapter: e.target.value,
+                    } as NfseConfiguracao['payload_reforma_tributaria'])}
+                    className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="generico">Portal municipal genérico</option>
+                    <option value="nota_joseense">Nota Joseense</option>
+                  </select>
+                </label>
+                <ConfigInput
+                  label="URL do portal municipal"
+                  value={portalMunicipalUrl}
+                  onChange={v => updateField('payload_reforma_tributaria', {
+                    ...payloadFiscal,
+                    municipal_portal_url: v,
+                  } as NfseConfiguracao['payload_reforma_tributaria'])}
+                  placeholder="Ex: https://notajoseense.sjc.sp.gov.br/notafiscal/paginas/portal/#/login"
+                />
+              </>
+            )}
+            {form.provedor === 'nacional' && (
+              <ConfigInput
+                label="URL do portal nacional"
+                value={portalNacionalUrl}
+                onChange={v => updateField('payload_reforma_tributaria', {
+                  ...payloadFiscal,
+                  national_portal_url: v,
+                } as NfseConfiguracao['payload_reforma_tributaria'])}
+                placeholder="Ex: https://www.nfse.gov.br/EmissorNacional/Login"
+              />
+            )}
             {form.provedor === 'gissonline' && (
               <ConfigInput
                 label="Host / URL WSDL GISSONLINE"
-                value={String(((form.payload_reforma_tributaria ?? {}) as Record<string, unknown>).gissonline_ws_host ?? '')}
+                value={String(payloadFiscal.gissonline_ws_host ?? '')}
                 onChange={v => updateField('payload_reforma_tributaria', {
-                  ...(form.payload_reforma_tributaria ?? {}),
+                  ...payloadFiscal,
                   gissonline_ws_host: v,
                 } as NfseConfiguracao['payload_reforma_tributaria'])}
                 placeholder="Ex: ws-seumunicipio.giss.com.br ou URL completa"
               />
             )}
           </div>
+
+          {form.provedor === 'municipal' && municipalAdapter === 'nota_joseense' && (
+            <div className="rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-950/20 p-4 space-y-2">
+              <p className="text-xs font-semibold text-blue-800 dark:text-blue-300">Fluxo atual de São José dos Campos</p>
+              <p className="text-[11px] text-blue-700/80 dark:text-blue-300/80">
+                Use este perfil para a Nota Joseense até 30 de junho de 2026. Deixe o perfil do Emissor Nacional salvo em paralelo e ative a troca somente em 1º de julho de 2026.
+              </p>
+              <div className="grid gap-2 md:grid-cols-2 text-[11px] text-blue-900 dark:text-blue-200">
+                <div>Portal atual: {portalMunicipalUrl || 'Não informado'}</div>
+                <div>Portal futuro: {portalNacionalUrl || 'Não informado'}</div>
+              </div>
+              <div className="grid gap-2 md:grid-cols-2 text-[11px]">
+                <a href={portalMunicipalUrl || '#'} target="_blank" rel="noreferrer" className="text-blue-700 dark:text-blue-300 underline underline-offset-2 break-all">
+                  Abrir portal atual da Nota Joseense
+                </a>
+                <a href={portalNacionalUrl || '#'} target="_blank" rel="noreferrer" className="text-blue-700 dark:text-blue-300 underline underline-offset-2 break-all">
+                  Abrir portal futuro do Emissor Nacional
+                </a>
+              </div>
+            </div>
+          )}
+
+          {form.provedor === 'municipal' && municipalAdapter === 'nota_joseense' && (
+            <div className="rounded-xl border border-sky-200 dark:border-sky-900/40 bg-sky-50 dark:bg-sky-950/20 p-4 space-y-3">
+              <div>
+                <p className="text-xs font-semibold text-sky-800 dark:text-sky-300">Teste técnico da Nota Joseense</p>
+                <p className="text-[11px] text-sky-700/80 dark:text-sky-300/80 mt-1">
+                  Esse teste confirma se o perfil fiscal está completo, se o certificado A1 pode ser lido e se o portal atual da Nota Joseense está acessível. A emissão automática real ainda depende do manual oficial de RPS e upload do município.
+                </p>
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                <div className="rounded-lg border border-sky-200/70 dark:border-sky-900/40 bg-white/70 dark:bg-sky-950/10 p-3">
+                  <p className="text-[11px] font-semibold text-sky-900 dark:text-sky-200">O que já valida hoje</p>
+                  <p className="text-[11px] text-sky-800/80 dark:text-sky-300/80 mt-1">
+                    Perfil fiscal, certificado A1, login público e portal atual do contribuinte.
+                  </p>
+                </div>
+                <div className="rounded-lg border border-sky-200/70 dark:border-sky-900/40 bg-white/70 dark:bg-sky-950/10 p-3">
+                  <p className="text-[11px] font-semibold text-sky-900 dark:text-sky-200">O que ainda falta para emitir sozinho</p>
+                  <p className="text-[11px] text-sky-800/80 dark:text-sky-300/80 mt-1">
+                    Manual oficial do RPS, layout do arquivo, URL de upload e retorno técnico da prefeitura.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void testarConexaoNotaJoseense()}
+                disabled={!isAdmin || testandoNotaJoseense}
+                className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-medium inline-flex items-center gap-2 transition-colors"
+              >
+                {testandoNotaJoseense ? <Loader2 size={13} className="animate-spin" /> : <Webhook size={13} />}
+                {testandoNotaJoseense ? 'Testando Nota Joseense...' : 'Testar conexão Nota Joseense'}
+              </button>
+
+              {resultadoTesteNotaJoseense && (
+                <div className={cn(
+                  'rounded-xl border p-3 space-y-2',
+                  resultadoTesteNotaJoseense.ok
+                    ? 'border-green-200 bg-green-50 dark:border-green-900/40 dark:bg-green-950/20'
+                    : 'border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-950/20'
+                )}>
+                  <p className={cn(
+                    'text-xs font-semibold',
+                    resultadoTesteNotaJoseense.ok ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'
+                  )}>
+                    {resultadoTesteNotaJoseense.ok
+                      ? resultadoTesteNotaJoseense.message ?? 'Seu teste foi concluído com sucesso.'
+                      : resultadoTesteNotaJoseense.error ?? 'Seu teste retornou pendências.'}
+                  </p>
+
+                  {resultadoTesteNotaJoseense.certificado && (
+                    <div className="grid gap-2 md:grid-cols-2 text-[11px] text-gray-700 dark:text-gray-300">
+                      <div>Certificado: {resultadoTesteNotaJoseense.certificado.commonName || '—'}</div>
+                      <div>Empresa: {resultadoTesteNotaJoseense.certificado.organization || '—'}</div>
+                      <div>Validade inicial: {resultadoTesteNotaJoseense.certificado.validFrom ? new Date(resultadoTesteNotaJoseense.certificado.validFrom).toLocaleString('pt-BR') : '—'}</div>
+                      <div>Validade final: {resultadoTesteNotaJoseense.certificado.validTo ? new Date(resultadoTesteNotaJoseense.certificado.validTo).toLocaleString('pt-BR') : '—'}</div>
+                    </div>
+                  )}
+
+                  {resultadoTesteNotaJoseense.checks && (
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(resultadoTesteNotaJoseense.checks).map(([key, passed]) => (
+                        <span
+                          key={key}
+                          className={cn(
+                            'px-2 py-1 rounded-full text-[10px] font-medium',
+                            passed
+                              ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                              : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+                          )}
+                        >
+                          {key.replace(/_/g, ' ')}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {resultadoTesteNotaJoseense.next_step && (
+                    <p className="text-[11px] text-gray-600 dark:text-gray-400">{resultadoTesteNotaJoseense.next_step}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {form.provedor === 'nacional' && (
+            <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/20 p-4 space-y-2">
+              <p className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">Perfil preparado para a virada</p>
+              <p className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80">
+                Para São José dos Campos, deixe este perfil salvo agora e faça a ativação somente quando a mudança oficial entrar em vigor em 1º de julho de 2026.
+              </p>
+              <div className="text-[11px] text-emerald-900 dark:text-emerald-200">
+                Portal nacional: {portalNacionalUrl || 'Não informado'}
+              </div>
+            </div>
+          )}
 
           {form.provedor === 'gissonline' && (
             <div className="rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 p-4 space-y-3">

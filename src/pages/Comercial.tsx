@@ -3017,7 +3017,9 @@ export default function Comercial() {
   function resolveMarketplaceLink(link?: string | null) {
     const finalLink = link?.trim()
     if (finalLink) return finalLink
-    if (lojaLinksSelecionada) return resolveLojaBaseUrl(lojaLinksSelecionada)
+    // Usa qualquer loja ativa, incluindo institucional
+    const anyLoja = lojasMarketplace.find(l => l.ativo)
+    if (anyLoja) return resolveLojaBaseUrl(anyLoja)
     return null
   }
 
@@ -3043,6 +3045,12 @@ export default function Comercial() {
         'Ainda não existe URL de compra configurada para este produto no seu sistema.',
         'Quando o seu marketplace próprio estiver pronto, este botão abrirá o link correto.'
       )
+      return
+    }
+    try {
+      const parsed = new URL(finalLink)
+      if (!['http:', 'https:'].includes(parsed.protocol)) return
+    } catch {
       return
     }
     window.open(finalLink, '_blank', 'noopener,noreferrer')
@@ -3730,7 +3738,11 @@ export default function Comercial() {
     const item = venda.tabela_preco_item_id
       ? tabelaItens.find(row => row.id === venda.tabela_preco_item_id)
       : null
-    return resolveMarketplaceLink(item?.link_safeweb)
+    // Se o item tiver link externo (Safeweb), usa-o; senão, constrói URL interna com produto
+    if (item?.link_safeweb?.trim()) return resolveMarketplaceLink(item.link_safeweb)
+    const anyLoja = lojasMarketplace.find(l => l.ativo)
+    if (anyLoja) return buildLojaProdutoUrl(anyLoja, venda.tabela_preco_item_id)
+    return null
   }
 
   // ── paginação: reset ao mudar filtros ────────────────────────

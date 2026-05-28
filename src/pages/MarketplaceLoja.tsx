@@ -1028,29 +1028,27 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
         <section className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_340px] gap-6 items-start">
           <div className="space-y-6">
-            <div className="rounded-[30px] border border-slate-200 bg-white p-6 sm:p-8 shadow-sm">
-              <div className="flex flex-col gap-6">
-                <div className="max-w-3xl">
-                  <p className="text-[11px] uppercase tracking-[0.28em] text-[#ea7b18] font-semibold">Solicitação online</p>
-                  <h2 className="text-2xl sm:text-3xl font-semibold mt-3 leading-tight text-slate-900">
+            <div className="rounded-[24px] border border-slate-200 bg-white px-5 py-4 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] uppercase tracking-[0.24em] text-[#ea7b18] font-semibold">Solicitação online</p>
+                  <h2 className="text-lg font-semibold mt-1 leading-snug text-slate-900">
                     Solicitação de certificado digital
                   </h2>
-                  <p className="text-sm sm:text-[15px] text-slate-600 mt-4 leading-relaxed">
-                    Preencha seus dados abaixo para continuar sua compra com segurança. Se desejar, você também pode deixar seu atendimento agendado nesta mesma etapa.
-                  </p>
                 </div>
-                <div className="flex flex-wrap gap-3">
+                <div className="flex flex-wrap gap-2">
                   {sectionStatuses.map(section => (
-                    <div key={section.label} className="min-w-[120px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <section.icon size={16} className="text-[#17346b]" />
-                        {section.done ? (
-                          <CheckCircle2 size={16} className="text-emerald-600" />
-                        ) : (
-                          <span className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Em aberto</span>
-                        )}
-                      </div>
-                      <p className="text-sm font-medium mt-3 text-slate-800 break-words leading-snug">{section.label}</p>
+                    <div key={section.label}
+                      className={cn(
+                        'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium border',
+                        section.done
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                          : 'bg-slate-50 border-slate-200 text-slate-500'
+                      )}>
+                      {section.done
+                        ? <CheckCircle2 size={12} className="text-emerald-600 shrink-0" />
+                        : <section.icon size={12} className="text-[#17346b] shrink-0" />}
+                      {section.label}
                     </div>
                   ))}
                 </div>

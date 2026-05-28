@@ -14,6 +14,7 @@ import {
   Copy,
   CreditCard,
   Download,
+  Eye,
   Edit3,
   ExternalLink,
   FileText,
@@ -38,8 +39,14 @@ import {
   XCircle,
 } from 'lucide-react'
 import NfseDocumentPreview from '@/components/NfseDocumentPreview'
-import { buildNfseDiscriminacaoFromVenda } from '@/lib/nfse'
-import { supabase } from '@/lib/supabase'
+import {
+  buildNfseDiscriminacaoFromVenda,
+  DEFAULT_NFSE_AUTOMATION_SETTINGS,
+  isNfseEmissionAllowed,
+  normalizeNfseAutomationSettings,
+  type NfseAutomationSettings,
+} from '@/lib/nfse'
+import { getEdgeFunctionUrl, getSupabaseAccessToken, supabase } from '@/lib/supabase'
 import { queueEmailMessage, queueWhatsAppMessage, renderTemplate } from '@/lib/communication'
 import { useAuth } from '@/contexts/AuthContext'
 import { hasPerfil, isAdminProfile } from '@/lib/security'
@@ -65,6 +72,7 @@ import type {
   NovoCadastroBase,
   PontoAtendimento,
   StatusVendaCertificado,
+  StatusAgendamentoValidacao,
   VendaCertificado,
   TabelaPreco,
   NovaTabelaPreco,
@@ -571,6 +579,9 @@ export default function Comercial() {
   const [salvandoCliente, setSalvandoCliente] = useState(false)
   const [vendaFilters, setVendaFilters] = useState<VendaFilters>(EMPTY_VENDA_FILTERS)
   const [selectedIds, setSelectedIds]           = useState<Set<string>>(new Set())
+  const [nfseAutomationSettings, setNfseAutomationSettings] = useState<NfseAutomationSettings>(DEFAULT_NFSE_AUTOMATION_SETTINGS)
+  const [agendamentoStatusPorVenda, setAgendamentoStatusPorVenda] = useState<Record<string, StatusAgendamentoValidacao | null>>({})
+  const [emitindoNfseLote, setEmitindoNfseLote] = useState(false)
   const [itensPorPagina, setItensPorPagina]     = useState(50)
   const [paginaAtual, setPaginaAtual]           = useState(1)
 
@@ -1078,6 +1089,24 @@ export default function Comercial() {
       .limit(50)
     const rows = (data ?? []) as VendaRow[]
     setVendasV2(rows)
+    const vendaIds = rows.map(v => v.id)
+    if (vendaIds.length > 0) {
+      const { data: agendamentos } = await supabase
+        .from('agendamentos_validacao')
+        .select('venda_certificado_id, status_agendamento, created_at')
+        .in('venda_certificado_id', vendaIds)
+        .order('created_at', { ascending: false })
+      const statusMap: Record<string, StatusAgendamentoValidacao | null> = {}
+      for (const item of (agendamentos ?? []) as Array<{ venda_certificado_id: string | null; status_agendamento: StatusAgendamentoValidacao }>) {
+        if (!item.venda_certificado_id) continue
+        if (!(item.venda_certificado_id in statusMap)) {
+          statusMap[item.venda_certificado_id] = item.status_agendamento
+        }
+      }
+      setAgendamentoStatusPorVenda(statusMap)
+    } else {
+      setAgendamentoStatusPorVenda({})
+    }
     const ids = [...new Set(rows.map(v => v.vendedor_id).filter((id): id is string => !!id))]
     if (ids.length > 0) {
       const { data: profs } = await supabase.from('profiles').select('id, nome').in('id', ids)
@@ -1246,7 +1275,7 @@ export default function Comercial() {
     setCatalogoErro(null)
     setMarketplaceSchemaWarning(null)
     setAgendaSchemaWarning(null)
-    const [certsRes, tabelasRes, itensRes, partRes, agentesTabelaRes, lojasRes, parceirosAgentesRes, comissoesRes, pagamentosRes, parcRes, ownersRes, paymentMethodsRes, paymentRuntimeRes, pricingMatrixRes] = await Promise.all([
+    const [certsRes, tabelasRes, itensRes, partRes, agentesTabelaRes, lojasRes, parceirosAgentesRes, comissoesRes, pagamentosRes, parcRes, ownersRes, paymentMethodsRes, paymentRuntimeRes, pricingMatrixRes, nfseAutomationRes] = await Promise.all([
       supabase.from('certificados').select('*').order('tipo', { ascending: true }),
       supabase.from('tabelas_preco').select('*').order('nome', { ascending: true }),
       supabase.from('tabelas_preco_itens').select('*').order('created_at', { ascending: true }),
@@ -1261,6 +1290,7 @@ export default function Comercial() {
       supabase.from('app_settings').select('value').eq('key', 'payment_methods').maybeSingle(),
       supabase.from('app_settings').select('value').eq('key', 'payment_runtime').maybeSingle(),
       supabase.from('app_settings').select('value').eq('key', 'pricing_matrix_rules').maybeSingle(),
+      supabase.from('app_settings').select('value').eq('key', 'nfse_automation_settings').maybeSingle(),
     ])
     const lojasMarketplaceAusente = !!lojasRes.error?.message?.includes("public.lojas_marketplace")
     const parceirosAgentesAusente = !!parceirosAgentesRes.error?.message?.includes("public.parceiros_agentes_permitidos")
@@ -1291,6 +1321,7 @@ export default function Comercial() {
       ? (pricingMatrixRes.data?.value.rules as PricingMatrixRule[])
       : []
     setPricingMatrixRules(savedPricingRules)
+    setNfseAutomationSettings(normalizeNfseAutomationSettings(nfseAutomationRes.data?.value as Partial<NfseAutomationSettings> | undefined))
     if (lojasMarketplaceAusente) {
       setMarketplaceSchemaWarning('A tabela de lojas do marketplace ainda nao existe no Supabase. O restante do comercial segue liberado para testes.')
     } else if (lojasRes.error) {
@@ -1764,6 +1795,7 @@ export default function Comercial() {
     setShowAgendaV2Panel(false)
     setFormAgendaV2(null)
     setErroAgendaV2(null)
+    setAgendamentoStatusPorVenda(prev => ({ ...prev, [formAgendaV2.venda_certificado_id]: 'confirmado' }))
     void fetchAgenda()
     void fetchVendasV2()
   }
@@ -1821,6 +1853,9 @@ export default function Comercial() {
     if (item.origem === 'validacao_v2') {
       const statusV2 = status === 'aguardando' ? 'pendente' : status
       await supabase.from('agendamentos_validacao').update({ status_agendamento: statusV2 }).eq('id', id)
+      if (item.venda_certificado_id) {
+        setAgendamentoStatusPorVenda(prev => ({ ...prev, [item.venda_certificado_id!]: statusV2 as StatusAgendamentoValidacao }))
+      }
     } else {
       await supabase.from('agendamentos').update({ status }).eq('id', id)
     }
@@ -3095,7 +3130,44 @@ export default function Comercial() {
     return (data ?? null) as NfseConfiguracao | null
   }
 
-  async function emitirNfseMock(venda: VendaRow) {
+  function validarEtapaEmissaoNfse(venda: VendaRow) {
+    return isNfseEmissionAllowed({
+      gatilho: nfseAutomationSettings.gatilho_emissao,
+      venda,
+      agendamentoStatus: agendamentoStatusPorVenda[venda.id] ?? null,
+    })
+  }
+
+  async function emitirNfseViaGissOnline(venda: VendaRow) {
+    const accessToken = await getSupabaseAccessToken()
+    const response = await fetch(getEdgeFunctionUrl('nfse-gissonline-emit'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ venda_certificado_id: venda.id }),
+      signal: AbortSignal.timeout(45000),
+    })
+
+    const data = await response.json() as {
+      ok: boolean
+      error?: string
+      stage?: string
+      numero_lote?: string
+      protocolo?: string
+      nota_id?: string
+      message?: string
+    }
+
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error ?? 'Não foi possível emitir a NFS-e no GISSONLINE.')
+    }
+
+    return data
+  }
+
+  async function emitirNfseMock(venda: VendaRow, options?: { silent?: boolean }) {
     const numeroMock = 'MOCK-' + Date.now().toString(36).toUpperCase()
     const configuracaoFiscal = await fetchConfiguracaoFiscalAtiva()
     const produtoDescricao = resolveDescricaoProdutoNfse(venda)
@@ -3133,11 +3205,68 @@ export default function Comercial() {
         },
       },
     }]).select('*').single()
-    if (err) { showMsg('Erro ao criar NFS-e: ' + err.message, 'err'); return }
-    showMsg(`NFS-e ${numeroMock} registrada (modo mock).`, 'ok')
+    if (err) { if (!options?.silent) showMsg('Erro ao criar NFS-e: ' + err.message, 'err'); return }
+    if (!options?.silent) showMsg(`NFS-e ${numeroMock} registrada (modo mock).`, 'ok')
     setVendaNfseModal(prev => prev
       ? { ...prev, notas: [nova as NfseEmitida, ...prev.notas] }
       : prev)
+  }
+
+  async function emitirNfseParaVenda(venda: VendaRow, options?: { silent?: boolean }) {
+    const validacao = validarEtapaEmissaoNfse(venda)
+    if (!validacao.allowed) {
+      if (!options?.silent) showMsg(validacao.reason, 'err')
+      return
+    }
+
+    const configuracaoFiscal = await fetchConfiguracaoFiscalAtiva()
+    if (!configuracaoFiscal) {
+      if (!options?.silent) showMsg('Nenhuma configuração fiscal ativa foi encontrada para emitir a nota.', 'err')
+      return
+    }
+
+    if (configuracaoFiscal.provedor === 'gissonline') {
+      const result = await emitirNfseViaGissOnline(venda)
+      if (!options?.silent) {
+        showMsg(result.message ?? `NFS-e enviada ao GISSONLINE. Protocolo ${result.protocolo ?? result.numero_lote ?? 'em processamento'}.`, 'ok')
+      }
+      await abrirNfseVenda(venda)
+      return
+    }
+
+    await emitirNfseMock(venda, options)
+  }
+
+  async function emitirNfseSelecionadas() {
+    if (!selectedIds.size) {
+      showMsg('Selecione pelo menos uma venda para emitir NFS-e em lote.', 'err')
+      return
+    }
+    setEmitindoNfseLote(true)
+
+    const selecionadas = vendasV2.filter(v => selectedIds.has(v.id))
+    let emitidas = 0
+    let bloqueadas = 0
+    let falhas = 0
+
+    for (const venda of selecionadas) {
+      const validacao = validarEtapaEmissaoNfse(venda)
+      if (!validacao.allowed) {
+        bloqueadas += 1
+        continue
+      }
+      try {
+        await emitirNfseParaVenda(venda, { silent: true })
+        emitidas += 1
+      } catch {
+        falhas += 1
+      }
+    }
+
+    setEmitindoNfseLote(false)
+    setSelectedIds(new Set())
+    void fetchVendasV2()
+    showMsg(`Lote concluído. Emitidas: ${emitidas}. Bloqueadas pela etapa: ${bloqueadas}. Falhas: ${falhas}.`, falhas === 0 ? 'ok' : 'err')
   }
 
   function obterLinkMarketplaceDaVenda(venda: VendaRow) {
@@ -3848,7 +3977,13 @@ export default function Comercial() {
               </div>
               {/* Linha 3: botões de ação */}
               <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100 dark:border-gray-800">
-                <VendaActionBtn icon={FileText}   label="Emitir NFS-e"        onClick={() => openFeatureNotice('Emissão de NFS-e', 'A estrutura fiscal já existe na V2, mas a emissão automática ainda depende do fluxo final de pagamento e da integração municipal.', 'Próximo bloco: ligar `nfse_configuracoes` + `nfse_emitidas` ao pós-pagamento.')} />
+                {nfseAutomationSettings.permitir_emissao_lote_comercial && (
+                  <VendaActionBtn
+                    icon={FileText}
+                    label={emitindoNfseLote ? 'Emitindo lote...' : `Emitir NFS-e${selectedIds.size ? ` (${selectedIds.size})` : ''}`}
+                    onClick={() => void emitirNfseSelecionadas()}
+                  />
+                )}
                 <VendaActionBtn icon={RefreshCcw} label="Atualizar Faturas"   onClick={() => openFeatureNotice('Atualização de faturas', 'O módulo de cobrança ainda não está fechado ponta a ponta. Esta ação será conectada quando o fluxo de pagamentos/webhook estiver pronto.', 'Próximo bloco: criar cobrança + webhook + conciliação.')} />
                 <VendaActionBtn icon={List}       label="Protocolos em Lote"  onClick={() => openFeatureNotice('Protocolos em lote', 'A emissão unitária já existe, mas o processamento em lote ainda precisa de regras de validação e fila operacional.', 'Próximo bloco: desenhar fila segura para operações em massa.')} />
                 <VendaActionBtn icon={UserCheck}  label="Consulta CPF PSBio"  onClick={() => openFeatureNotice('Consulta CPF PSBio', 'Essa ação depende de integração externa específica. O botão foi mantido como referência operacional do fluxo.', 'Entrará na fase de integrações externas reais.')} />
@@ -3886,10 +4021,31 @@ export default function Comercial() {
               (<Upload size={10} className="inline mb-0.5" />) Upload Documentos ·
               (<Receipt size={10} className="inline mb-0.5" />) Fatura ·
               (<Trash2 size={10} className="inline mb-0.5" />) Excluir ·
-              (<FileText size={10} className="inline mb-0.5" />) Ver NF-e ·
+              (<FileText size={10} className="inline mb-0.5" />) Emitir / Ver NF-e ·
               (<XCircle size={10} className="inline mb-0.5" />) Cancelar NF-e ·
               (<Unlock size={10} className="inline mb-0.5" />) Liberar Emissão
             </p>
+
+            {nfseAutomationSettings.permitir_emissao_lote_comercial && selectedIds.size > 0 && (
+              <div className="rounded-xl border border-indigo-100 dark:border-indigo-900/30 bg-indigo-50/70 dark:bg-indigo-950/20 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-indigo-700 dark:text-indigo-300">
+                    {selectedIds.size} venda(s) selecionada(s) para emissão de NFS-e.
+                  </p>
+                  <p className="text-[11px] text-indigo-600 dark:text-indigo-400 mt-1">
+                    O lote respeita a etapa configurada em Fiscal / NFS-e antes de enviar a nota.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void emitirNfseSelecionadas()}
+                  disabled={emitindoNfseLote}
+                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-medium transition-colors"
+                >
+                  {emitindoNfseLote ? 'Emitindo lote...' : 'Emitir NFS-e selecionadas'}
+                </button>
+              </div>
+            )}
 
             {/* ── TABELA ───────────────────────────────────────── */}
             <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
@@ -3933,7 +4089,10 @@ export default function Comercial() {
                             <VendaIconBtn title="Upload Documentos" icon={Upload}        color="orange"  onClick={() => openFeatureNotice('Upload de documentos', 'A estrutura de documentos financeiros existe, mas o fluxo de upload desta tela ainda não foi conectado.', 'Próximo bloco: ligar `documentos_financeiros` a esta venda.')} />
                             <VendaIconBtn title="Fatura"            icon={Receipt}       color="teal"    onClick={() => void abrirFaturaVenda(v)} />
                             <VendaIconBtn title="Excluir"           icon={Trash2}        color="red"     onClick={() => void excluirVenda(v.id)} />
-                            <VendaIconBtn title="Ver NF-e"          icon={FileText}      color="gray"    onClick={() => void abrirNfseVenda(v)} />
+                            {nfseAutomationSettings.permitir_emissao_manual_rapida && (
+                              <VendaIconBtn title="Emitir NFS-e"      icon={FileText}      color="gray"    onClick={() => void emitirNfseParaVenda(v)} />
+                            )}
+                            <VendaIconBtn title="Ver NF-e"          icon={Eye}           color="gray"    onClick={() => void abrirNfseVenda(v)} />
                             <VendaIconBtn title="Cancelar NF-e"     icon={XCircle}       color="red"     onClick={() => openFeatureNotice('Cancelamento de NFS-e', 'O cancelamento fiscal ainda não foi implementado porque depende da integração municipal final.', 'Entrará na fase fiscal após homologação da emissão.')} />
                             <VendaIconBtn title="Liberar Emissão"   icon={Unlock}        color="green"   onClick={() => void liberarEmissao(v)} />
                           </div>

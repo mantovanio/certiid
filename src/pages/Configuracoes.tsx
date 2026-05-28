@@ -9,7 +9,14 @@ import { buildWhatsAppMetadata, getWhatsAppEngine, getWhatsAppEngineLabel, isWha
 import { DEFAULT_PERMISSIONS, PAGE_PERMISSIONS, hasPerfil, isAdminProfile } from '@/lib/security'
 import { buscarCep } from '@/lib/cep'
 import NfseDocumentPreview from '@/components/NfseDocumentPreview'
-import { DEFAULT_NFSE_MODELO, type NfseModeloLayout } from '@/lib/nfse'
+import {
+  DEFAULT_NFSE_AUTOMATION_SETTINGS,
+  DEFAULT_NFSE_MODELO,
+  normalizeNfseAutomationSettings,
+  type NfseAutomationSettings,
+  type NfseEmissionTrigger,
+  type NfseModeloLayout,
+} from '@/lib/nfse'
 import { useAuth } from '@/contexts/AuthContext'
 import type {
   AutomationRule,
@@ -2749,6 +2756,14 @@ type GissOnlineTestResult = {
   }
 }
 
+const NFSE_GATILHO_LABELS: Record<NfseEmissionTrigger, string> = {
+  manual: 'Somente manual',
+  apos_pagamento: 'Após pagamento compensado',
+  apos_agendamento: 'Após agendamento confirmado',
+  apos_validacao: 'Após validação realizada',
+  apos_protocolo: 'Após protocolo gerado',
+}
+
 const NFSE_PROVIDER_LABELS: Record<ProvedorNfse, string> = {
   nacional: 'Emissor Nacional',
   gissonline: 'GISSONLINE',
@@ -2844,11 +2859,14 @@ function AbaFiscal() {
   const [configuracoes, setConfiguracoes] = useState<NfseConfiguracao[]>([])
   const [form, setForm] = useState<Partial<NfseConfiguracao>>(createEmptyFiscalForm())
   const [modeloNota, setModeloNota] = useState<NfseModeloLayout>(DEFAULT_NFSE_MODELO)
+  const [automacaoNfse, setAutomacaoNfse] = useState<NfseAutomationSettings>(DEFAULT_NFSE_AUTOMATION_SETTINGS)
+  const [salvandoAutomacaoNfse, setSalvandoAutomacaoNfse] = useState(false)
+  const [okAutomacaoNfse, setOkAutomacaoNfse] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     setErro(null)
-    const [configsRes, modeloRes] = await Promise.all([
+    const [configsRes, modeloRes, automacaoRes] = await Promise.all([
       supabase
         .from('nfse_configuracoes')
         .select('*')
@@ -2858,6 +2876,11 @@ function AbaFiscal() {
         .from('app_settings')
         .select('value')
         .eq('key', 'nfse_modelo_layout')
+        .maybeSingle(),
+      supabase
+        .from('app_settings')
+        .select('value')
+        .eq('key', 'nfse_automation_settings')
         .maybeSingle(),
     ])
 
@@ -2878,6 +2901,11 @@ function AbaFiscal() {
     })
     if (modeloRes.data?.value) {
       setModeloNota({ ...DEFAULT_NFSE_MODELO, ...modeloRes.data.value })
+    }
+    if (automacaoRes.data?.value) {
+      setAutomacaoNfse(normalizeNfseAutomationSettings(automacaoRes.data.value as Partial<NfseAutomationSettings>))
+    } else {
+      setAutomacaoNfse(DEFAULT_NFSE_AUTOMATION_SETTINGS)
     }
     setLoading(false)
   }, [])
@@ -3010,6 +3038,26 @@ function AbaFiscal() {
       return
     }
     setOkModelo(true)
+  }
+
+  async function salvarAutomacaoNfse() {
+    if (!isAdmin) return
+    setSalvandoAutomacaoNfse(true)
+    setErro(null)
+    setOkAutomacaoNfse(false)
+    const { error } = await supabase
+      .from('app_settings')
+      .upsert({
+        key: 'nfse_automation_settings',
+        value: automacaoNfse,
+        updated_by: profile?.id ?? null,
+      }, { onConflict: 'key' })
+    setSalvandoAutomacaoNfse(false)
+    if (error) {
+      setErro(error.message)
+      return
+    }
+    setOkAutomacaoNfse(true)
   }
 
   async function testarConexaoGissOnline() {
@@ -3251,6 +3299,17 @@ function AbaFiscal() {
               </div>
             </div>
             <ConfigInput label="Chave de Autenticação" value={form.chave_autenticacao || ''} onChange={v => updateField('chave_autenticacao', v)} placeholder="Token, chave API ou código liberado" />
+            {form.provedor === 'gissonline' && (
+              <ConfigInput
+                label="Host / URL WSDL GISSONLINE"
+                value={String(((form.payload_reforma_tributaria ?? {}) as Record<string, unknown>).gissonline_ws_host ?? '')}
+                onChange={v => updateField('payload_reforma_tributaria', {
+                  ...(form.payload_reforma_tributaria ?? {}),
+                  gissonline_ws_host: v,
+                } as NfseConfiguracao['payload_reforma_tributaria'])}
+                placeholder="Ex: ws-seumunicipio.giss.com.br ou URL completa"
+              />
+            )}
           </div>
 
           {form.provedor === 'gissonline' && (
@@ -3456,6 +3515,77 @@ function AbaFiscal() {
               />
             </div>
           </div>
+        </div>
+
+        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-100 dark:border-gray-800 pb-2 flex items-center gap-2">
+            <FileText size={16} className="text-indigo-500" /> Regra de emissão da NFS-e
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-gray-500 dark:text-gray-400">Etapa para liberar a emissão</span>
+              <select
+                value={automacaoNfse.gatilho_emissao}
+                onChange={e => setAutomacaoNfse(prev => ({ ...prev, gatilho_emissao: e.target.value as NfseEmissionTrigger }))}
+                className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {Object.entries(NFSE_GATILHO_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </label>
+            <div className="grid gap-3">
+              {[
+                ['permitir_emissao_manual_rapida', 'Atalho rápido no Comercial', 'Permite emitir NFS-e direto pela ação da venda, respeitando a etapa configurada.'],
+                ['permitir_emissao_lote_comercial', 'Emissão em lote no Comercial', 'Permite selecionar várias vendas e emitir NFS-e em lote quando elegíveis.'],
+              ].map(([field, title, desc]) => (
+                <div key={field} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-950 rounded-xl border border-gray-100 dark:border-gray-800">
+                  <div>
+                    <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">{title}</p>
+                    <p className="text-[10px] text-gray-400">{desc}</p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!isAdmin}
+                    onClick={() => setAutomacaoNfse(prev => ({ ...prev, [field]: !prev[field as keyof NfseAutomationSettings] } as NfseAutomationSettings))}
+                    className={cn(
+                      'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 disabled:opacity-50',
+                      automacaoNfse[field as keyof NfseAutomationSettings] ? 'bg-blue-600' : 'bg-gray-200 dark:bg-gray-700'
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200',
+                        automacaoNfse[field as keyof NfseAutomationSettings] ? 'translate-x-5' : 'translate-x-0'
+                      )}
+                    />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-xl border border-indigo-100 dark:border-indigo-900/30 bg-indigo-50/70 dark:bg-indigo-950/20 px-4 py-3">
+            <p className="text-xs font-medium text-indigo-700 dark:text-indigo-300">
+              Regra atual: {NFSE_GATILHO_LABELS[automacaoNfse.gatilho_emissao]}.
+            </p>
+            <p className="text-[11px] text-indigo-600 dark:text-indigo-400 mt-1">
+              A emissão manual e em lote no Comercial respeitará essa etapa antes de disparar a nota.
+            </p>
+          </div>
+          {okAutomacaoNfse && (
+            <p className="text-xs text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-3 py-2">
+              Regra de emissão da NFS-e salva.
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={salvarAutomacaoNfse}
+            disabled={!isAdmin || salvandoAutomacaoNfse}
+            className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors inline-flex items-center gap-2"
+          >
+            {salvandoAutomacaoNfse ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            {salvandoAutomacaoNfse ? 'Salvando...' : 'Salvar Regra da NFS-e'}
+          </button>
         </div>
 
         {erro && <p className="text-xs text-red-600 dark:text-red-300 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">{erro}</p>}

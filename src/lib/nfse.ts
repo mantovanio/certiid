@@ -12,6 +12,19 @@ export type NfseModeloLayout = {
   rodape: string
 }
 
+export type NfseEmissionTrigger =
+  | 'manual'
+  | 'apos_pagamento'
+  | 'apos_agendamento'
+  | 'apos_validacao'
+  | 'apos_protocolo'
+
+export type NfseAutomationSettings = {
+  gatilho_emissao: NfseEmissionTrigger
+  permitir_emissao_manual_rapida: boolean
+  permitir_emissao_lote_comercial: boolean
+}
+
 export const DEFAULT_NFSE_MODELO: NfseModeloLayout = {
   nome_modelo: 'Modelo CertiID Municipal',
   titulo: 'NOTA FISCAL ELETRONICA DE SERVICOS - NFS-e',
@@ -24,11 +37,26 @@ export const DEFAULT_NFSE_MODELO: NfseModeloLayout = {
   rodape: 'Modelo visual interno para operacao fiscal e comercial da CertiID.',
 }
 
+export const DEFAULT_NFSE_AUTOMATION_SETTINGS: NfseAutomationSettings = {
+  gatilho_emissao: 'apos_validacao',
+  permitir_emissao_manual_rapida: true,
+  permitir_emissao_lote_comercial: true,
+}
+
 export function normalizeNfseModeloLayout(
   value: Partial<NfseModeloLayout> | null | undefined
 ): NfseModeloLayout {
   return {
     ...DEFAULT_NFSE_MODELO,
+    ...(value ?? {}),
+  }
+}
+
+export function normalizeNfseAutomationSettings(
+  value: Partial<NfseAutomationSettings> | null | undefined
+): NfseAutomationSettings {
+  return {
+    ...DEFAULT_NFSE_AUTOMATION_SETTINGS,
     ...(value ?? {}),
   }
 }
@@ -276,4 +304,51 @@ export function buildNfsePreviewData(params: {
     },
     avisos: `${modelo.observacao_padrao}\n${modelo.rodape}`.trim(),
   } satisfies NfsePreviewData
+}
+
+export function isNfseEmissionAllowed(params: {
+  gatilho: NfseEmissionTrigger
+  venda: {
+    pago?: boolean | null
+    protocolo_numero?: string | null
+  }
+  agendamentoStatus?: string | null
+}) {
+  const { gatilho, venda, agendamentoStatus } = params
+
+  if (gatilho === 'manual') {
+    return {
+      allowed: true,
+      reason: '',
+    }
+  }
+
+  if (gatilho === 'apos_pagamento') {
+    return venda.pago
+      ? { allowed: true, reason: '' }
+      : { allowed: false, reason: 'A nota está configurada para emissão somente após a compensação do pagamento.' }
+  }
+
+  if (gatilho === 'apos_agendamento') {
+    return ['confirmado', 'realizado'].includes(String(agendamentoStatus ?? ''))
+      ? { allowed: true, reason: '' }
+      : { allowed: false, reason: 'A nota está configurada para emissão somente após o agendamento da validação.' }
+  }
+
+  if (gatilho === 'apos_validacao') {
+    return String(agendamentoStatus ?? '') === 'realizado'
+      ? { allowed: true, reason: '' }
+      : { allowed: false, reason: 'A nota está configurada para emissão somente após a validação realizada pelo agente de registro.' }
+  }
+
+  if (gatilho === 'apos_protocolo') {
+    return venda.protocolo_numero?.trim()
+      ? { allowed: true, reason: '' }
+      : { allowed: false, reason: 'A nota está configurada para emissão somente após a geração do protocolo.' }
+  }
+
+  return {
+    allowed: false,
+    reason: 'A etapa atual ainda não permite a emissão da nota.',
+  }
 }

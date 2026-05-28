@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { renderToStaticMarkup } from 'react-dom/server'
 import * as XLSX from 'xlsx'
 import { cn } from '@/lib/utils'
 import { generateAgendaSlotsPreview, resolveAgentesElegiveisPorTabela } from '@/lib/agenda'
@@ -20,7 +21,9 @@ import {
   FileText,
   List,
   Loader2,
+  Mail,
   MapPin,
+  MessageCircle,
   PlusCircle,
   Receipt,
   RefreshCcw,
@@ -95,6 +98,10 @@ type VendaRow = VendaCertificado & {
   cadastros_base: { nome: string; cpf_cnpj: string } | null
   pontos_atendimento: { nome: string } | null
 }
+
+type NfseValidationResult =
+  | { ok: true }
+  | { ok: false; message: string; detail: string; nextStep: string }
 
 type LocalFormVenda = {
   cadastro_base_id: string
@@ -3148,6 +3155,259 @@ export default function Comercial() {
     }
   }
 
+  function validarCamposObrigatoriosNfse(venda: VendaRow, configuracaoFiscal: NfseConfiguracao): NfseValidationResult {
+    const payloadFiscal = (configuracaoFiscal.payload_reforma_tributaria ?? {}) as Record<string, unknown>
+    const adapterMunicipal = String(payloadFiscal.municipal_adapter ?? '').trim()
+    const emitente = buildEmitenteSnapshot(configuracaoFiscal)
+    const tomador = buildVendaTomadorSnapshot(venda)
+    const produtoResumo = resolveProdutoResumoNfse(venda)
+    const faltantes: string[] = []
+
+    const registrarFalta = (
+      label: string,
+      value: unknown,
+      options?: { invalidValues?: string[] }
+    ) => {
+      const normalized = String(value ?? '').trim()
+      const invalidValues = (options?.invalidValues ?? []).map(item => item.trim().toLowerCase())
+      if (!normalized || invalidValues.includes(normalized.toLowerCase())) {
+        faltantes.push(label)
+      }
+    }
+
+    registrarFalta('CNPJ do emitente', configuracaoFiscal.cnpj_emitente)
+    registrarFalta('nome ou razão social do emitente', emitente.nome, { invalidValues: ['emitente nao configurado'] })
+    registrarFalta('inscrição municipal do emitente', configuracaoFiscal.inscricao_municipal)
+    registrarFalta('endereço do emitente', emitente.endereco)
+    registrarFalta('município do emitente', emitente.municipio)
+    registrarFalta('telefone do emitente', emitente.telefone)
+    registrarFalta('e-mail do emitente', emitente.email)
+    registrarFalta('nome do tomador', tomador.nome)
+    registrarFalta('CPF/CNPJ do tomador', tomador.documento)
+    registrarFalta('e-mail do tomador', tomador.email)
+    registrarFalta('telefone do tomador', tomador.telefone)
+    registrarFalta('logradouro do tomador', venda.logradouro)
+    registrarFalta('número do tomador', venda.numero)
+    registrarFalta('bairro do tomador', venda.bairro)
+    registrarFalta('cidade do tomador', venda.cidade)
+    registrarFalta('UF do tomador', venda.uf)
+    registrarFalta('CEP do tomador', venda.cep)
+    registrarFalta('tipo de emissão da venda', produtoResumo.tipoEmissao)
+    registrarFalta('código do serviço', configuracaoFiscal.codigo_servico_municipio)
+
+    if ((venda.valor_venda ?? 0) <= 0) {
+      faltantes.push('valor do serviço da venda')
+    }
+
+    if (configuracaoFiscal.provedor === 'gissonline') {
+      registrarFalta('usuário da prefeitura', configuracaoFiscal.usuario_prefeitura)
+      registrarFalta('senha da prefeitura', configuracaoFiscal.senha_prefeitura)
+      registrarFalta('certificado A1', configuracaoFiscal.certificado_pfx_path)
+      registrarFalta('senha do certificado', configuracaoFiscal.certificado_senha)
+    }
+
+    if (configuracaoFiscal.provedor === 'municipal' && adapterMunicipal === 'nota_joseense') {
+      registrarFalta('código IBGE do município', configuracaoFiscal.municipio_codigo_ibge)
+      registrarFalta('CNAE do emitente', configuracaoFiscal.cnae)
+      registrarFalta('certificado A1', configuracaoFiscal.certificado_pfx_path)
+      registrarFalta('senha do certificado', configuracaoFiscal.certificado_senha)
+    }
+
+    if (!faltantes.length) {
+      return { ok: true }
+    }
+
+    return {
+      ok: false,
+      message: 'Emissão bloqueada. Corrija os dados obrigatórios antes de emitir a NFS-e.',
+      detail: `A nota não foi enviada porque ainda faltam estes dados: ${faltantes.join(', ')}.`,
+      nextStep: `Preencha os campos pendentes da empresa, do tomador ou da configuração fiscal: ${faltantes.join(', ')}.`,
+    }
+  }
+
+  function isNfseMock(nota: NfseEmitida | null | undefined) {
+    return String((nota?.metadata as Record<string, unknown> | null)?.modo ?? '').trim() === 'mock'
+  }
+
+  function buildNfsePreviewProps(venda: VendaRow, nota?: NfseEmitida | null) {
+    const produtoResumo = resolveProdutoResumoNfse(venda)
+    return {
+      configuracao: nfseConfiguracaoAtiva,
+      nota: nota ?? null,
+      venda,
+      fallbackDiscriminacao: buildNfseDiscriminacaoFromVenda(venda, {
+        produtoDescricao: produtoResumo.tipo,
+        produtoModelo: produtoResumo.modelo,
+        validade: produtoResumo.validade,
+        tipoEmissao: produtoResumo.tipoEmissao,
+      }),
+      agency: agencyConfig,
+      logoUrl: agencyConfig.logo_interna_url || agencyConfig.logo_url,
+    }
+  }
+
+  function openNfsePrintWindow(venda: VendaRow, nota: NfseEmitida) {
+    const popup = window.open('', '_blank', 'width=1320,height=960')
+    if (!popup) {
+      showMsg('Libere a abertura de pop-up para gerar o PDF da nota.', 'err')
+      return
+    }
+
+    const styles = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
+      .map(node => node.outerHTML)
+      .join('\n')
+    const markup = renderToStaticMarkup(
+      <NfseDocumentPreview
+        {...buildNfsePreviewProps(venda, nota)}
+        className="mx-auto w-[1180px]"
+      />
+    )
+
+    popup.document.open()
+    popup.document.write(`<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>NFS-e ${nota.numero_nf ?? 'sem-numero'}</title>
+    ${styles}
+    <style>
+      body { margin: 0; padding: 24px; background: #f3f4f6; }
+      @media print {
+        body { padding: 0; background: #ffffff; }
+      }
+    </style>
+  </head>
+  <body>
+    ${markup}
+    <script>
+      window.onload = function () {
+        setTimeout(function () { window.print(); }, 250);
+      };
+    </script>
+  </body>
+</html>`)
+    popup.document.close()
+    showMsg('A visualização da nota foi aberta para salvar em PDF.', 'ok')
+  }
+
+  function baixarNfsePdf(venda: VendaRow, nota: NfseEmitida) {
+    if (nota.pdf_url?.trim()) {
+      const link = document.createElement('a')
+      link.href = nota.pdf_url
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      link.download = `nfse_${nota.numero_nf ?? nota.id}.pdf`
+      link.click()
+      showMsg('Download do PDF iniciado.', 'ok')
+      return
+    }
+    openNfsePrintWindow(venda, nota)
+  }
+
+  async function encaminharNfsePorEmail(venda: VendaRow, nota: NfseEmitida) {
+    const email = venda.email_faturamento?.trim()
+    if (!email) {
+      showMsg('Informe o e-mail do tomador antes de encaminhar a nota.', 'err')
+      return
+    }
+
+    const values = {
+      cliente: venda.nome_faturamento?.trim() || venda.cadastros_base?.nome?.trim() || 'Cliente',
+      numero_nf: nota.numero_nf ?? 'em processamento',
+      valor: formatCurrency(nota.valor_servico ?? venda.valor_venda ?? 0),
+      codigo_verificacao: nota.codigo_verificacao ?? 'aguardando',
+      link_documento: nota.pdf_url?.trim() || nota.xml_url?.trim() || 'Documento sem link público no momento.',
+    }
+
+    const subject = renderTemplate('Sua NFS-e {{numero_nf}} da CertiID', values)
+    const body = renderTemplate(
+      'Olá, {{cliente}}.\n\nSua NFS-e {{numero_nf}} foi registrada no valor de {{valor}}.\nCódigo de verificação: {{codigo_verificacao}}.\nAcesse o documento por aqui: {{link_documento}}\n\nAtenciosamente,\nEquipe CertiID',
+      values
+    )
+
+    const { error } = await queueEmailMessage({
+      to: email,
+      subject,
+      body,
+      payload: {
+        venda_id: venda.id,
+        nfse_id: nota.id,
+        tipo: 'nfse_encaminhamento',
+      },
+    })
+
+    if (error) {
+      showMsg(`Não foi possível encaminhar a nota por e-mail: ${error}`, 'err')
+      return
+    }
+
+    showMsg('A nota foi encaminhada para a fila de e-mail.', 'ok')
+  }
+
+  async function encaminharNfsePorWhatsApp(venda: VendaRow, nota: NfseEmitida) {
+    const telefone = venda.telefone_faturamento?.trim()
+    if (!telefone) {
+      showMsg('Informe o telefone com WhatsApp do tomador antes de encaminhar a nota.', 'err')
+      return
+    }
+
+    const body = renderTemplate(
+      'Olá, {{cliente}}. Sua NFS-e {{numero_nf}} foi registrada no valor de {{valor}}. Código de verificação: {{codigo_verificacao}}. Acesse o documento aqui: {{link_documento}}',
+      {
+        cliente: venda.nome_faturamento?.trim() || venda.cadastros_base?.nome?.trim() || 'Cliente',
+        numero_nf: nota.numero_nf ?? 'em processamento',
+        valor: formatCurrency(nota.valor_servico ?? venda.valor_venda ?? 0),
+        codigo_verificacao: nota.codigo_verificacao ?? 'aguardando',
+        link_documento: nota.pdf_url?.trim() || nota.xml_url?.trim() || 'Documento sem link público no momento.',
+      }
+    )
+
+    const { error } = await queueWhatsAppMessage({
+      to: telefone,
+      body,
+      payload: {
+        venda_id: venda.id,
+        nfse_id: nota.id,
+        tipo: 'nfse_encaminhamento',
+      },
+    })
+
+    if (error) {
+      showMsg(`Não foi possível encaminhar a nota por WhatsApp: ${error}`, 'err')
+      return
+    }
+
+    showMsg('A nota foi encaminhada para a fila de WhatsApp.', 'ok')
+  }
+
+  async function excluirRegistroNfse(venda: VendaRow, nota: NfseEmitida) {
+    const deletavel = isNfseMock(nota) || nota.status_nf === 'pendente' || nota.status_nf === 'erro'
+    if (!deletavel) {
+      openFeatureNotice(
+        'Exclusão bloqueada',
+        'Esta NFS-e já possui status fiscal relevante. Para notas emitidas ou canceladas, use o fluxo de cancelamento fiscal em vez de excluir o registro.',
+        'Você ainda pode excluir notas pendentes, com erro ou geradas em modo mock.'
+      )
+      return
+    }
+
+    const confirmado = window.confirm(`Deseja excluir o registro da NFS-e ${nota.numero_nf ?? 'sem número'}?`)
+    if (!confirmado) return
+
+    const { error } = await supabase.from('nfse_emitidas').delete().eq('id', nota.id)
+    if (error) {
+      showMsg(`Não foi possível excluir a NFS-e: ${error.message}`, 'err')
+      return
+    }
+
+    showMsg('Registro da NFS-e excluído com sucesso.', 'ok')
+    if (vendaNfseModal?.venda.id === venda.id) {
+      setVendaNfseModal(prev => prev
+        ? { ...prev, notas: prev.notas.filter(item => item.id !== nota.id) }
+        : prev)
+    }
+  }
+
   async function fetchConfiguracaoFiscalAtiva() {
     const { data } = await supabase
       .from('nfse_configuracoes')
@@ -3286,69 +3546,89 @@ export default function Comercial() {
   }
 
   async function emitirNfseParaVenda(venda: VendaRow, options?: { silent?: boolean; ignoreStageRule?: boolean; justificativaForaEtapa?: string | null }) {
-    const validacao = validarEtapaEmissaoNfse(venda)
-    if (!validacao.allowed && !options?.ignoreStageRule) {
-      if (nfseAutomationSettings.permitir_emissao_manual_fora_etapa) {
-        setNfseOverrideModal({
-          vendas: [venda],
-          justificativa: '',
-          motivoPadrao: validacao.reason,
-          lote: false,
-        })
+    try {
+      const validacao = validarEtapaEmissaoNfse(venda)
+      if (!validacao.allowed && !options?.ignoreStageRule) {
+        if (nfseAutomationSettings.permitir_emissao_manual_fora_etapa) {
+          setNfseOverrideModal({
+            vendas: [venda],
+            justificativa: '',
+            motivoPadrao: validacao.reason,
+            lote: false,
+          })
+          return
+        }
+        if (!options?.silent) showMsg(validacao.reason, 'err')
         return
       }
-      if (!options?.silent) showMsg(validacao.reason, 'err')
-      return
-    }
 
-    const configuracaoFiscal = await fetchConfiguracaoFiscalAtiva()
-    if (!configuracaoFiscal) {
-      if (!options?.silent) showMsg('Nenhuma configuração fiscal ativa foi encontrada para emitir a nota.', 'err')
-      return
-    }
-
-    if (configuracaoFiscal.provedor === 'gissonline') {
-      const result = await emitirNfseViaGissOnline({
-        ...venda,
-        metadata: {
-          ...(venda.metadata ?? {}),
-          nfse_justificativa_fora_etapa: options?.justificativaForaEtapa ?? null,
-        },
-      } as VendaRow)
-      if (!options?.silent) {
-        showMsg(result.message ?? `NFS-e enviada ao GISSONLINE. Protocolo ${result.protocolo ?? result.numero_lote ?? 'em processamento'}.`, 'ok')
+      const configuracaoFiscal = await fetchConfiguracaoFiscalAtiva()
+      if (!configuracaoFiscal) {
+        throw new Error('Nenhuma configuração fiscal ativa foi encontrada para emitir a nota.')
       }
-      await abrirNfseVenda(venda)
-      return
-    }
 
-    const payloadFiscal = (configuracaoFiscal.payload_reforma_tributaria ?? {}) as Record<string, unknown>
-    if (configuracaoFiscal.provedor === 'municipal' && String(payloadFiscal.municipal_adapter ?? '').trim() === 'nota_joseense') {
-      const result = await emitirNfseViaNotaJoseense({
-        ...venda,
-        metadata: {
-          ...(venda.metadata ?? {}),
-          nfse_justificativa_fora_etapa: options?.justificativaForaEtapa ?? null,
-        },
-      } as VendaRow)
-      if (!options?.silent) {
-        showMsg(result.message ?? `NFS-e enviada à Nota Joseense. Número ${result.numero_nf ?? 'em processamento'}.`, 'ok')
+      const validacaoCampos = validarCamposObrigatoriosNfse(venda, configuracaoFiscal)
+      if (!validacaoCampos.ok) {
+        if (!options?.silent) {
+          showMsg(validacaoCampos.message, 'err')
+          openFeatureNotice('Emissão bloqueada por dados obrigatórios', validacaoCampos.detail, validacaoCampos.nextStep)
+        }
+        if (options?.silent) {
+          throw new Error(validacaoCampos.message)
+        }
+        return
       }
-      await abrirNfseVenda(venda)
-      return
-    }
 
-    const vendaComJustificativa = options?.justificativaForaEtapa
-      ? {
+      if (configuracaoFiscal.provedor === 'gissonline') {
+        const result = await emitirNfseViaGissOnline({
           ...venda,
           metadata: {
             ...(venda.metadata ?? {}),
-            nfse_justificativa_fora_etapa: options.justificativaForaEtapa,
+            nfse_justificativa_fora_etapa: options?.justificativaForaEtapa ?? null,
           },
+        } as VendaRow)
+        if (!options?.silent) {
+          showMsg(result.message ?? `NFS-e enviada ao GISSONLINE. Protocolo ${result.protocolo ?? result.numero_lote ?? 'em processamento'}.`, 'ok')
         }
-      : venda
+        await abrirNfseVenda(venda)
+        return
+      }
 
-    await emitirNfseMock(vendaComJustificativa as VendaRow, options)
+      const payloadFiscal = (configuracaoFiscal.payload_reforma_tributaria ?? {}) as Record<string, unknown>
+      if (configuracaoFiscal.provedor === 'municipal' && String(payloadFiscal.municipal_adapter ?? '').trim() === 'nota_joseense') {
+        const result = await emitirNfseViaNotaJoseense({
+          ...venda,
+          metadata: {
+            ...(venda.metadata ?? {}),
+            nfse_justificativa_fora_etapa: options?.justificativaForaEtapa ?? null,
+          },
+        } as VendaRow)
+        if (!options?.silent) {
+          showMsg(result.message ?? `NFS-e enviada à Nota Joseense. Número ${result.numero_nf ?? 'em processamento'}.`, 'ok')
+        }
+        await abrirNfseVenda(venda)
+        return
+      }
+
+      const vendaComJustificativa = options?.justificativaForaEtapa
+        ? {
+            ...venda,
+            metadata: {
+              ...(venda.metadata ?? {}),
+              nfse_justificativa_fora_etapa: options.justificativaForaEtapa,
+            },
+          }
+        : venda
+
+      await emitirNfseMock(vendaComJustificativa as VendaRow, options)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Não foi possível emitir a NFS-e.'
+      if (!options?.silent) {
+        showMsg(message, 'err')
+        return
+      }
+      throw error instanceof Error ? error : new Error(message)
+    }
   }
 
   async function emitirNfseSelecionadas() {
@@ -5983,7 +6263,7 @@ export default function Comercial() {
                         <th className="px-4 py-3">Emissão</th>
                         <th className="px-4 py-3">Valor</th>
                         <th className="px-4 py-3">Verificação</th>
-                        <th className="px-4 py-3 text-right">Arquivos</th>
+                        <th className="px-4 py-3 text-right">Ações</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -6007,11 +6287,19 @@ export default function Comercial() {
                           <td className="px-4 py-3">{formatCurrency(nota.valor_servico ?? 0)}</td>
                           <td className="px-4 py-3 text-gray-500">{nota.codigo_verificacao ?? '—'}</td>
                           <td className="px-4 py-3">
-                            <div className="flex items-center justify-end gap-2">
+                            <div className="flex flex-wrap items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => baixarNfsePdf(vendaNfseModal.venda, nota)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700"
+                              >
+                                <Download size={12} />
+                                PDF
+                              </button>
                               {nota.pdf_url && (
                                 <button type="button" onClick={() => window.open(nota.pdf_url!, '_blank')}
-                                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700">
-                                  PDF
+                                  className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
+                                  Abrir PDF
                                 </button>
                               )}
                               {nota.xml_url && (
@@ -6020,9 +6308,30 @@ export default function Comercial() {
                                   XML
                                 </button>
                               )}
-                              {!nota.pdf_url && !nota.xml_url && (
-                                <span className="text-xs text-gray-400">Sem arquivo</span>
-                              )}
+                              <button
+                                type="button"
+                                onClick={() => void encaminharNfsePorEmail(vendaNfseModal.venda, nota)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                              >
+                                <Mail size={12} />
+                                E-mail
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void encaminharNfsePorWhatsApp(vendaNfseModal.venda, nota)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                              >
+                                <MessageCircle size={12} />
+                                WhatsApp
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void excluirRegistroNfse(vendaNfseModal.venda, nota)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-red-200 text-red-700 hover:bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-950/20"
+                              >
+                                <Trash2 size={12} />
+                                Excluir
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -6047,17 +6356,7 @@ export default function Comercial() {
                 </div>
                 <div className="overflow-x-auto bg-gray-50 dark:bg-gray-950 p-4">
                   <NfseDocumentPreview
-                    configuracao={nfseConfiguracaoAtiva}
-                    nota={vendaNfseModal.notas[0] ?? null}
-                    venda={vendaNfseModal.venda}
-                    fallbackDiscriminacao={buildNfseDiscriminacaoFromVenda(vendaNfseModal.venda, {
-                      produtoDescricao: resolveProdutoResumoNfse(vendaNfseModal.venda).tipo,
-                      produtoModelo: resolveProdutoResumoNfse(vendaNfseModal.venda).modelo,
-                      validade: resolveProdutoResumoNfse(vendaNfseModal.venda).validade,
-                      tipoEmissao: resolveProdutoResumoNfse(vendaNfseModal.venda).tipoEmissao,
-                    })}
-                    agency={agencyConfig}
-                    logoUrl={agencyConfig.logo_interna_url || agencyConfig.logo_url}
+                    {...buildNfsePreviewProps(vendaNfseModal.venda, vendaNfseModal.notas[0] ?? null)}
                     className="min-w-[820px]"
                   />
                 </div>
@@ -6149,17 +6448,7 @@ export default function Comercial() {
               </div>
               <div className="flex-1 overflow-auto bg-gray-100 dark:bg-gray-950 p-5">
                 <NfseDocumentPreview
-                  configuracao={nfseConfiguracaoAtiva}
-                  nota={vendaNfseModal.notas[0] ?? null}
-                  venda={vendaNfseModal.venda}
-                  fallbackDiscriminacao={buildNfseDiscriminacaoFromVenda(vendaNfseModal.venda, {
-                    produtoDescricao: resolveProdutoResumoNfse(vendaNfseModal.venda).tipo,
-                    produtoModelo: resolveProdutoResumoNfse(vendaNfseModal.venda).modelo,
-                    validade: resolveProdutoResumoNfse(vendaNfseModal.venda).validade,
-                    tipoEmissao: resolveProdutoResumoNfse(vendaNfseModal.venda).tipoEmissao,
-                  })}
-                  agency={agencyConfig}
-                  logoUrl={agencyConfig.logo_interna_url || agencyConfig.logo_url}
+                  {...buildNfsePreviewProps(vendaNfseModal.venda, vendaNfseModal.notas[0] ?? null)}
                   className="min-w-[1100px] mx-auto"
                 />
               </div>

@@ -390,16 +390,33 @@ Deno.serve(async (req: Request) => {
     produto_validade: produtoValidade,
     tipo_emissao: tipoEmissao,
   }
+  const emitenteSnapshot = buildEmitenteSnapshot(config as Record<string, unknown>)
+  const tomadorSnapshot = buildTomadorSnapshot(vendaFiscal)
 
   const obrigatorios = [
     ['CNPJ emitente', config.cnpj_emitente],
+    ['Nome ou razão social do emitente', emitenteSnapshot.nome],
     ['Inscrição municipal do emitente', config.inscricao_municipal],
+    ['Endereço do emitente', emitenteSnapshot.endereco],
+    ['Município do emitente', emitenteSnapshot.municipio],
+    ['Telefone do emitente', emitenteSnapshot.telefone],
+    ['E-mail do emitente', emitenteSnapshot.email],
     ['Código do serviço', config.codigo_servico_municipio],
     ['CNAE do emitente', config.cnae],
+    ['Código IBGE do município', config.municipio_codigo_ibge],
     ['Certificado A1', config.certificado_pfx_path],
     ['Senha do certificado', config.certificado_senha],
     ['Documento do tomador', venda.documento_faturamento],
     ['Nome do tomador', venda.nome_faturamento],
+    ['E-mail do tomador', venda.email_faturamento],
+    ['Telefone do tomador', venda.telefone_faturamento],
+    ['Logradouro do tomador', venda.logradouro],
+    ['Número do tomador', venda.numero],
+    ['Bairro do tomador', venda.bairro],
+    ['Cidade do tomador', venda.cidade],
+    ['UF do tomador', venda.uf],
+    ['CEP do tomador', venda.cep],
+    ['Tipo de emissão da venda', tipoEmissao],
   ].filter(([, value]) => !String(value ?? '').trim())
 
   if (obrigatorios.length > 0) {

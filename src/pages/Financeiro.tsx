@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { PlusCircle, TrendingUp, TrendingDown, DollarSign, X, Zap, FileText } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { buildNfseDiscriminacaoFromLancamento } from '@/lib/nfse'
 import { supabase } from '@/lib/supabase'
 import type {
   CentroCusto, LancamentoV2, NfseEmitida, OrdemPagamento,
@@ -247,15 +248,22 @@ export default function Financeiro() {
 
   async function emitirNfse(l: LancamentoV2) {
     const numeroMock = 'MOCK-' + Date.now().toString(36).toUpperCase()
+    const discriminacaoServicos = buildNfseDiscriminacaoFromLancamento(l)
     const { error: err } = await supabase.from('nfse_emitidas').insert([{
       lancamento_financeiro_id: l.id,
       status_nf: 'pendente',
       numero_nf: numeroMock,
       valor_servico: l.valor,
       data_emissao: new Date().toISOString(),
-      payload_envio: { modo: 'mock' },
+      payload_envio: {
+        modo: 'mock',
+        discriminacao_servicos: discriminacaoServicos,
+      },
       payload_retorno: {},
-      metadata: { modo: 'mock' },
+      metadata: {
+        modo: 'mock',
+        discriminacao_servicos: discriminacaoServicos,
+      },
     }])
     if (err) { showMsg('Erro ao emitir NFS-e: ' + err.message, false); return }
     showMsg(`NFS-e ${numeroMock} registrada (modo mock).`)

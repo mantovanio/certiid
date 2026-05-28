@@ -37,6 +37,8 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
+import NfseDocumentPreview from '@/components/NfseDocumentPreview'
+import { buildNfseDiscriminacaoFromVenda } from '@/lib/nfse'
 import { supabase } from '@/lib/supabase'
 import { queueEmailMessage, queueWhatsAppMessage, renderTemplate } from '@/lib/communication'
 import { useAuth } from '@/contexts/AuthContext'
@@ -53,6 +55,7 @@ import type {
   DocumentoFinanceiro,
   LancamentoV2,
   LojaMarketplace,
+  NfseConfiguracao,
   NfseEmitida,
   NovaFaixaComissao,
   NovoAgendamento,
@@ -3029,17 +3032,105 @@ export default function Comercial() {
     })
   }
 
+  function resolveDescricaoProdutoNfse(venda: VendaRow) {
+    const item = venda.tabela_preco_item_id
+      ? tabelaItens.find(entry => entry.id === venda.tabela_preco_item_id)
+      : null
+    const cert = venda.certificado_id
+      ? certificados.find(entry => entry.id === venda.certificado_id)
+      : null
+
+    return cert?.descricao_produto?.trim()
+      || cert?.descricao?.trim()
+      || cert?.tipo?.trim()
+      || venda.tipo_produto?.trim()
+      || item?.link_safeweb?.trim()
+      || 'certificado digital'
+  }
+
+  function buildVendaTomadorSnapshot(venda: VendaRow) {
+    const endereco = [
+      venda.logradouro?.trim(),
+      venda.numero?.trim(),
+      venda.bairro?.trim(),
+      venda.cep?.trim() ? `CEP ${venda.cep.trim()}` : '',
+    ].filter(Boolean).join(', ')
+
+    return {
+      nome: venda.nome_faturamento?.trim() || venda.cadastros_base?.nome?.trim() || '',
+      documento: venda.documento_faturamento?.trim() || venda.cadastros_base?.cpf_cnpj?.trim() || '',
+      inscricao_municipal: venda.inscricao_municipal?.trim() || '',
+      telefone: venda.telefone_faturamento?.trim() || '',
+      email: venda.email_faturamento?.trim() || '',
+      endereco,
+      complemento: venda.complemento?.trim() || '',
+      municipio: [venda.cidade?.trim(), venda.uf?.trim()].filter(Boolean).join(' - '),
+    }
+  }
+
+  function buildEmitenteSnapshot(config: Partial<NfseConfiguracao> | null | undefined) {
+    const payload = (config?.payload_reforma_tributaria ?? {}) as Record<string, unknown>
+    return {
+      nome: String(payload.razao_social ?? 'Emitente nao configurado'),
+      documento: config?.cnpj_emitente?.trim() || '',
+      inscricao_municipal: config?.inscricao_municipal?.trim() || '',
+      telefone: String(payload.telefone ?? ''),
+      email: String(payload.email ?? ''),
+      endereco: String(payload.endereco ?? ''),
+      complemento: String(payload.complemento ?? ''),
+      municipio: config?.municipio_nome?.trim() || '',
+    }
+  }
+
+  async function fetchConfiguracaoFiscalAtiva() {
+    const { data } = await supabase
+      .from('nfse_configuracoes')
+      .select('*')
+      .eq('ativo', true)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    return (data ?? null) as NfseConfiguracao | null
+  }
+
   async function emitirNfseMock(venda: VendaRow) {
     const numeroMock = 'MOCK-' + Date.now().toString(36).toUpperCase()
+    const configuracaoFiscal = await fetchConfiguracaoFiscalAtiva()
+    const produtoDescricao = resolveDescricaoProdutoNfse(venda)
+    const discriminacaoServicos = buildNfseDiscriminacaoFromVenda(venda, {
+      produtoDescricao,
+    })
+    const tomador = buildVendaTomadorSnapshot(venda)
+    const emitente = buildEmitenteSnapshot(configuracaoFiscal)
     const { data: nova, error: err } = await supabase.from('nfse_emitidas').insert([{
       venda_certificado_id: venda.id,
+      cadastro_base_tomador_id: venda.cadastro_base_id,
       status_nf: 'pendente',
       numero_nf: numeroMock,
       valor_servico: venda.valor_venda ?? 0,
       data_emissao: new Date().toISOString(),
-      payload_envio: { modo: 'mock' },
+      payload_envio: {
+        modo: 'mock',
+        discriminacao_servicos: discriminacaoServicos,
+        produto_descricao: produtoDescricao,
+        codigo_servico_municipio: configuracaoFiscal?.codigo_servico_municipio ?? null,
+        tomador,
+        emitente,
+      },
       payload_retorno: {},
-      metadata: { modo: 'mock' },
+      metadata: {
+        modo: 'mock',
+        discriminacao_servicos: discriminacaoServicos,
+        fiscal: {
+          municipio_nome: configuracaoFiscal?.municipio_nome ?? null,
+          local_prestacao: configuracaoFiscal?.municipio_nome ?? null,
+          codigo_servico_municipio: configuracaoFiscal?.codigo_servico_municipio ?? null,
+          natureza_operacao: configuracaoFiscal?.natureza_operacao ?? null,
+          regime_especial: configuracaoFiscal?.regime_especial ?? null,
+          aliquota_iss: configuracaoFiscal?.aliquota_iss ?? null,
+        },
+      },
     }]).select('*').single()
     if (err) { showMsg('Erro ao criar NFS-e: ' + err.message, 'err'); return }
     showMsg(`NFS-e ${numeroMock} registrada (modo mock).`, 'ok')
@@ -5624,6 +5715,23 @@ export default function Comercial() {
                   </table>
                 </div>
               </div>
+
+              <div className="rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+                <div className="px-4 py-3 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-800">
+                  <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Prévia do corpo da nota</h4>
+                </div>
+                <div className="overflow-x-auto bg-gray-50 dark:bg-gray-950 p-4">
+                  <NfseDocumentPreview
+                    nota={vendaNfseModal.notas[0] ?? null}
+                    venda={vendaNfseModal.venda}
+                    fallbackDiscriminacao={buildNfseDiscriminacaoFromVenda(vendaNfseModal.venda, {
+                      produtoDescricao: resolveDescricaoProdutoNfse(vendaNfseModal.venda),
+                    })}
+                    className="min-w-[820px]"
+                  />
+                </div>
+              </div>
+
               <div className="flex justify-end pt-2">
                 <button type="button"
                   onClick={() => emitirNfseMock(vendaNfseModal.venda)}

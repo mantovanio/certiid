@@ -8,6 +8,8 @@ import { DEFAULT_CONTACT_DOCUMENT_STORAGE, loadContactDocumentStorageConfig, typ
 import { buildWhatsAppMetadata, getWhatsAppEngine, getWhatsAppEngineLabel, isWhatsAppIntegration, normalizeWhatsAppProvider } from '@/lib/whatsappIntegration'
 import { DEFAULT_PERMISSIONS, PAGE_PERMISSIONS, hasPerfil, isAdminProfile } from '@/lib/security'
 import { buscarCep } from '@/lib/cep'
+import NfseDocumentPreview from '@/components/NfseDocumentPreview'
+import { DEFAULT_NFSE_MODELO, type NfseModeloLayout } from '@/lib/nfse'
 import { useAuth } from '@/contexts/AuthContext'
 import type {
   AutomationRule,
@@ -2732,30 +2734,6 @@ function AbaPagamentos() {
 // ── Aba Fiscal / NFS-e ───────────────────────────────────────
 type FiscalSubTab = 'configuracoes' | 'modelo'
 
-type NfseModeloLayout = {
-  nome_modelo: string
-  titulo: string
-  subtitulo: string
-  cor_primaria: string
-  mostrar_logo: boolean
-  bloco_servico_titulo: string
-  mensagem_destaque: string
-  observacao_padrao: string
-  rodape: string
-}
-
-const DEFAULT_NFSE_MODELO: NfseModeloLayout = {
-  nome_modelo: 'Modelo CertiID Premium',
-  titulo: 'Nota Fiscal de Serviços',
-  subtitulo: 'Emissão inteligente para certificação digital',
-  cor_primaria: '#1d4ed8',
-  mostrar_logo: true,
-  bloco_servico_titulo: 'Detalhamento do serviço prestado',
-  mensagem_destaque: 'Documento gerado com padrão visual próprio da operação.',
-  observacao_padrao: 'Conferir retenções, dados do tomador e regras municipais antes do envio definitivo.',
-  rodape: 'Modelo visual configurável da CertiID. Ajuste livre para operação comercial e fiscal.',
-}
-
 const NFSE_PROVIDER_LABELS: Record<ProvedorNfse, string> = {
   nacional: 'Emissor Nacional',
   gissonline: 'GISSONLINE',
@@ -3380,7 +3358,7 @@ function AbaFiscal() {
             <div>
               <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Editor do modelo da nota</h3>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                Aqui você monta o padrão visual da sua nota. Esse modelo vai servir como base para o envio e para a futura geração do PDF próprio.
+                Aqui você ajusta a apresentação visual do corpo da NFS-e. A prévia ao lado segue o padrão municipal, com prestador, tomador, discriminação dos serviços e blocos fiscais.
               </p>
             </div>
 
@@ -3445,30 +3423,13 @@ function AbaFiscal() {
 
           <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5">
             <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-3">Prévia do modelo</p>
-            <div className="rounded-2xl overflow-hidden border border-gray-200 dark:border-gray-800">
-              <div className="p-5 text-white" style={{ backgroundColor: modeloNota.cor_primaria }}>
-                <p className="text-lg font-semibold">{modeloNota.titulo}</p>
-                <p className="text-sm text-white/85 mt-1">{modeloNota.subtitulo}</p>
-                {modeloNota.mostrar_logo && (
-                  <div className="mt-3 inline-flex px-3 py-1 rounded-full bg-white/15 text-[11px] font-medium">
-                    Identidade visual ativa
-                  </div>
-                )}
-              </div>
-              <div className="p-5 space-y-4 bg-gray-50 dark:bg-gray-950">
-                <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4">
-                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400">{modeloNota.bloco_servico_titulo}</p>
-                  <p className="text-sm text-gray-800 dark:text-gray-200 mt-2">{modeloNota.mensagem_destaque}</p>
-                </div>
-                <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4">
-                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400">Observação padrão</p>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 mt-2">{modeloNota.observacao_padrao}</p>
-                </div>
-                <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-4">
-                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400">Rodapé</p>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 mt-2">{modeloNota.rodape}</p>
-                </div>
-              </div>
+            <div className="overflow-x-auto rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 p-3">
+              <NfseDocumentPreview
+                modelo={modeloNota}
+                configuracao={form}
+                fallbackDiscriminacao={modeloNota.mensagem_destaque}
+                className="min-w-[780px]"
+              />
             </div>
           </div>
         </div>

@@ -3538,6 +3538,8 @@ function AbaFiscal() {
               {[
                 ['permitir_emissao_manual_rapida', 'Atalho rápido no Comercial', 'Permite emitir NFS-e direto pela ação da venda, respeitando a etapa configurada.'],
                 ['permitir_emissao_lote_comercial', 'Emissão em lote no Comercial', 'Permite selecionar várias vendas e emitir NFS-e em lote quando elegíveis.'],
+                ['permitir_emissao_manual_fora_etapa', 'Permitir emissão fora da etapa', 'Permite emitir a nota manualmente mesmo antes da etapa automática configurada.'],
+                ['exigir_justificativa_fora_etapa', 'Exigir justificativa da exceção', 'Quando emitir fora da etapa, exige um motivo e registra essa decisão.'],
               ].map(([field, title, desc]) => (
                 <div key={field} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-950 rounded-xl border border-gray-100 dark:border-gray-800">
                   <div>

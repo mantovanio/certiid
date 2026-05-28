@@ -258,6 +258,13 @@ type VendaNfseModal = {
   notas: NfseEmitida[]
 } | null
 
+type NfseOverrideModal = {
+  vendas: VendaRow[]
+  justificativa: string
+  motivoPadrao: string
+  lote: boolean
+} | null
+
 type PaymentMethodId = 'safe2pay' | 'mercado_pago' | 'itau' | 'inter' | 'c6'
 type PaymentMethodConfig = {
   id: PaymentMethodId
@@ -687,6 +694,7 @@ export default function Comercial() {
   const [loadingVendaNfse, setLoadingVendaNfse]             = useState(false)
   const [vendaNfseModal, setVendaNfseModal]                 = useState<VendaNfseModal>(null)
   const [showVendaNfsePreviewTelaCheia, setShowVendaNfsePreviewTelaCheia] = useState(false)
+  const [nfseOverrideModal, setNfseOverrideModal] = useState<NfseOverrideModal>(null)
   // protocolo modal
   const [showProtocolo, setShowProtocolo]         = useState(false)
   const [protocoloVenda, setProtocoloVenda]       = useState<VendaRow | null>(null)
@@ -3146,7 +3154,10 @@ export default function Comercial() {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({ venda_certificado_id: venda.id }),
+      body: JSON.stringify({
+        venda_certificado_id: venda.id,
+        justificativa_fora_etapa: (venda.metadata as Record<string, unknown> | null)?.nfse_justificativa_fora_etapa ?? null,
+      }),
       signal: AbortSignal.timeout(45000),
     })
 
@@ -3212,9 +3223,18 @@ export default function Comercial() {
       : prev)
   }
 
-  async function emitirNfseParaVenda(venda: VendaRow, options?: { silent?: boolean }) {
+  async function emitirNfseParaVenda(venda: VendaRow, options?: { silent?: boolean; ignoreStageRule?: boolean; justificativaForaEtapa?: string | null }) {
     const validacao = validarEtapaEmissaoNfse(venda)
-    if (!validacao.allowed) {
+    if (!validacao.allowed && !options?.ignoreStageRule) {
+      if (nfseAutomationSettings.permitir_emissao_manual_fora_etapa) {
+        setNfseOverrideModal({
+          vendas: [venda],
+          justificativa: '',
+          motivoPadrao: validacao.reason,
+          lote: false,
+        })
+        return
+      }
       if (!options?.silent) showMsg(validacao.reason, 'err')
       return
     }
@@ -3226,7 +3246,13 @@ export default function Comercial() {
     }
 
     if (configuracaoFiscal.provedor === 'gissonline') {
-      const result = await emitirNfseViaGissOnline(venda)
+      const result = await emitirNfseViaGissOnline({
+        ...venda,
+        metadata: {
+          ...(venda.metadata ?? {}),
+          nfse_justificativa_fora_etapa: options?.justificativaForaEtapa ?? null,
+        },
+      } as VendaRow)
       if (!options?.silent) {
         showMsg(result.message ?? `NFS-e enviada ao GISSONLINE. Protocolo ${result.protocolo ?? result.numero_lote ?? 'em processamento'}.`, 'ok')
       }
@@ -3234,7 +3260,17 @@ export default function Comercial() {
       return
     }
 
-    await emitirNfseMock(venda, options)
+    const vendaComJustificativa = options?.justificativaForaEtapa
+      ? {
+          ...venda,
+          metadata: {
+            ...(venda.metadata ?? {}),
+            nfse_justificativa_fora_etapa: options.justificativaForaEtapa,
+          },
+        }
+      : venda
+
+    await emitirNfseMock(vendaComJustificativa as VendaRow, options)
   }
 
   async function emitirNfseSelecionadas() {
@@ -3245,6 +3281,18 @@ export default function Comercial() {
     setEmitindoNfseLote(true)
 
     const selecionadas = vendasV2.filter(v => selectedIds.has(v.id))
+    const bloqueadasPorEtapa = selecionadas.filter(v => !validarEtapaEmissaoNfse(v).allowed)
+    if (bloqueadasPorEtapa.length > 0 && nfseAutomationSettings.permitir_emissao_manual_fora_etapa) {
+      setEmitindoNfseLote(false)
+      setNfseOverrideModal({
+        vendas: selecionadas,
+        justificativa: '',
+        motivoPadrao: `Existem ${bloqueadasPorEtapa.length} venda(s) fora da etapa automática. Você pode emitir assim mesmo com justificativa.`,
+        lote: true,
+      })
+      return
+    }
+
     let emitidas = 0
     let bloqueadas = 0
     let falhas = 0
@@ -3267,6 +3315,36 @@ export default function Comercial() {
     setSelectedIds(new Set())
     void fetchVendasV2()
     showMsg(`Lote concluído. Emitidas: ${emitidas}. Bloqueadas pela etapa: ${bloqueadas}. Falhas: ${falhas}.`, falhas === 0 ? 'ok' : 'err')
+  }
+
+  async function confirmarEmissaoForaDaEtapa() {
+    if (!nfseOverrideModal) return
+    const justificativa = nfseOverrideModal.justificativa.trim()
+    if (nfseAutomationSettings.exigir_justificativa_fora_etapa && !justificativa) {
+      showMsg('Informe a justificativa para emitir a NFS-e fora da etapa definida.', 'err')
+      return
+    }
+
+    setEmitindoNfseLote(true)
+    let emitidas = 0
+    let falhas = 0
+    for (const venda of nfseOverrideModal.vendas) {
+      try {
+        await emitirNfseParaVenda(venda, {
+          silent: true,
+          ignoreStageRule: true,
+          justificativaForaEtapa: justificativa || null,
+        })
+        emitidas += 1
+      } catch {
+        falhas += 1
+      }
+    }
+    setEmitindoNfseLote(false)
+    setNfseOverrideModal(null)
+    setSelectedIds(new Set())
+    void fetchVendasV2()
+    showMsg(`Emissão fora da etapa concluída. Emitidas: ${emitidas}. Falhas: ${falhas}.`, falhas === 0 ? 'ok' : 'err')
   }
 
   function obterLinkMarketplaceDaVenda(venda: VendaRow) {
@@ -5907,6 +5985,61 @@ export default function Comercial() {
                   className="flex items-center gap-1.5 px-3 py-2 bg-purple-600 text-white text-xs font-medium rounded-lg hover:bg-purple-700 transition-colors">
                   <FileText size={13} />
                   Emitir NFS-e (Mock)
+                </button>
+              </div>
+            </div>
+          </Panel>
+        )}
+
+        {nfseOverrideModal && (
+          <Panel
+            title={nfseOverrideModal.lote ? 'Emitir NFS-e fora da etapa em lote' : 'Emitir NFS-e fora da etapa'}
+            onClose={() => { if (!emitindoNfseLote) setNfseOverrideModal(null) }}
+          >
+            <div className="space-y-4">
+              <div className="rounded-xl border border-amber-200 dark:border-amber-900/30 bg-amber-50 dark:bg-amber-950/20 px-4 py-3">
+                <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                  {nfseOverrideModal.motivoPadrao}
+                </p>
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                  Você pode seguir manualmente sem travar a operação. Essa decisão ficará registrada no histórico fiscal.
+                </p>
+              </div>
+              <div className="rounded-xl border border-gray-200 dark:border-gray-800 px-4 py-3 bg-gray-50 dark:bg-gray-900/40">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {nfseOverrideModal.lote
+                    ? `${nfseOverrideModal.vendas.length} venda(s) selecionada(s) para emissão excepcional.`
+                    : `Venda selecionada: ${nfseOverrideModal.vendas[0]?.nome_faturamento ?? nfseOverrideModal.vendas[0]?.cadastros_base?.nome ?? 'cliente'}.`}
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Justificativa da exceção {nfseAutomationSettings.exigir_justificativa_fora_etapa ? '*' : ''}
+                </label>
+                <textarea
+                  value={nfseOverrideModal.justificativa}
+                  onChange={e => setNfseOverrideModal(prev => prev ? { ...prev, justificativa: e.target.value } : prev)}
+                  rows={4}
+                  placeholder="Ex: cliente pagou e precisa da nota agora, mas a validação será realizada depois."
+                  className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setNfseOverrideModal(null)}
+                  disabled={emitindoNfseLote}
+                  className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmarEmissaoForaDaEtapa()}
+                  disabled={emitindoNfseLote}
+                  className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium disabled:opacity-60"
+                >
+                  {emitindoNfseLote ? 'Emitindo...' : 'Emitir mesmo assim'}
                 </button>
               </div>
             </div>

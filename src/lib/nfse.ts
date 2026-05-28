@@ -23,6 +23,8 @@ export type NfseAutomationSettings = {
   gatilho_emissao: NfseEmissionTrigger
   permitir_emissao_manual_rapida: boolean
   permitir_emissao_lote_comercial: boolean
+  permitir_emissao_manual_fora_etapa: boolean
+  exigir_justificativa_fora_etapa: boolean
 }
 
 export const DEFAULT_NFSE_MODELO: NfseModeloLayout = {
@@ -41,6 +43,8 @@ export const DEFAULT_NFSE_AUTOMATION_SETTINGS: NfseAutomationSettings = {
   gatilho_emissao: 'apos_validacao',
   permitir_emissao_manual_rapida: true,
   permitir_emissao_lote_comercial: true,
+  permitir_emissao_manual_fora_etapa: true,
+  exigir_justificativa_fora_etapa: true,
 }
 
 export function normalizeNfseModeloLayout(
@@ -311,10 +315,26 @@ export function isNfseEmissionAllowed(params: {
   venda: {
     pago?: boolean | null
     protocolo_numero?: string | null
+    tipo_produto?: string | null
   }
   agendamentoStatus?: string | null
 }) {
   const { gatilho, venda, agendamentoStatus } = params
+  const produto = String(venda.tipo_produto ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  const dispensaValidacao = [
+    'token',
+    'cartao',
+    'cartão',
+    'midia',
+    'mídia',
+    'visita tecnica',
+    'visita técnica',
+  ].some(term => produto.includes(term.normalize('NFD').replace(/[\u0300-\u036f]/g, '')))
 
   if (gatilho === 'manual') {
     return {
@@ -330,12 +350,18 @@ export function isNfseEmissionAllowed(params: {
   }
 
   if (gatilho === 'apos_agendamento') {
+    if (dispensaValidacao) {
+      return { allowed: true, reason: '' }
+    }
     return ['confirmado', 'realizado'].includes(String(agendamentoStatus ?? ''))
       ? { allowed: true, reason: '' }
       : { allowed: false, reason: 'A nota está configurada para emissão somente após o agendamento da validação.' }
   }
 
   if (gatilho === 'apos_validacao') {
+    if (dispensaValidacao) {
+      return { allowed: true, reason: '' }
+    }
     return String(agendamentoStatus ?? '') === 'realizado'
       ? { allowed: true, reason: '' }
       : { allowed: false, reason: 'A nota está configurada para emissão somente após a validação realizada pelo agente de registro.' }

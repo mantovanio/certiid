@@ -327,6 +327,7 @@ Deno.serve(async (req: Request) => {
   }
 
   const vendaId = String(body.venda_certificado_id ?? '').trim()
+  const justificativaForaEtapa = String(body.justificativa_fora_etapa ?? '').trim() || null
   if (!vendaId) {
     return json({ ok: false, error: 'Informe a venda que será enviada ao GISSONLINE.' }, 400)
   }
@@ -462,6 +463,7 @@ Deno.serve(async (req: Request) => {
       metadata: {
         modo: 'gissonline-soap',
         certificado: certSummary,
+        justificativa_fora_etapa: justificativaForaEtapa,
       },
     }])
     .select('id')

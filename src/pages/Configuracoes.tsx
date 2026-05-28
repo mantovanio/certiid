@@ -2306,12 +2306,16 @@ function AbaPagamentos() {
 
   const [integration, setIntegration] = useState<any>(null)
   const [prodKey, setProdKey] = useState('')
+  const [prodSecret, setProdSecret] = useState('')
   const [sandboxKey, setSandboxKey] = useState('')
+  const [sandboxSecret, setSandboxSecret] = useState('')
   const [isSandbox, setIsSandbox] = useState(false)
   const [webhookUrl, setWebhookUrl] = useState('')
 
   const [editingProd, setEditingProd] = useState(false)
+  const [editingProdSecret, setEditingProdSecret] = useState(false)
   const [editingSandbox, setEditingSandbox] = useState(false)
+  const [editingSandboxSecret, setEditingSandboxSecret] = useState(false)
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodConfig[]>(PAYMENT_METHOD_PRESETS)
   const [selectedMethodId, setSelectedMethodId] = useState<PaymentMethodId>('mercado_pago')
   const [paymentRuntime, setPaymentRuntime] = useState<PaymentRuntimeConfig>(DEFAULT_PAYMENT_RUNTIME)
@@ -2332,6 +2336,7 @@ function AbaPagamentos() {
     }
 
     const data = integrationRes.data
+    const metadata = ((data?.metadata ?? {}) as Record<string, unknown>)
     if (data) {
       setIntegration(data)
       setWebhookUrl(data.webhook_url || '')
@@ -2344,14 +2349,43 @@ function AbaPagamentos() {
         setProdKey('')
         setEditingProd(true)
       }
+      if (metadata.secret_key_producao) {
+        const secret = String(metadata.secret_key_producao)
+        setProdSecret(`••••••••••••••••${secret.slice(-4)}`)
+        setEditingProdSecret(false)
+      } else {
+        setProdSecret('')
+        setEditingProdSecret(true)
+      }
 
-      if (data.metadata?.api_key_sandbox) {
-        setSandboxKey(`••••••••••••••••${data.metadata.api_key_sandbox.slice(-4)}`)
+      if (metadata.api_key_sandbox) {
+        const sandboxToken = String(metadata.api_key_sandbox)
+        setSandboxKey(`••••••••••••••••${sandboxToken.slice(-4)}`)
         setEditingSandbox(false)
       } else {
         setSandboxKey('')
         setEditingSandbox(true)
       }
+      if (metadata.secret_key_sandbox) {
+        const sandboxSecretValue = String(metadata.secret_key_sandbox)
+        setSandboxSecret(`••••••••••••••••${sandboxSecretValue.slice(-4)}`)
+        setEditingSandboxSecret(false)
+      } else {
+        setSandboxSecret('')
+        setEditingSandboxSecret(true)
+      }
+    } else {
+      setIntegration(null)
+      setWebhookUrl('')
+      setIsSandbox(false)
+      setProdKey('')
+      setProdSecret('')
+      setSandboxKey('')
+      setSandboxSecret('')
+      setEditingProd(true)
+      setEditingProdSecret(true)
+      setEditingSandbox(true)
+      setEditingSandboxSecret(true)
     }
 
     if (methodsRes.data?.value && Array.isArray(methodsRes.data.value.methods)) {
@@ -2359,11 +2393,33 @@ function AbaPagamentos() {
         const saved = methodsRes.data?.value.methods.find((item: PaymentMethodConfig) => item.id === preset.id)
         return saved ? { ...preset, ...saved } : preset
       })
+      const safe2payGateway = merged.find(item => item.id === 'safe2pay')
+      if (safe2payGateway) {
+        safe2payGateway.enabled = !!data
+        safe2payGateway.is_default = true
+        safe2payGateway.ambiente = (data?.metadata?.is_sandbox === true ? 'sandbox' : 'producao') as PaymentMethodEnv
+        safe2payGateway.client_id = data?.metadata?.is_sandbox === true
+          ? String(metadata.api_key_sandbox ?? safe2payGateway.client_id ?? '')
+          : String(data?.api_token ?? safe2payGateway.client_id ?? '')
+        safe2payGateway.secret_key = data?.metadata?.is_sandbox === true
+          ? String(metadata.secret_key_sandbox ?? safe2payGateway.secret_key ?? '')
+          : String(metadata.secret_key_producao ?? safe2payGateway.secret_key ?? '')
+        safe2payGateway.webhook_url = data?.webhook_url ?? safe2payGateway.webhook_url ?? ''
+      }
       setPaymentMethods(merged)
       const active = merged.find(item => item.is_default) ?? merged[0]
       setSelectedMethodId(active.id)
     } else {
-      setPaymentMethods(PAYMENT_METHOD_PRESETS)
+      const defaults = PAYMENT_METHOD_PRESETS.map(item => {
+        if (item.id !== 'safe2pay') return item
+        return {
+          ...item,
+          enabled: !!data,
+          is_default: true,
+          ambiente: (data?.metadata?.is_sandbox === true ? 'sandbox' : 'producao') as PaymentMethodEnv,
+        }
+      })
+      setPaymentMethods(defaults)
       setSelectedMethodId(PAYMENT_METHOD_PRESETS[0].id)
     }
 
@@ -2389,22 +2445,45 @@ function AbaPagamentos() {
 
     const meta = {
       ...(integration?.metadata || {}),
-      is_sandbox: isSandbox
+      is_sandbox: isSandbox,
     }
 
     const payload: any = {
       webhook_url: webhookUrl || null,
-      status: (prodKey || sandboxKey) ? 'ativo' : 'pendente',
+      status: (prodKey || sandboxKey || prodSecret || sandboxSecret) ? 'ativo' : 'pendente',
     }
 
     if (editingProd) {
       payload.api_token = prodKey.trim() || null
     }
+    if (editingProdSecret) {
+      meta.secret_key_producao = prodSecret.trim() || null
+    }
     if (editingSandbox) {
       meta.api_key_sandbox = sandboxKey.trim() || null
     }
+    if (editingSandboxSecret) {
+      meta.secret_key_sandbox = sandboxSecret.trim() || null
+    }
 
     payload.metadata = meta
+
+    const paymentMethodsToSave = paymentMethods.map(method => {
+      if (method.id !== 'safe2pay') return method
+      return {
+        ...method,
+        enabled: method.enabled || !!(prodKey || sandboxKey || integration),
+        is_default: method.is_default || true,
+        ambiente: (isSandbox ? 'sandbox' : 'producao') as PaymentMethodEnv,
+        client_id: isSandbox
+          ? (editingSandbox ? sandboxKey.trim() : String(meta.api_key_sandbox ?? method.client_id ?? ''))
+          : (editingProd ? prodKey.trim() : String(payload.api_token ?? method.client_id ?? '')),
+        secret_key: isSandbox
+          ? (editingSandboxSecret ? sandboxSecret.trim() : String(meta.secret_key_sandbox ?? method.secret_key ?? ''))
+          : (editingProdSecret ? prodSecret.trim() : String(meta.secret_key_producao ?? method.secret_key ?? '')),
+        webhook_url: webhookUrl.trim(),
+      }
+    })
 
     const [safe2payRes, methodsSaveRes, runtimeSaveRes] = await Promise.all([
       supabase
@@ -2416,8 +2495,8 @@ function AbaPagamentos() {
         .upsert({
           key: 'payment_methods',
           value: {
-            methods: paymentMethods,
-            default_method_id: paymentMethods.find(item => item.is_default)?.id ?? null,
+            methods: paymentMethodsToSave,
+            default_method_id: paymentMethodsToSave.find(item => item.is_default)?.id ?? null,
           },
           updated_by: profile?.id ?? null,
         }, { onConflict: 'key' }),
@@ -2437,6 +2516,7 @@ function AbaPagamentos() {
     }
 
     setOk(true)
+    setPaymentMethods(paymentMethodsToSave)
     void load()
   }
 
@@ -2524,6 +2604,29 @@ function AbaPagamentos() {
           </div>
 
           <div>
+            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Secret Key (Produção)</label>
+            <div className="flex gap-2">
+              <input
+                type={editingProdSecret ? 'text' : 'password'}
+                value={prodSecret}
+                onChange={e => setProdSecret(e.target.value)}
+                disabled={!editingProdSecret || !isAdmin}
+                placeholder={editingProdSecret ? 'Insira a Secret Key de produção' : 'Secret Key configurada'}
+                className="flex-1 border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 dark:disabled:bg-gray-950 disabled:text-gray-400"
+              />
+              {!editingProdSecret && isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => { setProdSecret(''); setEditingProdSecret(true) }}
+                  className="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 text-xs font-medium flex items-center gap-1.5 transition-colors"
+                >
+                  <Pencil size={13} /> Alterar
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div>
             <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Token de API (Sandbox / Testes)</label>
             <div className="flex gap-2">
               <input
@@ -2538,6 +2641,29 @@ function AbaPagamentos() {
                 <button
                   type="button"
                   onClick={() => { setSandboxKey(''); setEditingSandbox(true) }}
+                  className="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 text-xs font-medium flex items-center gap-1.5 transition-colors"
+                >
+                  <Pencil size={13} /> Alterar
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Secret Key (Sandbox / Testes)</label>
+            <div className="flex gap-2">
+              <input
+                type={editingSandboxSecret ? 'text' : 'password'}
+                value={sandboxSecret}
+                onChange={e => setSandboxSecret(e.target.value)}
+                disabled={!editingSandboxSecret || !isAdmin}
+                placeholder={editingSandboxSecret ? 'Insira a Secret Key de testes' : 'Secret Key de testes configurada'}
+                className="flex-1 border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 dark:disabled:bg-gray-950 disabled:text-gray-400"
+              />
+              {!editingSandboxSecret && isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => { setSandboxSecret(''); setEditingSandboxSecret(true) }}
                   className="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 text-xs font-medium flex items-center gap-1.5 transition-colors"
                 >
                   <Pencil size={13} /> Alterar

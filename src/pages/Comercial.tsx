@@ -3178,6 +3178,38 @@ export default function Comercial() {
     return data
   }
 
+  async function emitirNfseViaNotaJoseense(venda: VendaRow) {
+    const accessToken = await getSupabaseAccessToken()
+    const response = await fetch(getEdgeFunctionUrl('nfse-nota-joseense-emit'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        venda_certificado_id: venda.id,
+        justificativa_fora_etapa: (venda.metadata as Record<string, unknown> | null)?.nfse_justificativa_fora_etapa ?? null,
+      }),
+      signal: AbortSignal.timeout(45000),
+    })
+
+    const data = await response.json() as {
+      ok: boolean
+      error?: string
+      stage?: string
+      nota_id?: string
+      numero_nf?: string
+      codigo_verificacao?: string
+      message?: string
+    }
+
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error ?? 'Não foi possível emitir a NFS-e na Nota Joseense.')
+    }
+
+    return data
+  }
+
   async function emitirNfseMock(venda: VendaRow, options?: { silent?: boolean }) {
     const numeroMock = 'MOCK-' + Date.now().toString(36).toUpperCase()
     const configuracaoFiscal = await fetchConfiguracaoFiscalAtiva()
@@ -3255,6 +3287,22 @@ export default function Comercial() {
       } as VendaRow)
       if (!options?.silent) {
         showMsg(result.message ?? `NFS-e enviada ao GISSONLINE. Protocolo ${result.protocolo ?? result.numero_lote ?? 'em processamento'}.`, 'ok')
+      }
+      await abrirNfseVenda(venda)
+      return
+    }
+
+    const payloadFiscal = (configuracaoFiscal.payload_reforma_tributaria ?? {}) as Record<string, unknown>
+    if (configuracaoFiscal.provedor === 'municipal' && String(payloadFiscal.municipal_adapter ?? '').trim() === 'nota_joseense') {
+      const result = await emitirNfseViaNotaJoseense({
+        ...venda,
+        metadata: {
+          ...(venda.metadata ?? {}),
+          nfse_justificativa_fora_etapa: options?.justificativaForaEtapa ?? null,
+        },
+      } as VendaRow)
+      if (!options?.silent) {
+        showMsg(result.message ?? `NFS-e enviada à Nota Joseense. Número ${result.numero_nf ?? 'em processamento'}.`, 'ok')
       }
       await abrirNfseVenda(venda)
       return

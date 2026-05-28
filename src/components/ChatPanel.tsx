@@ -435,7 +435,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
   async function init() {
     setLoading(true)
     setFetchError(null)
-    logger.info('ChatPanel', 'init', { contact_id: contact.id, nome: contact.nome, telefone: contact.telefone })
+    logger.info('ChatPanel', 'init', { contact_id: contact.id })
 
     if (!evolution) {
       logger.warn('ChatPanel', 'Evolution API não configurada')
@@ -462,7 +462,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
     }
 
     setLoadingLabel('Iniciando conversa...')
-    logger.info('ChatPanel', 'chamando init_chat', { telefone: contact.telefone, instance: evolution.instance_name })
+    logger.info('ChatPanel', 'chamando init_chat', { instance: evolution.instance_name })
     try {
       const accessToken = await getSupabaseAccessToken()
       const res = await fetch(EDGE_FN, {
@@ -685,7 +685,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
     if (error) {
       setMessages(prev => prev.filter(item => item.id !== tempId))
       setInput(text)
-      alert(`Nao foi possivel salvar a nota interna: ${error.message}`)
+      alert('Nao foi possivel salvar a nota interna.')
       setSending(false)
       return
     }
@@ -875,7 +875,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
 
     setSavingLead(false)
     if (error) {
-      alert(`Nao foi possivel salvar as informacoes: ${error.message}`)
+      alert('Nao foi possivel salvar as informacoes.')
       return
     }
     if (data) {
@@ -922,7 +922,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
 
     setTransferringLead(false)
     if (error) {
-      alert(`Nao foi possivel transferir a conversa: ${error.message}`)
+      alert('Nao foi possivel transferir a conversa.')
       return
     }
     if (data) {
@@ -932,6 +932,16 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
     }
     setCopyFeedback(`Conversa transferida para ${destination.nome}`)
   }
+
+  const ALLOWED_MIME_TYPES = new Set([
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'text/plain', 'text/csv',
+  ])
 
   async function uploadLeadAttachment(file: File) {
     if (contact._table !== 'leads_contabilidade') return
@@ -944,6 +954,10 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
       alert('Este upload no contato aceita arquivos de até 20 MB por enquanto.')
       return
     }
+    if (!ALLOWED_MIME_TYPES.has(file.type)) {
+      alert(`Tipo de arquivo não permitido: ${file.type || 'desconhecido'}. Use imagens, PDF, Word, Excel ou texto.`)
+      return
+    }
 
     setUploadingLeadAttachment(true)
     try {
@@ -951,8 +965,16 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
       let cleanupStorage: { bucket: string; path: string } | null = null
 
       if (documentStorageConfig.mode === 'server') {
-        if (!documentStorageConfig.server_upload_url.trim()) {
+        const uploadUrl = documentStorageConfig.server_upload_url.trim()
+        if (!uploadUrl) {
           alert('Configure a URL de upload do servidor em Integrações antes de usar este modo.')
+          return
+        }
+        try {
+          const parsed = new URL(uploadUrl)
+          if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error()
+        } catch {
+          alert('URL de upload do servidor inválida.')
           return
         }
 
@@ -961,7 +983,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
         form.append('lead_id', contact.id)
         form.append('file_name', buildSafeFileName(file.name))
 
-        const response = await fetch(documentStorageConfig.server_upload_url, {
+        const response = await fetch(uploadUrl, {
           method: 'POST',
           headers: documentStorageConfig.server_auth_token.trim()
             ? { Authorization: `Bearer ${documentStorageConfig.server_auth_token.trim()}` }
@@ -1043,7 +1065,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
         if (cleanupStorage) {
           await supabase.storage.from(cleanupStorage.bucket).remove([cleanupStorage.path])
         }
-        alert(`Nao foi possivel salvar o documento no contato: ${error.message}`)
+        alert('Nao foi possivel salvar o documento no contato.')
         return
       }
       if (data) {
@@ -1051,7 +1073,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
       }
       setCopyFeedback(`Documento salvo em ${sidebarName}`)
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Falha ao salvar documento do contato.')
+      alert('Falha ao salvar documento do contato.')
     } finally {
       setUploadingLeadAttachment(false)
       if (leadDocInputRef.current) leadDocInputRef.current.value = ''
@@ -1061,8 +1083,10 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
   async function removeLeadAttachment(attachmentId: string) {
     if (contact._table !== 'leads_contabilidade') return
     const doc = leadAttachments.find(item => item.id === attachmentId)
-    if (doc?.storage_provider === 'server' && documentStorageConfig.server_delete_url.trim() && doc.storage_path) {
-      await fetch(documentStorageConfig.server_delete_url, {
+    const deleteUrl = documentStorageConfig.server_delete_url.trim()
+    const isDeleteUrlSafe = (() => { try { const p = new URL(deleteUrl); return ['http:', 'https:'].includes(p.protocol) } catch { return false } })()
+    if (doc?.storage_provider === 'server' && isDeleteUrlSafe && doc.storage_path) {
+      await fetch(deleteUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1086,7 +1110,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
       .eq('lead_id', contact.id)
 
     if (error) {
-      alert(`Nao foi possivel remover o documento: ${error.message}`)
+      alert('Nao foi possivel remover o documento.')
       return
     }
     setLeadAttachments(prev => prev.filter(item => item.id !== attachmentId))
@@ -1096,9 +1120,14 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
   async function openLeadAttachment(doc: LeadAttachment) {
     try {
       const url = await resolveLeadAttachmentUrl(doc)
+      const parsed = new URL(url)
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        alert('URL do documento inválida.')
+        return
+      }
       window.open(url, '_blank', 'noopener,noreferrer')
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Nao foi possivel abrir o documento.')
+      alert('Nao foi possivel abrir o documento.')
     }
   }
 

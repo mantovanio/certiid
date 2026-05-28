@@ -223,7 +223,12 @@ function parseCSV(raw: string): Record<string, string>[] {
   return normalizeRowKeys(rows)
 }
 
+const SPREADSHEET_MAX_BYTES = 5 * 1024 * 1024 // 5 MB — mitiga ReDoS em xlsx
+
 function parseSpreadsheet(buffer: ArrayBuffer, fileName: string): Record<string, string>[] {
+  if (buffer.byteLength > SPREADSHEET_MAX_BYTES) {
+    throw new Error('Arquivo muito grande. O limite para importação é 5 MB.')
+  }
   if (fileName.toLowerCase().endsWith('.csv')) {
     return parseCSV(new TextDecoder('utf-8').decode(buffer))
   }
@@ -241,14 +246,18 @@ function parseSpreadsheet(buffer: ArrayBuffer, fileName: string): Record<string,
 }
 
 function downloadSpreadsheetTemplate() {
-  const data = [
+  const rows = [
     CSV_FIELDS.map(f => f.label.replace(' (YYYY-MM-DD)', '')),
     ['001', 'PROT-2024-001', '2026-06-15', 'João Silva', 'joao@email.com', '11999999999', 'e-CPF A3', '219.90', '12345678900', '', '', 'AR001', 'Maria Vendedora', 'Carlos Contador'],
   ]
-  const sheet = XLSX.utils.aoa_to_sheet(data)
-  const workbook = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(workbook, sheet, 'Renovacoes')
-  XLSX.writeFile(workbook, 'modelo_renovacoes.xlsx')
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'modelo_renovacoes.csv'
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 function fmtCurrency(v: number | null) {

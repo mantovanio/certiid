@@ -37,7 +37,7 @@ import type {
   WhatsAppEngine,
 } from '@/types'
 
-type Tab = 'geral' | 'integracoes' | 'automacoes' | 'usuarios' | 'pontos' | 'pagamentos' | 'fiscal'
+type Tab = 'geral' | 'integracoes' | 'automacoes' | 'usuarios' | 'pontos' | 'pagamentos' | 'fiscal' | 'privacidade'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'geral',        label: 'Geral'                  },
@@ -47,6 +47,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'pontos',       label: 'Pontos de Atendimento'  },
   { id: 'pagamentos',   label: 'Pagamentos'             },
   { id: 'fiscal',       label: 'Fiscal / NFS-e'         },
+  { id: 'privacidade',  label: 'Privacidade (LGPD)'     },
 ]
 
 const ADMIN_ONLY_TABS: Tab[] = ['fiscal']
@@ -4166,6 +4167,132 @@ export default function Configuracoes() {
         {/* FISCAL */}
         {tab === 'fiscal' && <AbaFiscal />}
 
+        {/* PRIVACIDADE LGPD */}
+        {tab === 'privacidade' && <AbaPrivacidade />}
+
+      </div>
+    </div>
+  )
+}
+
+// ── Aba Privacidade (LGPD Art. 18) ─────────────────────────────────────────
+
+function AbaPrivacidade() {
+  const { profile } = useAuth()
+  const [motivo, setMotivo] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [enviado, setEnviado] = useState(false)
+  const [erro, setErro] = useState<string | null>(null)
+  const [solicitacoes, setSolicitacoes] = useState<{ id: string; status: string; solicitado_em: string }[]>([])
+
+  useEffect(() => {
+    if (!profile?.id) return
+    void supabase
+      .from('lgpd_solicitacoes_exclusao')
+      .select('id, status, solicitado_em')
+      .eq('profile_id', profile.id)
+      .order('solicitado_em', { ascending: false })
+      .then(({ data }) => setSolicitacoes(data ?? []))
+  }, [profile?.id, enviado])
+
+  async function handleSolicitarExclusao(e: React.FormEvent) {
+    e.preventDefault()
+    if (!profile?.id) return
+    setErro(null)
+    setLoading(true)
+    const { error } = await supabase.from('lgpd_solicitacoes_exclusao').insert({
+      profile_id: profile.id,
+      email: profile.email ?? '',
+      motivo: motivo.trim() || null,
+    })
+    setLoading(false)
+    if (error) { setErro('Não foi possível registrar sua solicitação.'); return }
+    setEnviado(true)
+    setMotivo('')
+  }
+
+  const jaTemPendente = solicitacoes.some(s => s.status === 'pendente' || s.status === 'aprovada')
+
+  return (
+    <div className="space-y-6 max-w-xl">
+      <div>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Privacidade e Dados Pessoais</h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          Conforme a LGPD (Lei 13.709/2018), você tem direito de acessar, corrigir e solicitar a exclusão dos seus dados pessoais.
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-5 space-y-3">
+        <h3 className="font-medium text-gray-800 dark:text-gray-200 text-sm">Seus dados armazenados</h3>
+        <ul className="text-xs text-gray-600 dark:text-gray-400 space-y-1 list-disc list-inside">
+          <li>Nome completo, e-mail e telefone (perfil)</li>
+          <li>Histórico de atividades no sistema</li>
+          <li>Documentos e registros associados à sua conta</li>
+        </ul>
+        <p className="text-xs text-gray-500 dark:text-gray-500">
+          Para corrigir seus dados, edite seu perfil nas configurações gerais. Para dúvidas, contate o encarregado de dados.
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-red-200 dark:border-red-900/40 p-5 space-y-4">
+        <h3 className="font-medium text-red-700 dark:text-red-400 text-sm">Solicitar exclusão de dados (Art. 18, IV LGPD)</h3>
+        <p className="text-xs text-gray-600 dark:text-gray-400">
+          Ao solicitar a exclusão, seus dados pessoais serão anonimizados. O prazo de resposta é de até 15 dias úteis.
+        </p>
+
+        {enviado && (
+          <div className="text-sm text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20 rounded-lg px-3 py-2">
+            Solicitação registrada. Você será notificado quando for processada.
+          </div>
+        )}
+
+        {jaTemPendente && !enviado && (
+          <div className="text-sm text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg px-3 py-2">
+            Você já possui uma solicitação em andamento.
+          </div>
+        )}
+
+        {!jaTemPendente && !enviado && (
+          <form onSubmit={handleSolicitarExclusao} className="space-y-3">
+            <div>
+              <label className="text-xs font-medium text-gray-700 dark:text-gray-300 block mb-1">Motivo (opcional)</label>
+              <textarea
+                value={motivo}
+                onChange={e => setMotivo(e.target.value)}
+                rows={3}
+                maxLength={500}
+                className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-gray-900 dark:text-white resize-none"
+                placeholder="Descreva o motivo da solicitação..."
+              />
+            </div>
+            {erro && <p className="text-xs text-red-600 dark:text-red-400">{erro}</p>}
+            <button
+              type="submit"
+              disabled={loading}
+              className="text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg px-4 py-2 transition-colors"
+            >
+              {loading ? 'Registrando...' : 'Solicitar exclusão dos meus dados'}
+            </button>
+          </form>
+        )}
+
+        {solicitacoes.length > 0 && (
+          <div className="mt-3 space-y-1">
+            <p className="text-xs font-medium text-gray-600 dark:text-gray-400">Histórico de solicitações</p>
+            {solicitacoes.map(s => (
+              <div key={s.id} className="text-xs text-gray-500 dark:text-gray-500 flex justify-between">
+                <span>{new Date(s.solicitado_em).toLocaleDateString('pt-BR')}</span>
+                <span className="capitalize">{s.status}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="text-xs text-gray-500 dark:text-gray-500 space-y-1">
+        <p><strong>Encarregado de Dados (DPO):</strong> contato@certiid.com.br</p>
+        <p><strong>Base legal:</strong> LGPD Art. 7, I (consentimento) — Art. 18, IV (exclusão)</p>
+        <p><strong>Autoridade supervisora:</strong> <a href="https://www.gov.br/anpd" target="_blank" rel="noopener noreferrer" className="underline">ANPD — Autoridade Nacional de Proteção de Dados</a></p>
       </div>
     </div>
   )

@@ -2203,6 +2203,7 @@ export default function Comercial() {
   }
 
   function lerPlanilha(file: File): Promise<Record<string, string>[]> {
+    if (file.size > 5 * 1024 * 1024) return Promise.reject(new Error('Arquivo muito grande. O limite para importação é 5 MB.'))
     return new Promise((resolve, reject) => {
       const reader = new FileReader()
       reader.onload = e => {

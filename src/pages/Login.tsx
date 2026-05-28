@@ -140,13 +140,14 @@ export default function Login() {
   const [loginError,    setLoginError]    = useState<string | null>(null)
 
   // register
-  const [regNome,    setRegNome]    = useState('')
-  const [regEmail,   setRegEmail]   = useState('')
-  const [regPass,    setRegPass]    = useState('')
-  const [regConfirm, setRegConfirm] = useState('')
-  const [regLoading, setRegLoading] = useState(false)
-  const [regError,   setRegError]   = useState<string | null>(null)
-  const [regOk,      setRegOk]      = useState(false)
+  const [regNome,      setRegNome]      = useState('')
+  const [regEmail,     setRegEmail]     = useState('')
+  const [regPass,      setRegPass]      = useState('')
+  const [regConfirm,   setRegConfirm]   = useState('')
+  const [regConsent,   setRegConsent]   = useState(false)
+  const [regLoading,   setRegLoading]   = useState(false)
+  const [regError,     setRegError]     = useState<string | null>(null)
+  const [regOk,        setRegOk]        = useState(false)
 
   // forgot
   const [forgotEmail,   setForgotEmail]   = useState('')
@@ -168,6 +169,7 @@ export default function Login() {
     setRegError(null)
     if (regPass !== regConfirm) { setRegError('As senhas não coincidem.'); return }
     if (regPass.length < 6)     { setRegError('A senha deve ter pelo menos 6 caracteres.'); return }
+    if (!regConsent)            { setRegError('Você precisa aceitar a Política de Privacidade para criar uma conta.'); return }
     setRegLoading(true)
     const { error } = await signUp({ nome: regNome, email: regEmail, password: regPass })
     if (error) setRegError(translateError(error))
@@ -315,6 +317,24 @@ export default function Login() {
                   <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/70 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2">
                     O tipo de acesso será definido pelo administrador em Configurações.
                   </p>
+
+                  {/* Consentimento LGPD — Art. 7, I e Art. 8 */}
+                  <label className="flex items-start gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={regConsent}
+                      onChange={e => setRegConsent(e.target.checked)}
+                      className="mt-0.5 shrink-0 accent-current"
+                      required
+                    />
+                    <span className="text-xs text-gray-600 dark:text-gray-400">
+                      Li e aceito a{' '}
+                      <a href="/privacidade" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-900 dark:hover:text-gray-200">
+                        Política de Privacidade
+                      </a>
+                      {' '}e autorizo o tratamento dos meus dados pessoais conforme a LGPD (Lei 13.709/2018).
+                    </span>
+                  </label>
 
                   {regError && <ErrorBox msg={regError} />}
 

@@ -282,7 +282,7 @@ export default function ChatAoVivo() {
     const { error: err } = await supabase.from('leads_contabilidade').update({ status: newStatus }).eq('id', lead.id)
     if (err) {
       await loadLeads()
-      alert('Erro ao mover contato: ' + err.message)
+      alert('Erro ao mover contato.')
     }
   }
 
@@ -298,7 +298,7 @@ export default function ChatAoVivo() {
     const { error: err } = await supabase.from('leads_contabilidade').update(updates).eq('id', quickModal.lead.id)
     setSavingQuick(false)
     if (err) {
-      alert('Erro ao salvar: ' + err.message)
+      alert('Erro ao salvar.')
       return
     }
     setLeads(prev => prev.map(item => item.id === quickModal.lead.id ? { ...item, ...updates } as Lead : item))
@@ -327,7 +327,7 @@ export default function ChatAoVivo() {
     const { data, error: err } = await query.select('*').single()
     setSavingLead(false)
     if (err) {
-      alert('Erro ao salvar contato: ' + err.message)
+      alert('Erro ao salvar contato.')
       return
     }
 
@@ -345,7 +345,7 @@ export default function ChatAoVivo() {
     if (!isAdmin) return
     if (!confirm(`Excluir o contato ${lead.nome_lead || 'sem nome'}?`)) return
     const { error: err } = await supabase.from('leads_contabilidade').delete().eq('id', lead.id)
-    if (err) { alert('Erro ao excluir contato: ' + err.message); return }
+    if (err) { alert('Erro ao excluir contato.'); return }
     setLeads(prev => prev.filter(item => item.id !== lead.id))
     setSelectedIds(prev => { const next = new Set(prev); next.delete(lead.id); return next })
   }
@@ -357,7 +357,7 @@ export default function ChatAoVivo() {
     const ids = [...selectedIds]
     const { error: err } = await supabase.from('leads_contabilidade').delete().in('id', ids)
     setDeletingBulk(false)
-    if (err) { alert('Erro ao excluir: ' + err.message); return }
+    if (err) { alert('Erro ao excluir.'); return }
     setLeads(prev => prev.filter(item => !selectedIds.has(item.id)))
     setSelectedIds(new Set())
   }
@@ -453,7 +453,7 @@ export default function ChatAoVivo() {
     const { error: err } = await query
     setSavingColumn(false)
     if (err) {
-      alert('Erro ao salvar coluna: ' + err.message)
+      alert('Erro ao salvar coluna.')
       return
     }
     setColumnModal(null)
@@ -474,7 +474,7 @@ export default function ChatAoVivo() {
     }
     const { error: err } = await supabase.from('chat_kanban_columns').delete().eq('id', column.id)
     if (err) {
-      alert('Erro ao excluir coluna: ' + err.message)
+      alert('Erro ao excluir coluna.')
       return
     }
     setColumnModal(null)
@@ -590,7 +590,7 @@ export default function ChatAoVivo() {
       scheduled_for: new Date().toISOString(),
     }])
     setQuickSendLoading(false)
-    if (err) { alert('Erro ao enfileirar mensagem: ' + err.message); return }
+    if (err) { alert('Erro ao enfileirar mensagem.'); return }
     setQuickSendLead(null)
     setQuickSendText('')
   }

@@ -461,7 +461,7 @@ export default function Clientes() {
     const { error } = await query
     setSavingCliente(false)
     if (error) {
-      alert(`Erro ao salvar cliente: ${error.message}`)
+      alert('Erro ao salvar cliente.')
       return
     }
     setClienteModal(null)

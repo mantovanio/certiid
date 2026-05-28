@@ -675,6 +675,7 @@ export default function Comercial() {
   const [vendaFinanceiroModal, setVendaFinanceiroModal]     = useState<VendaFinanceiroModal>(null)
   const [loadingVendaNfse, setLoadingVendaNfse]             = useState(false)
   const [vendaNfseModal, setVendaNfseModal]                 = useState<VendaNfseModal>(null)
+  const [showVendaNfsePreviewTelaCheia, setShowVendaNfsePreviewTelaCheia] = useState(false)
   // protocolo modal
   const [showProtocolo, setShowProtocolo]         = useState(false)
   const [protocoloVenda, setProtocoloVenda]       = useState<VendaRow | null>(null)
@@ -5718,7 +5719,16 @@ export default function Comercial() {
 
               <div className="rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
                 <div className="px-4 py-3 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-800">
-                  <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Prévia do corpo da nota</h4>
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Prévia do corpo da nota</h4>
+                    <button
+                      type="button"
+                      onClick={() => setShowVendaNfsePreviewTelaCheia(true)}
+                      className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      Abrir nota em tela cheia
+                    </button>
+                  </div>
                 </div>
                 <div className="overflow-x-auto bg-gray-50 dark:bg-gray-950 p-4">
                   <NfseDocumentPreview
@@ -5742,6 +5752,37 @@ export default function Comercial() {
               </div>
             </div>
           </Panel>
+        )}
+
+        {showVendaNfsePreviewTelaCheia && vendaNfseModal && (
+          <div className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm p-4">
+            <div className="h-full w-full rounded-2xl bg-white dark:bg-gray-900 shadow-2xl border border-gray-200 dark:border-gray-800 flex flex-col">
+              <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-gray-200 dark:border-gray-800 shrink-0">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Prévia da NFS-e</h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Visualização ampliada da nota vinculada à venda.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowVendaNfsePreviewTelaCheia(false)}
+                  className="w-9 h-9 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center justify-center transition-colors"
+                  title="Fechar"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-auto bg-gray-100 dark:bg-gray-950 p-5">
+                <NfseDocumentPreview
+                  nota={vendaNfseModal.notas[0] ?? null}
+                  venda={vendaNfseModal.venda}
+                  fallbackDiscriminacao={buildNfseDiscriminacaoFromVenda(vendaNfseModal.venda, {
+                    produtoDescricao: resolveDescricaoProdutoNfse(vendaNfseModal.venda),
+                  })}
+                  className="min-w-[1100px] mx-auto"
+                />
+              </div>
+            </div>
+          </div>
         )}
 
         {/* ── IMPORTAR ───────────────────────────────────────── */}

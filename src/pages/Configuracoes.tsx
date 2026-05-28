@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Loader2, MapPin, Pencil, X, Check, KeyRound, UserPlus, Eye, EyeOff, MessageCircle, Mail, Webhook, Save, Send, Trash2, Plus, ToggleLeft, ToggleRight, CreditCard, FileText, Upload, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { supabase, getSupabaseAccessToken } from '@/lib/supabase'
+import { supabase, getEdgeFunctionUrl, getSupabaseAccessToken } from '@/lib/supabase'
 import { createAdminManagedUser, deleteAdminManagedUser, updateAdminManagedPassword } from '@/lib/adminUsers'
 import { DEFAULT_AGENCY_CONFIG, type AgencyConfig, fetchAgencyConfig } from '@/lib/agencyConfig'
 import { DEFAULT_CONTACT_DOCUMENT_STORAGE, loadContactDocumentStorageConfig, type ContactDocumentStorageConfig } from '@/lib/contactDocumentStorage'
@@ -2734,6 +2734,21 @@ function AbaPagamentos() {
 // ── Aba Fiscal / NFS-e ───────────────────────────────────────
 type FiscalSubTab = 'configuracoes' | 'modelo'
 
+type GissOnlineTestResult = {
+  ok: boolean
+  message?: string
+  error?: string
+  next_step?: string
+  checks?: Record<string, boolean>
+  certificado?: {
+    commonName?: string
+    organization?: string
+    serialNumber?: string
+    validFrom?: string
+    validTo?: string
+  }
+}
+
 const NFSE_PROVIDER_LABELS: Record<ProvedorNfse, string> = {
   nacional: 'Emissor Nacional',
   gissonline: 'GISSONLINE',
@@ -2819,6 +2834,9 @@ function AbaFiscal() {
   const [erro, setErro] = useState<string | null>(null)
   const [ok, setOk] = useState(false)
   const [okModelo, setOkModelo] = useState(false)
+  const [showPreviewNotaTelaCheia, setShowPreviewNotaTelaCheia] = useState(false)
+  const [testandoGissOnline, setTestandoGissOnline] = useState(false)
+  const [resultadoTesteGissOnline, setResultadoTesteGissOnline] = useState<GissOnlineTestResult | null>(null)
   const [showSenhaPrefeitura, setShowSenhaPrefeitura] = useState(false)
   const [showCertSenha, setShowCertSenha] = useState(false)
   const [certFile, setCertFile] = useState<File | null>(null)
@@ -2992,6 +3010,41 @@ function AbaFiscal() {
       return
     }
     setOkModelo(true)
+  }
+
+  async function testarConexaoGissOnline() {
+    if (!form.id) {
+      setErro('Salve a configuração fiscal antes de testar o GISSONLINE.')
+      return
+    }
+
+    setTestandoGissOnline(true)
+    setResultadoTesteGissOnline(null)
+    setErro(null)
+
+    try {
+      const accessToken = await getSupabaseAccessToken()
+      const response = await fetch(getEdgeFunctionUrl('nfse-gissonline-test'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ configuracao_id: form.id }),
+        signal: AbortSignal.timeout(20000),
+      })
+
+      const data = await response.json() as GissOnlineTestResult
+      setResultadoTesteGissOnline(data)
+      if (!response.ok || !data.ok) {
+        setErro(data.error ?? 'Seu teste com o GISSONLINE não foi concluído.')
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha de comunicação.'
+      setErro(`Não foi possível executar o teste com o GISSONLINE: ${message}`)
+    } finally {
+      setTestandoGissOnline(false)
+    }
   }
 
   if (loading) return <div className="flex items-center justify-center py-16"><Loader2 size={24} className="animate-spin text-gray-400" /></div>
@@ -3199,6 +3252,75 @@ function AbaFiscal() {
             </div>
             <ConfigInput label="Chave de Autenticação" value={form.chave_autenticacao || ''} onChange={v => updateField('chave_autenticacao', v)} placeholder="Token, chave API ou código liberado" />
           </div>
+
+          {form.provedor === 'gissonline' && (
+            <div className="rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20 p-4 space-y-3">
+              <div>
+                <p className="text-xs font-semibold text-amber-800 dark:text-amber-300">Teste técnico do GISSONLINE</p>
+                <p className="text-[11px] text-amber-700/80 dark:text-amber-300/80 mt-1">
+                  Esse teste valida a configuração fiscal, a leitura do certificado A1 salvo no bucket e o acesso ao ambiente oficial de homologação do GISSONLINE.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void testarConexaoGissOnline()}
+                disabled={!isAdmin || testandoGissOnline}
+                className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white text-xs font-medium inline-flex items-center gap-2 transition-colors"
+              >
+                {testandoGissOnline ? <Loader2 size={13} className="animate-spin" /> : <Webhook size={13} />}
+                {testandoGissOnline ? 'Testando GISSONLINE...' : 'Testar conexão GISSONLINE'}
+              </button>
+
+              {resultadoTesteGissOnline && (
+                <div className={cn(
+                  'rounded-xl border p-3 space-y-2',
+                  resultadoTesteGissOnline.ok
+                    ? 'border-green-200 bg-green-50 dark:border-green-900/40 dark:bg-green-950/20'
+                    : 'border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-950/20'
+                )}>
+                  <p className={cn(
+                    'text-xs font-semibold',
+                    resultadoTesteGissOnline.ok ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'
+                  )}>
+                    {resultadoTesteGissOnline.ok
+                      ? resultadoTesteGissOnline.message ?? 'Seu teste foi concluído com sucesso.'
+                      : resultadoTesteGissOnline.error ?? 'Seu teste retornou pendências.'}
+                  </p>
+
+                  {resultadoTesteGissOnline.certificado && (
+                    <div className="grid gap-2 md:grid-cols-2 text-[11px] text-gray-700 dark:text-gray-300">
+                      <div>Certificado: {resultadoTesteGissOnline.certificado.commonName || '—'}</div>
+                      <div>Empresa: {resultadoTesteGissOnline.certificado.organization || '—'}</div>
+                      <div>Validade inicial: {resultadoTesteGissOnline.certificado.validFrom ? new Date(resultadoTesteGissOnline.certificado.validFrom).toLocaleString('pt-BR') : '—'}</div>
+                      <div>Validade final: {resultadoTesteGissOnline.certificado.validTo ? new Date(resultadoTesteGissOnline.certificado.validTo).toLocaleString('pt-BR') : '—'}</div>
+                    </div>
+                  )}
+
+                  {resultadoTesteGissOnline.checks && (
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(resultadoTesteGissOnline.checks).map(([key, passed]) => (
+                        <span
+                          key={key}
+                          className={cn(
+                            'px-2 py-1 rounded-full text-[10px] font-medium',
+                            passed
+                              ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                              : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+                          )}
+                        >
+                          {key.replace(/_/g, ' ')}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {resultadoTesteGissOnline.next_step && (
+                    <p className="text-[11px] text-gray-600 dark:text-gray-400">{resultadoTesteGissOnline.next_step}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
@@ -3422,13 +3544,51 @@ function AbaFiscal() {
           </div>
 
           <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5">
-            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-3">Prévia do modelo</p>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Prévia do modelo</p>
+              <button
+                type="button"
+                onClick={() => setShowPreviewNotaTelaCheia(true)}
+                className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+              >
+                Abrir nota em tela cheia
+              </button>
+            </div>
             <div className="overflow-x-auto rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 p-3">
               <NfseDocumentPreview
                 modelo={modeloNota}
                 configuracao={form}
                 fallbackDiscriminacao={modeloNota.mensagem_destaque}
                 className="min-w-[780px]"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPreviewNotaTelaCheia && (
+        <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm p-4">
+          <div className="h-full w-full rounded-2xl bg-white dark:bg-gray-900 shadow-2xl border border-gray-200 dark:border-gray-800 flex flex-col">
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-gray-200 dark:border-gray-800 shrink-0">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Prévia da NFS-e</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Visualização ampliada do modelo da nota.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPreviewNotaTelaCheia(false)}
+                className="w-9 h-9 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center justify-center transition-colors"
+                title="Fechar"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto bg-gray-100 dark:bg-gray-950 p-5">
+              <NfseDocumentPreview
+                modelo={modeloNota}
+                configuracao={form}
+                fallbackDiscriminacao={modeloNota.mensagem_destaque}
+                className="min-w-[1100px] mx-auto"
               />
             </div>
           </div>

@@ -1,5 +1,5 @@
 // @ts-nocheck — Deno runtime (Supabase Edge Functions)
-import { CORS, SERVICE_KEY, SUPABASE_URL, requireAuthenticatedUser } from '../_shared/security.ts'
+import { CORS, SERVICE_KEY, SUPABASE_URL, requireAuthenticatedUser, unauthorizedWebhookResponse, verifyWebhookRequest } from '../_shared/security.ts'
 
 const DB = {
   'apikey':        SERVICE_KEY,
@@ -624,8 +624,9 @@ Deno.serve(async (req) => {
     }
   }
 
+  const rawBody = await req.text()
   let payload: Record<string, unknown>
-  try { payload = await req.json() }
+  try { payload = rawBody ? JSON.parse(rawBody) : {} }
   catch { return new Response('Invalid JSON', { status: 400, headers: CORS }) }
 
   // ── Proxy actions (chamadas autenticadas do browser) ───────────
@@ -643,6 +644,16 @@ Deno.serve(async (req) => {
       default:                 return json({ ok: false, error: 'Ação desconhecida' })
     }
   }
+
+  const webhookSecret = Deno.env.get('EVOLUTION_WEBHOOK_SECRET') ?? ''
+  const webhookOk = await verifyWebhookRequest(req, {
+    secret: webhookSecret,
+    rawBody,
+    tokenHeaders: ['x-webhook-token', 'authorization'],
+    signatureHeaders: ['x-signature'],
+    queryParams: ['token', 'signature'],
+  })
+  if (!webhookOk) return unauthorizedWebhookResponse(req)
 
   // ── Webhook da Evolution API (sem auth — IP/token via header) ──
   return json(await processWebhook(payload))

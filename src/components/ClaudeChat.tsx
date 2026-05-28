@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { X, Send, Loader2, Trash2 } from 'lucide-react'
+import { getEdgeFunctionUrl, getSupabaseAccessToken } from '@/lib/supabase'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -9,8 +10,6 @@ interface Message {
 interface Props {
   onClose: () => void
 }
-
-const API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined
 
 export default function ClaudeChat({ onClose }: Props) {
   const [messages, setMessages] = useState<Message[]>([])
@@ -37,28 +36,25 @@ export default function ClaudeChat({ onClose }: Props) {
     setLoading(true)
 
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      const accessToken = await getSupabaseAccessToken()
+      const res = await fetch(getEdgeFunctionUrl('claude-proxy'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': API_KEY ?? '',
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
+          'Authorization': `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 2048,
           system: 'Você é um assistente do sistema CertiID, um CRM para gestão de certificados digitais. Responda sempre em português do Brasil, de forma direta e objetiva.',
           messages: next,
         }),
       })
 
-      const data = await res.json() as { content?: { text: string }[]; error?: { message: string } }
+      const data = await res.json() as { ok?: boolean; reply?: string; error?: string }
 
-      if (data.error) {
-        setMessages(prev => [...prev, { role: 'assistant', content: `Erro: ${data.error!.message}` }])
+      if (!res.ok || data.ok === false) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `Erro: ${data.error ?? 'Falha ao consultar a IA.'}` }])
       } else {
-        const reply = data.content?.[0]?.text ?? 'Sem resposta.'
+        const reply = data.reply ?? 'Sem resposta.'
         setMessages(prev => [...prev, { role: 'assistant', content: reply }])
       }
     } catch {
@@ -71,19 +67,6 @@ export default function ClaudeChat({ onClose }: Props) {
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void handleSend() }
-  }
-
-  if (!API_KEY) {
-    return (
-      <div className="fixed top-14 right-4 w-80 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-800 p-6 z-50 text-center">
-        <p className="text-sm text-gray-500 dark:text-gray-400">
-          Adicione <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded text-xs">VITE_ANTHROPIC_API_KEY</code> no arquivo <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded text-xs">.env</code> para usar o chat com Claude.
-        </p>
-        <button type="button" onClick={onClose} className="mt-4 text-xs text-blue-500 hover:underline">
-          Fechar
-        </button>
-      </div>
-    )
   }
 
   return (

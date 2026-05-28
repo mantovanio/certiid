@@ -1,5 +1,5 @@
 // @ts-nocheck — Deno runtime (Supabase Edge Functions), não Node.js
-import { CORS, SERVICE_KEY, SUPABASE_URL, requireAuthenticatedUser } from '../_shared/security.ts'
+import { CORS, SERVICE_KEY, SUPABASE_URL, requireAuthenticatedUser, unauthorizedWebhookResponse, verifyWebhookRequest } from '../_shared/security.ts'
 
 const DB = {
   'apikey':        SERVICE_KEY,
@@ -392,8 +392,9 @@ Deno.serve(async (req) => {
     }
   }
 
+  const rawBody = await req.text()
   let payload: Record<string, unknown>
-  try { payload = await req.json() }
+  try { payload = rawBody ? JSON.parse(rawBody) : {} }
   catch { return new Response('Invalid JSON', { status: 400, headers: CORS }) }
 
   // ── Proxy actions (chamadas do browser) ────────────────────────────────────
@@ -407,6 +408,16 @@ Deno.serve(async (req) => {
     if (payload._action === 'send_message')       return json(await actionSendMessage(payload))
     if (payload._action === 'update_conversation') return json(await actionUpdateConversation(payload))
   }
+
+  const webhookSecret = Deno.env.get('CHATWOOT_WEBHOOK_SECRET') ?? ''
+  const webhookOk = await verifyWebhookRequest(req, {
+    secret: webhookSecret,
+    rawBody,
+    tokenHeaders: ['x-webhook-token', 'authorization'],
+    signatureHeaders: ['x-signature'],
+    queryParams: ['token', 'signature'],
+  })
+  if (!webhookOk) return unauthorizedWebhookResponse(req)
 
   // ── Chatwoot webhook events ────────────────────────────────────────────────
   const event = payload.event as string

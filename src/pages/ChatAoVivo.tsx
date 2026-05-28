@@ -251,6 +251,7 @@ export default function ChatAoVivo() {
   }
 
   async function persistColumnOrder(nextColumns: ColumnConfig[]) {
+    if (!isAdmin) return
     setColumns(nextColumns)
     await Promise.all(
       nextColumns.map((column, index) =>
@@ -260,6 +261,7 @@ export default function ChatAoVivo() {
   }
 
   async function moveColumn(columnId: string, direction: -1 | 1) {
+    if (!isAdmin) return
     const index = columns.findIndex(column => column.id === columnId)
     const targetIndex = index + direction
     if (index < 0 || targetIndex < 0 || targetIndex >= columns.length) return
@@ -431,7 +433,7 @@ export default function ChatAoVivo() {
   }
 
   async function saveColumn() {
-    if (!columnModal) return
+    if (!columnModal || !isAdmin) return
     setSavingColumn(true)
     const column = columnModal.column
     const payload = {
@@ -459,7 +461,7 @@ export default function ChatAoVivo() {
   }
 
   async function deleteColumn() {
-    if (!columnModal?.column.id) return
+    if (!columnModal?.column.id || !isAdmin) return
     const column = columnModal.column
     const inUse = leads.filter(lead => lead.status === column.status_key)
     if (inUse.length > 0) {

@@ -1,5 +1,5 @@
 // @ts-nocheck — Deno runtime (Supabase Edge Functions), não Node.js
-import { CORS, SERVICE_KEY, SUPABASE_URL, json } from '../_shared/security.ts'
+import { CORS, SERVICE_KEY, SUPABASE_URL, json, unauthorizedWebhookResponse, verifyWebhookRequest } from '../_shared/security.ts'
 
 const DB = {
   'apikey':        SERVICE_KEY,
@@ -81,14 +81,32 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 204, headers: CORS })
   }
   if (req.method !== 'POST') {
-    return json({ error: 'Método não permitido' }, 405)
+    return json({ error: 'Método não permitido' }, 405, req)
+  }
+
+  const rawBody = await req.text()
+  const webhookSecret =
+    Deno.env.get('PAYMENT_WEBHOOK_SECRET')
+    ?? Deno.env.get('SAFE2PAY_WEBHOOK_SECRET')
+    ?? ''
+
+  const webhookOk = await verifyWebhookRequest(req, {
+    secret: webhookSecret,
+    rawBody,
+    tokenHeaders: ['x-webhook-token', 'x-safe2pay-token', 'authorization'],
+    signatureHeaders: ['x-signature', 'x-safe2pay-signature'],
+    queryParams: ['token', 'signature'],
+  })
+
+  if (!webhookOk) {
+    return unauthorizedWebhookResponse(req)
   }
 
   let payload: Record<string, unknown> = {}
   try {
-    payload = await req.json()
+    payload = rawBody ? JSON.parse(rawBody) : {}
   } catch {
-    return json({ error: 'Payload inválido' }, 400)
+    return json({ error: 'Payload inválido' }, 400, req)
   }
 
   // Responde imediatamente para evitar timeout do gateway
@@ -195,5 +213,5 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  return json({ received: true })
+  return json({ received: true }, 200, req)
 })

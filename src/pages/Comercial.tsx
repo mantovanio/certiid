@@ -53,7 +53,7 @@ import {
 import { getEdgeFunctionUrl, getSupabaseAccessToken, supabase } from '@/lib/supabase'
 import { queueEmailMessage, queueWhatsAppMessage, renderTemplate } from '@/lib/communication'
 import { useAuth } from '@/contexts/AuthContext'
-import { hasPerfil, isAdminProfile } from '@/lib/security'
+import { buildSafeIlikePattern, hasPerfil, isAdminProfile } from '@/lib/security'
 import { buscarCep } from '@/lib/cep'
 import type {
   Agendamento,
@@ -1171,7 +1171,13 @@ export default function Comercial() {
     const t = term.trim()
     if (t.length < 3) { setClienteResultados([]); setClienteDropdownOpen(false); return }
     setClienteBuscando(true)
-    const like = `%${t}%`
+    const like = buildSafeIlikePattern(t)
+    if (!like) {
+      setClienteResultados([])
+      setClienteDropdownOpen(false)
+      setClienteBuscando(false)
+      return
+    }
     const { data } = await supabase
       .from('cadastros_base')
       .select('id, nome, nome_fantasia, cpf_cnpj, telefone, cidade, uf, status')
@@ -1362,9 +1368,21 @@ export default function Comercial() {
   useEffect(() => { void fetchClientes()  }, [fetchClientes])
   useEffect(() => { void fetchPontos()    }, [fetchPontos])
   useEffect(() => { void fetchAgentesRegistro() }, [fetchAgentesRegistro])
-  useEffect(() => { void fetchAgenda()    }, [fetchAgenda])
-  useEffect(() => { void fetchDisponibilidades() }, [fetchDisponibilidades])
-  useEffect(() => { void fetchIndisponibilidades() }, [fetchIndisponibilidades])
+  useEffect(() => {
+    if (tab === 'agenda') {
+      void fetchAgenda()
+    }
+  }, [tab, fetchAgenda])
+  useEffect(() => {
+    if (tab === 'agenda') {
+      void fetchDisponibilidades()
+    }
+  }, [tab, fetchDisponibilidades])
+  useEffect(() => {
+    if (tab === 'agenda') {
+      void fetchIndisponibilidades()
+    }
+  }, [tab, fetchIndisponibilidades])
   useEffect(() => { void fetchCatalogo()  }, [fetchCatalogo])
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setCurrentUserId(data.user?.id ?? null))
@@ -7012,10 +7030,17 @@ function ClienteSearchInput({ value, onChange, onSelect, className }: {
     if (value.length < 3) { setResultados([]); setAberto(false); return }
     const t = setTimeout(async () => {
       setBuscando(true)
+      const safeValue = buildSafeIlikePattern(value)
+      if (!safeValue) {
+        setBuscando(false)
+        setResultados([])
+        setAberto(false)
+        return
+      }
       const { data } = await supabase
         .from('cadastros_base')
         .select('id, nome, cpf_cnpj, telefone')
-        .or(`nome.ilike.%${value}%,cpf_cnpj.ilike.%${value}%`)
+        .or(`nome.ilike.${safeValue},cpf_cnpj.ilike.${safeValue}`)
         .eq('status', 'ativo')
         .limit(8)
       setBuscando(false)

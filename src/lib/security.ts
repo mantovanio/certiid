@@ -94,3 +94,18 @@ export function resolveDefaultPage(profile: Profile | null | undefined): Page {
   const allowedPages = resolveAllowedPages(profile)
   return allowedPages[0] ?? 'dashboard'
 }
+
+export function sanitizePostgrestSearchTerm(value: string) {
+  return value
+    .normalize('NFKC')
+    .replace(/[^\p{L}\p{N}\s@._+\-/]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80)
+}
+
+export function buildSafeIlikePattern(value: string) {
+  const sanitized = sanitizePostgrestSearchTerm(value)
+  if (!sanitized) return ''
+  return `%${sanitized.replace(/\s+/g, '%')}%`
+}

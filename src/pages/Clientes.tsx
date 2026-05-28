@@ -6,7 +6,7 @@ import { buscarCep } from '@/lib/cep'
 import ChatPanel, { type EvolutionCfg } from '@/components/ChatPanel'
 import { loadActiveWhatsAppIntegration } from '@/lib/whatsappIntegration'
 import { useAuth } from '@/contexts/AuthContext'
-import { hasPerfil } from '@/lib/security'
+import { buildSafeIlikePattern, hasPerfil } from '@/lib/security'
 import type { Agendamento, CommunicationOutbox, RenovacaoV2 } from '@/types'
 
 type TipoCliente = 'pessoa_fisica' | 'pessoa_juridica'
@@ -212,7 +212,12 @@ export default function Clientes() {
         .order('nome')
         .range(page * pageSize, page * pageSize + pageSize - 1)
 
-      if (search) q = q.or(`nome.ilike.%${search}%,cpf_cnpj.ilike.%${search}%,nome_fantasia.ilike.%${search}%`)
+      if (search) {
+        const safeSearch = buildSafeIlikePattern(search)
+        if (safeSearch) {
+          q = q.or(`nome.ilike.${safeSearch},cpf_cnpj.ilike.${safeSearch},nome_fantasia.ilike.${safeSearch}`)
+        }
+      }
       if (filterTipo)   q = q.eq('tipo_cliente', filterTipo)
       if (filterStatus) q = q.eq('status', filterStatus)
 

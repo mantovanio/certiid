@@ -1585,7 +1585,7 @@ export default function Comercial() {
       .select('*')
       .single()
     setSalvandoV(false)
-    if (error) { showMsg('Erro: ' + error.message); return }
+    if (error) { showMsg('Não foi possível salvar a venda. Verifique os dados e tente novamente.'); return }
 
     let comunicacaoResumo = 'sem contato do cliente para disparo automático'
     if (vendaCriada) {
@@ -1632,7 +1632,7 @@ export default function Comercial() {
 
       const { error: agendaErr } = await supabase.from('agendamentos_validacao').insert([agendamentoPayload])
       if (agendaErr) {
-        showMsg(`Venda salva, mas o agendamento pendente não foi criado: ${agendaErr.message}`)
+        showMsg('Venda salva. O agendamento automático não pôde ser criado — crie-o manualmente na aba Agenda.')
       }
     }
 
@@ -3960,7 +3960,12 @@ export default function Comercial() {
               </div>
             )}
 
-            {showFormV && (
+            {showFormV && createPortal(
+              <div
+                className="fixed inset-0 z-[9999] flex items-start justify-center overflow-y-auto bg-black/50 backdrop-blur-sm p-4 sm:p-6"
+                onClick={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}
+              >
+                <div className="w-full max-w-5xl my-auto" onClick={e => e.stopPropagation()}>
               <Panel title="Lançar Venda" onClose={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}>
                 <div className="grid grid-cols-1 md:grid-cols-4 xl:grid-cols-8 gap-2 mb-4">
                   {vendaSteps.steps.map((step, index) => (
@@ -4383,6 +4388,9 @@ export default function Comercial() {
                   disabled={!vendaStepStatus.pontoOk}
                 />
               </Panel>
+                </div>
+              </div>,
+              document.body
             )}
 
             {/* ── PAINEL DE FILTROS ─────────────────────────── */}

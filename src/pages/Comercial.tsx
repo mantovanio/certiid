@@ -1598,19 +1598,23 @@ export default function Comercial() {
       setVendasV2(prev => [vendaParaLista, ...prev.filter(item => item.id !== vendaParaLista.id)])
       setPaginaAtual(1)
 
-      const comunicacaoResult = await dispararComunicacaoAutomaticaVenda({
-        vendaId: vendaCriada.id,
-        clienteNome: cli?.nome ?? vendaCriada.nome_faturamento ?? null,
-        produtoNome: cert?.tipo ?? vendaCriada.tipo_produto ?? 'Produto',
-        valorVenda: formV2.valor_venda,
-        formaPagamento: formV2.forma_pagamento,
-        vencimento: formV2.data_vencimento || null,
-        telefone: cli?.telefone ?? vendaCriada.telefone_faturamento ?? null,
-        email: cli?.email ?? vendaCriada.email_faturamento ?? null,
-      })
-      comunicacaoResumo = comunicacaoResult.sent > 0
-        ? `${comunicacaoResult.sent} comunicação(ões) enfileirada(s)`
-        : 'sem contato do cliente para disparo automático'
+      try {
+        const comunicacaoResult = await dispararComunicacaoAutomaticaVenda({
+          vendaId: vendaCriada.id,
+          clienteNome: cli?.nome ?? vendaCriada.nome_faturamento ?? null,
+          produtoNome: cert?.tipo ?? vendaCriada.tipo_produto ?? 'Produto',
+          valorVenda: formV2.valor_venda,
+          formaPagamento: formV2.forma_pagamento,
+          vencimento: formV2.data_vencimento || null,
+          telefone: cli?.telefone ?? vendaCriada.telefone_faturamento ?? null,
+          email: cli?.email ?? vendaCriada.email_faturamento ?? null,
+        })
+        comunicacaoResumo = comunicacaoResult.sent > 0
+          ? `${comunicacaoResult.sent} comunicação(ões) enfileirada(s)`
+          : 'sem contato do cliente para disparo automático'
+      } catch {
+        comunicacaoResumo = 'comunicação não enviada'
+      }
 
       const agendamentoPayload = {
         venda_certificado_id: vendaCriada.id,
@@ -1645,7 +1649,7 @@ export default function Comercial() {
     setClienteSearch('')
     setVendaFilters(EMPTY_VENDA_FILTERS)
     setSelectedIds(new Set())
-    showMsg(`Venda salva, adicionada ao painel e ${comunicacaoResumo}.`, 'ok')
+    showMsg(`Venda salva com sucesso! ${comunicacaoResumo}.`, 'ok')
     void fetchVendasV2()
     void fetchAgenda()
   }
@@ -6909,16 +6913,17 @@ export default function Comercial() {
         document.body
       )}
 
-      {toast && (
+      {toast && createPortal(
         <div className={cn(
-          'fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-xl text-sm font-medium',
+          'fixed bottom-6 right-6 z-[99999] flex items-center gap-2 px-4 py-3 rounded-xl shadow-xl text-sm font-medium',
           toast.type === 'ok' ? 'bg-green-600 text-white' : 'bg-red-600 text-white',
         )}>
           {toast.msg}
           <button type="button" title="Fechar" onClick={() => setToast(null)} className="ml-1 opacity-80 hover:opacity-100">
             <X size={14} />
           </button>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

@@ -3967,25 +3967,18 @@ export default function Comercial() {
               >
                 <div className="w-full max-w-5xl my-auto" onClick={e => e.stopPropagation()}>
               <Panel title="Lançar Venda" onClose={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}>
-                <div className="grid grid-cols-1 md:grid-cols-4 xl:grid-cols-8 gap-2 mb-4">
+                <div className="flex flex-wrap gap-1.5 mb-4">
                   {vendaSteps.steps.map((step, index) => (
                     <div key={step.key} className={cn(
-                      'rounded-xl border px-3 py-2',
+                      'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium',
                       step.done
-                        ? 'border-green-200 bg-green-50 dark:border-green-900/30 dark:bg-green-950/20'
+                        ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/30 dark:bg-green-950/20 dark:text-green-300'
                         : index === vendaSteps.currentStepIndex
-                          ? 'border-red-300 bg-red-50 dark:border-red-900/40 dark:bg-red-950/20'
-                          : 'border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40'
+                          ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-300'
+                          : 'border-gray-200 bg-gray-50 text-gray-500 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-400'
                     )}>
-                      <p className={cn(
-                        'text-xs font-semibold',
-                        step.done
-                          ? 'text-green-700 dark:text-green-300'
-                          : index === vendaSteps.currentStepIndex
-                            ? 'text-red-700 dark:text-red-300'
-                            : 'text-gray-700 dark:text-gray-300'
-                      )}>{step.label}</p>
-                      <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">{step.helper}</p>
+                      {step.done && <span className="text-green-600 dark:text-green-400">✓</span>}
+                      {step.label}
                     </div>
                   ))}
                 </div>
@@ -4146,29 +4139,29 @@ export default function Comercial() {
                   </div>
                 </div>
 
-                {/* linha 3: Tabela de Venda */}
-                <div className={cn('mb-3', !vendaStepStatus.contadorOk && 'opacity-60 pointer-events-none')}>
-                  <label className="block text-xs text-gray-500 mb-1">Selecione a tabela de Venda *</label>
-                  <select value={formV2.tabela_preco_id}
-                    onChange={e => {
-                      const tid = e.target.value
-                      setFormV2(p => ({ ...p, tabela_preco_id: tid, certificado_id: '', tabela_preco_item_id: '', valor_venda: 0 }))
-                    }}
-                    className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value="">Selecione uma tabela</option>
-                    {tabelasAtivas.map(t => <option key={t.id} value={t.id}>{t.nome}</option>)}
-                  </select>
-                  {!vendaStepStatus.contadorOk && <p className="mt-1 text-[11px] text-gray-400">Confirme antes a etapa de contador/parceiro.</p>}
-                </div>
-
-                {/* linha 4: Tipo Emissão */}
-                <div className={cn('mb-3', !vendaStepStatus.tabelaOk && 'opacity-60 pointer-events-none')}>
-                  <SelectInput label="Tipo Emissão" value={formV2.tipo_emissao}
-                    onChange={v => setFormV2(p => ({ ...p, tipo_emissao: v, certificado_id: '', tabela_preco_item_id: '', valor_venda: 0 }))}
-                    options={[{ value: '', label: 'Selecione' }, ...TIPO_EMISSAO_OPTIONS]} />
-                  {!vendaStepStatus.tabelaOk && (
-                    <p className="mt-1 text-[11px] text-gray-400">Escolha a tabela para liberar o tipo de emissão.</p>
-                  )}
+                {/* linhas 3+4: Tabela de Venda + Tipo Emissão */}
+                <div className="grid grid-cols-1 md:grid-cols-[1fr_200px] gap-3 mb-3">
+                  <div className={cn(!vendaStepStatus.contadorOk && 'opacity-60 pointer-events-none')}>
+                    <label className="block text-xs text-gray-500 mb-1">Tabela de Venda *</label>
+                    <select value={formV2.tabela_preco_id}
+                      onChange={e => {
+                        const tid = e.target.value
+                        setFormV2(p => ({ ...p, tabela_preco_id: tid, certificado_id: '', tabela_preco_item_id: '', valor_venda: 0 }))
+                      }}
+                      className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                      <option value="">Selecione uma tabela</option>
+                      {tabelasAtivas.map(t => <option key={t.id} value={t.id}>{t.nome}</option>)}
+                    </select>
+                    {!vendaStepStatus.contadorOk && <p className="mt-1 text-[11px] text-gray-400">Confirme antes a etapa de contador/parceiro.</p>}
+                  </div>
+                  <div className={cn(!vendaStepStatus.tabelaOk && 'opacity-60 pointer-events-none')}>
+                    <SelectInput label="Tipo Emissão" value={formV2.tipo_emissao}
+                      onChange={v => setFormV2(p => ({ ...p, tipo_emissao: v, certificado_id: '', tabela_preco_item_id: '', valor_venda: 0 }))}
+                      options={[{ value: '', label: 'Selecione' }, ...TIPO_EMISSAO_OPTIONS]} />
+                    {!vendaStepStatus.tabelaOk && (
+                      <p className="mt-1 text-[11px] text-gray-400">Selecione a tabela primeiro.</p>
+                    )}
+                  </div>
                 </div>
 
                 {/* linha 5: Certificado + Validade */}
@@ -4222,51 +4215,47 @@ export default function Comercial() {
                   </label>
                 </div>
 
-                {/* linha 6: Valor + Forma Pagamento */}
-                <div className={cn('grid grid-cols-1 md:grid-cols-2 gap-3 mb-3', !vendaStepStatus.certificadoOk && 'opacity-60 pointer-events-none')}>
-                  <label className="flex flex-col gap-1">
-                    <span className="text-xs text-green-600 dark:text-green-400 font-medium">Valor Venda (R$) *</span>
+                {/* linhas 6+7: Valor + Forma Pagamento + Vencimento */}
+                <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_160px] gap-3 mb-3">
+                  <label className={cn('flex flex-col gap-1', !vendaStepStatus.certificadoOk && 'opacity-60 pointer-events-none')}>
+                    <span className="text-xs text-green-600 dark:text-green-400 font-medium">Valor (R$) *</span>
                     <input type="number" min="0" step="0.01" value={formV2.valor_venda}
                       onChange={e => setFormV2(p => ({ ...p, valor_venda: parseFloat(e.target.value) || 0 }))}
                       className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
                   </label>
-                  <SelectInput label="Forma de Pagamento" value={formV2.forma_pagamento}
-                    onChange={v => setFormV2(p => ({ ...p, forma_pagamento: v }))}
-                    options={[{ value: '', label: 'Selecione' }, ...formasPagamento.map(n => ({ value: n, label: n }))]} />
-                </div>
-
-                {/* linha 7: Vencimento */}
-                <div className={cn('grid grid-cols-1 md:grid-cols-2 gap-3 mb-3', !vendaStepStatus.pagamentoOk && 'opacity-60 pointer-events-none')}>
-                  <TextInput label="Vencimento da forma de pagamento *" type="date" value={formV2.data_vencimento}
-                    onChange={v => setFormV2(p => ({ ...p, data_vencimento: v }))} />
-                  <div className="rounded-xl border border-blue-100 dark:border-blue-900/20 bg-blue-50/60 dark:bg-blue-950/10 px-4 py-3">
-                    <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">Conexão da venda</p>
-                    <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-                      A venda ficará vinculada à tabela, ao produto, ao ponto de atendimento e à forma de pagamento escolhida.
-                    </p>
+                  <div className={cn(!vendaStepStatus.certificadoOk && 'opacity-60 pointer-events-none')}>
+                    <SelectInput label="Forma de Pagamento *" value={formV2.forma_pagamento}
+                      onChange={v => setFormV2(p => ({ ...p, forma_pagamento: v }))}
+                      options={[{ value: '', label: 'Selecione' }, ...formasPagamento.map(n => ({ value: n, label: n }))]} />
+                  </div>
+                  <div className={cn(!vendaStepStatus.pagamentoOk && 'opacity-60 pointer-events-none')}>
+                    <TextInput label="Vencimento *" type="date" value={formV2.data_vencimento}
+                      onChange={v => setFormV2(p => ({ ...p, data_vencimento: v }))} />
                   </div>
                 </div>
 
-                {/* linha 8: Ponto */}
-                <div className={cn('grid grid-cols-1 md:grid-cols-2 gap-3 mb-3', !vendaStepStatus.vencimentoOk && 'opacity-60 pointer-events-none')}>
-                  <SelectInput
-                    label="Ponto de Atendimento *"
-                    value={formV2.ponto_atendimento_id}
-                    onChange={v => setFormV2(p => ({ ...p, ponto_atendimento_id: v }))}
-                    options={[
-                      { value: '', label: pontosAtivos.length ? 'Selecione' : 'Cadastre um ponto primeiro' },
-                      ...pontosAtivos.map(ponto => ({
-                        value: ponto.id,
-                        label: [ponto.nome, ponto.cidade, ponto.uf].filter(Boolean).join(' · '),
-                      })),
-                    ]}
-                  />
-                  <div className="rounded-xl border border-red-100 dark:border-red-900/20 bg-red-50/60 dark:bg-red-950/10 px-4 py-3">
-                    <p className="text-xs font-semibold text-red-700 dark:text-red-300">Última etapa operacional</p>
-                    <p className="text-xs text-red-600 dark:text-red-400 mt-1">
-                      Escolha o ponto de atendimento para concluir o fluxo de validação.
-                    </p>
+                {/* linhas 8+obs: Ponto de Atendimento + Observações */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                  <div className={cn(!vendaStepStatus.vencimentoOk && 'opacity-60 pointer-events-none')}>
+                    <SelectInput
+                      label="Ponto de Atendimento *"
+                      value={formV2.ponto_atendimento_id}
+                      onChange={v => setFormV2(p => ({ ...p, ponto_atendimento_id: v }))}
+                      options={[
+                        { value: '', label: pontosAtivos.length ? 'Selecione' : 'Cadastre um ponto primeiro' },
+                        ...pontosAtivos.map(ponto => ({
+                          value: ponto.id,
+                          label: [ponto.nome, ponto.cidade, ponto.uf].filter(Boolean).join(' · '),
+                        })),
+                      ]}
+                    />
                   </div>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs text-gray-500">Observações</span>
+                    <textarea rows={2} value={formV2.observacoes ?? ''}
+                      onChange={e => setFormV2(p => ({ ...p, observacoes: e.target.value || null }))}
+                      className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
+                  </label>
                 </div>
 
                 <div className="mb-4 rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/70 dark:bg-emerald-950/20 px-4 py-3">
@@ -4297,13 +4286,6 @@ export default function Comercial() {
                   </div>
                 </div>
 
-                {/* linha 6: Observações */}
-                <label className="flex flex-col gap-1 mb-4">
-                  <span className="text-xs text-gray-500">Observações</span>
-                  <textarea rows={2} value={formV2.observacoes ?? ''}
-                    onChange={e => setFormV2(p => ({ ...p, observacoes: e.target.value || null }))}
-                    className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
-                </label>
 
                 {showClienteForm && (
                   <div className="mt-4 rounded-xl border border-gray-200 dark:border-gray-800 p-4 bg-gray-50 dark:bg-gray-900/40">

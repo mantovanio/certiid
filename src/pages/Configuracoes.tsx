@@ -25,6 +25,7 @@ import type {
   ExternalIntegration,
   IntegrationProvider,
   IntegrationStatus,
+  LojaMarketplace,
   NfseConfiguracao,
   Parceiro,
   PerfilAcesso,
@@ -33,6 +34,7 @@ import type {
   ProvedorNfse,
   NovoPontoAtendimento,
   Profile,
+  TabelaPreco,
   TipoVinculoUsuario,
   WhatsAppEngine,
 } from '@/types'
@@ -350,11 +352,22 @@ function AbaUsuarios() {
 
   const [users, setUsers]           = useState<Profile[]>([])
   const [parceiros, setParceiros]   = useState<Parceiro[]>([])
+  const [tabelas, setTabelas]       = useState<TabelaPreco[]>([])
+  const [lojas, setLojas]           = useState<LojaMarketplace[]>([])
   const [loading, setLoading]       = useState(true)
   const [editingId, setEditingId]   = useState<string | null>(null)
   const [editForm, setEditForm]     = useState<UserEditForm | null>(null)
   const [saving, setSaving]         = useState(false)
   const [editErro, setEditErro]     = useState<string | null>(null)
+
+  // loja do vendedor (edit inline)
+  const [editLojaUserId, setEditLojaUserId] = useState<string | null>(null)
+  const [editLojaForm, setEditLojaForm] = useState<{ nome: string; tabela_preco_id: string } | null>(null)
+  const [salvandoLoja, setSalvandoLoja] = useState(false)
+
+  // loja do vendedor (criação)
+  const [novoLojaNome, setNovoLojaNome] = useState('')
+  const [novoLojaTabelaId, setNovoLojaTabelaId] = useState('')
 
   // Modal alterar senha
   const [modalSenha, setModalSenha]   = useState<ModalSenha>(null)
@@ -387,12 +400,16 @@ function AbaUsuarios() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [{ data }, { data: parceirosData }] = await Promise.all([
+    const [{ data }, { data: parceirosData }, { data: tabelasData }, { data: lojasData }] = await Promise.all([
       supabase.from('profiles').select('*').order('created_at', { ascending: true }),
       supabase.from('parceiros').select('*').order('nome', { ascending: true }),
+      supabase.from('tabelas_preco').select('id, nome, ativo').eq('ativo', true).order('nome'),
+      supabase.from('lojas_marketplace').select('*').eq('owner_tipo', 'vendedor'),
     ])
     setUsers(data ?? [])
     setParceiros((parceirosData ?? []) as Parceiro[])
+    setTabelas((tabelasData ?? []) as TabelaPreco[])
+    setLojas((lojasData ?? []) as LojaMarketplace[])
     setLoading(false)
   }, [])
 
@@ -529,8 +546,43 @@ function AbaUsuarios() {
     }
   }
 
+  function slugifyNomeLoja(value: string) {
+    return value
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  }
+
+  async function salvarLojaVendedor(userId: string) {
+    if (!editLojaForm?.nome.trim() || !editLojaForm.tabela_preco_id) {
+      showMsgU('Preencha nome da loja e tabela de preço.')
+      return
+    }
+    setSalvandoLoja(true)
+    const lojaExistente = lojas.find(l => l.owner_profile_id === userId)
+    const payload = {
+      nome_loja: editLojaForm.nome.trim(),
+      slug: slugifyNomeLoja(editLojaForm.nome),
+      tabela_preco_id: editLojaForm.tabela_preco_id,
+      owner_tipo: 'vendedor' as const,
+      owner_profile_id: userId,
+      ativo: true,
+      configuracoes: lojaExistente?.configuracoes ?? { modo_exibicao: 'vitrine', item_fixo_id: null },
+    }
+    if (lojaExistente) {
+      await supabase.from('lojas_marketplace').update(payload).eq('id', lojaExistente.id)
+    } else {
+      await supabase.from('lojas_marketplace').insert([payload])
+    }
+    setSalvandoLoja(false)
+    setEditLojaUserId(null)
+    setEditLojaForm(null)
+    void load()
+    showMsgU('Loja salva!', 'ok')
+  }
+
   function abrirNovoUsuario() {
     setNovoNome(''); setNovoEmail(''); setNovoPerfil('usuario'); setNovoSenhaU('')
+    setNovoLojaNome(''); setNovoLojaTabelaId('')
     setCriadoOk(false); setCriadoErro(null)
     setNovoModal({ aberto: true })
   }
@@ -541,13 +593,24 @@ function AbaUsuarios() {
     if (novoSenhaU.length < 6) { setCriadoErro('Senha mínima de 6 caracteres.'); return }
     setCriandoUser(true)
     try {
-      await createAdminManagedUser({
+      const result = await createAdminManagedUser({
         nome: novoNome,
         email: novoEmail,
         senha: novoSenhaU,
         perfil: novoPerfil,
         permissoes: DEFAULT_PERMISSIONS[novoPerfil],
       })
+      if (novoPerfil === 'vendedor' && novoLojaNome.trim() && novoLojaTabelaId && result.userId) {
+        await supabase.from('lojas_marketplace').insert([{
+          nome_loja: novoLojaNome.trim(),
+          slug: slugifyNomeLoja(novoLojaNome),
+          tabela_preco_id: novoLojaTabelaId,
+          owner_tipo: 'vendedor',
+          owner_profile_id: result.userId,
+          ativo: true,
+          configuracoes: { modo_exibicao: 'vitrine', item_fixo_id: null },
+        }])
+      }
       setCriadoOk(true)
       void load()
     } catch (error) {
@@ -678,6 +741,28 @@ function AbaUsuarios() {
                   <option value="usuario">Usuário</option>
                 </select>
               </div>
+              {novoPerfil === 'vendedor' && (
+                <div className="rounded-xl border border-blue-200 dark:border-blue-900/30 bg-blue-50/60 dark:bg-blue-950/20 p-3 space-y-2">
+                  <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">Loja do Marketplace (opcional)</p>
+                  <p className="text-[11px] text-blue-600 dark:text-blue-400">Configure a loja agora ou depois, na edição do usuário.</p>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Nome da loja</label>
+                    <input type="text" value={novoLojaNome} onChange={e => setNovoLojaNome(e.target.value)}
+                      placeholder="Ex: Loja do João Silva"
+                      className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  </div>
+                  {novoLojaNome.trim() && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Tabela de preço</label>
+                      <select value={novoLojaTabelaId} onChange={e => setNovoLojaTabelaId(e.target.value)}
+                        className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="">Selecione</option>
+                        {tabelas.map(t => <option key={t.id} value={t.id}>{t.nome}</option>)}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
               {criadoErro && (
                 <p className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">
                   ⚠ {criadoErro}
@@ -889,6 +974,71 @@ function AbaUsuarios() {
                       ))}
                     </div>
                   </div>
+
+                  {editForm.perfil === 'vendedor' && (() => {
+                    const lojaDoVendedor = lojas.find(l => l.owner_profile_id === u.id)
+                    const isEditingLoja = editLojaUserId === u.id
+                    return (
+                      <div className="rounded-xl border border-blue-200 dark:border-blue-900/30 bg-blue-50/60 dark:bg-blue-950/20 p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">Loja do Marketplace</p>
+                          {!isEditingLoja && (
+                            <button type="button"
+                              onClick={() => {
+                                setEditLojaUserId(u.id)
+                                setEditLojaForm({
+                                  nome: lojaDoVendedor?.nome_loja ?? '',
+                                  tabela_preco_id: lojaDoVendedor?.tabela_preco_id ?? (tabelas[0]?.id ?? ''),
+                                })
+                              }}
+                              className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                              {lojaDoVendedor ? 'Editar loja' : 'Criar loja'}
+                            </button>
+                          )}
+                        </div>
+                        {!isEditingLoja && lojaDoVendedor && (
+                          <div className="text-sm">
+                            <p className="font-medium text-gray-800 dark:text-gray-100">{lojaDoVendedor.nome_loja}</p>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">{tabelas.find(t => t.id === lojaDoVendedor.tabela_preco_id)?.nome ?? '—'} · /{lojaDoVendedor.slug}</p>
+                          </div>
+                        )}
+                        {!isEditingLoja && !lojaDoVendedor && (
+                          <p className="text-xs text-blue-600/70 dark:text-blue-400/70">Nenhuma loja configurada ainda.</p>
+                        )}
+                        {isEditingLoja && editLojaForm && (
+                          <div className="space-y-2">
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Nome da loja</label>
+                              <input type="text" value={editLojaForm.nome}
+                                onChange={e => setEditLojaForm(p => p ? { ...p, nome: e.target.value } : p)}
+                                placeholder="Ex: Loja do João Silva"
+                                className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Tabela de preço</label>
+                              <select value={editLojaForm.tabela_preco_id}
+                                onChange={e => setEditLojaForm(p => p ? { ...p, tabela_preco_id: e.target.value } : p)}
+                                className="w-full border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="">Selecione</option>
+                                {tabelas.map(t => <option key={t.id} value={t.id}>{t.nome}</option>)}
+                              </select>
+                            </div>
+                            <div className="flex gap-2 pt-1">
+                              <button type="button"
+                                onClick={() => { setEditLojaUserId(null); setEditLojaForm(null) }}
+                                className="px-3 py-1.5 text-xs rounded-lg border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                                Cancelar
+                              </button>
+                              <button type="button" onClick={() => void salvarLojaVendedor(u.id)} disabled={salvandoLoja}
+                                className="px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-medium transition-colors flex items-center gap-1.5">
+                                {salvandoLoja ? <><Loader2 size={11} className="animate-spin" /> Salvando...</> : <><Check size={11} /> Salvar loja</>}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
 
                   {editErro && (
                     <p className="text-xs text-red-600 dark:text-red-300 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">

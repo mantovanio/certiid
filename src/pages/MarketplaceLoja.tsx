@@ -70,6 +70,8 @@ type PaymentRuntime = {
 
 type ContextResponse = {
   ok: boolean
+  tabela?: TabelaPreco | null
+  produtos?: LojaItemRow[]
   payment_runtime: PaymentRuntime
   pagamentos: PaymentOption[]
   agentes: AgendaAgent[]
@@ -426,7 +428,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
       if (!active) return
 
       const fetchErr = tabelaRes.error ?? itensRes.error
-      if (fetchErr) {
+      if (fetchErr && !contextRes.ok) {
         setError(fetchErr.message)
         setLoading(false)
         return
@@ -445,19 +447,24 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
         return
       }
 
-      const itensBrutos = (itensRes.data ?? []) as unknown as LojaItemRow[]
+      const itensBrutos = Array.isArray(contextBody.produtos) && contextBody.produtos.length > 0
+        ? contextBody.produtos
+        : (itensRes.data ?? []) as unknown as LojaItemRow[]
+
       const certificadoIds = Array.from(new Set(itensBrutos.map(item => item.certificado_id).filter(Boolean)))
       let certificadosMap = new Map<string, Certificado>()
 
-      if (certificadoIds.length > 0) {
-        const { data: certificadosData } = await supabase
-          .from('certificados')
-          .select('*')
-          .in('id', certificadoIds)
+      if (!Array.isArray(contextBody.produtos) || contextBody.produtos.length === 0) {
+        if (certificadoIds.length > 0) {
+          const { data: certificadosData } = await supabase
+            .from('certificados')
+            .select('*')
+            .in('id', certificadoIds)
 
-        certificadosMap = new Map(
-          ((certificadosData ?? []) as Certificado[]).map(certificado => [certificado.id, certificado])
-        )
+          certificadosMap = new Map(
+            ((certificadosData ?? []) as Certificado[]).map(certificado => [certificado.id, certificado])
+          )
+        }
       }
 
       const itensAtivos = itensBrutos.map(item => ({
@@ -469,7 +476,7 @@ export default function MarketplaceLoja({ slug }: { slug?: string | null }) {
       const firstDay = (contextBody.slots[0]?.inicio ?? '').slice(0, 10)
 
       setLoja(lojaData as LojaMarketplace)
-      setTabela((tabelaRes.data ?? null) as TabelaPreco | null)
+      setTabela((contextBody.tabela ?? tabelaRes.data ?? null) as TabelaPreco | null)
       setItens(itensAtivos)
       setSelectedItemId(initialItemId)
       setPagamentos(contextBody.pagamentos)

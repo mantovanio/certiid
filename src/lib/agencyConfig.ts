@@ -1,5 +1,7 @@
 import { supabase } from '@/lib/supabase'
 
+const DEFAULT_BRAND_LOGO = 'favicon.svg'
+
 export type AgencyConfig = {
   nome_agencia: string
   responsavel: string
@@ -20,9 +22,9 @@ export const DEFAULT_AGENCY_CONFIG: AgencyConfig = {
   responsavel: 'Alexandre Aparecido Mantovan',
   telefone: '+55 11 9508-9218',
   cidade: 'São Paulo - SP',
-  logo_url: '',
-  logo_login_url: '',
-  logo_interna_url: '',
+  logo_url: DEFAULT_BRAND_LOGO,
+  logo_login_url: DEFAULT_BRAND_LOGO,
+  logo_interna_url: DEFAULT_BRAND_LOGO,
   login_titulo: 'AR CERTI ID',
   login_subtitulo: 'Agência de Certificação Digital',
   cor_primaria: '#2563eb',
@@ -38,14 +40,14 @@ export function buildAuthBackground(startColor: string, endColor: string) {
 }
 
 function normalizeAgencyConfig(value: Partial<AgencyConfig>) {
-  const legacyLogo = value.logo_url ?? ''
+  const legacyLogo = value.logo_url?.trim() || DEFAULT_BRAND_LOGO
 
   return {
     ...DEFAULT_AGENCY_CONFIG,
     ...value,
     logo_url: legacyLogo,
-    logo_login_url: value.logo_login_url ?? legacyLogo,
-    logo_interna_url: value.logo_interna_url ?? legacyLogo,
+    logo_login_url: value.logo_login_url?.trim() || legacyLogo,
+    logo_interna_url: value.logo_interna_url?.trim() || legacyLogo,
   }
 }
 

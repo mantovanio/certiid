@@ -230,7 +230,7 @@ async function loadPaymentRuntime() {
 async function resolveLoja(slug: string) {
   let lojaQuery = adminDb
     .from('lojas_marketplace')
-    .select('id, nome_loja, slug, tabela_preco_id, owner_tipo, owner_profile_id, owner_parceiro_id, ativo')
+    .select('id, nome_loja, slug, tabela_preco_id, owner_tipo, owner_profile_id, owner_parceiro_id, ativo, configuracoes')
     .eq('ativo', true)
 
   if (slug) lojaQuery = lojaQuery.eq('slug', slug)
@@ -240,6 +240,35 @@ async function resolveLoja(slug: string) {
   if (error) throw new Error(error.message)
   if (!loja) throw new Error('Loja não encontrada')
   return loja
+}
+
+async function loadStoreCatalog(loja: Record<string, unknown>) {
+  const tabelaPrecoId = String(loja.tabela_preco_id ?? '')
+  if (!tabelaPrecoId) return { tabela: null, produtos: [] }
+
+  const [tabelaRes, itensRes] = await Promise.all([
+    adminDb
+      .from('tabelas_preco')
+      .select('*')
+      .eq('id', tabelaPrecoId)
+      .maybeSingle(),
+    adminDb
+      .from('tabelas_preco_itens')
+      .select('*, certificados(*)')
+      .eq('tabela_preco_id', tabelaPrecoId)
+      .eq('ativo', true)
+      .order('created_at', { ascending: true }),
+  ])
+
+  const firstError = tabelaRes.error ?? itensRes.error
+  if (firstError) throw new Error(firstError.message)
+
+  const produtos = (itensRes.data ?? []).filter(item => item.certificados ? item.certificados.ativo !== false : true)
+
+  return {
+    tabela: tabelaRes.data ?? null,
+    produtos,
+  }
 }
 
 async function resolveItem(loja: Record<string, unknown>, itemId: string) {
@@ -447,10 +476,13 @@ async function enqueueMessages(input: {
 async function handleContext(body: Record<string, unknown>) {
   const slug = String(body.slug ?? '').trim()
   const loja = await resolveLoja(slug)
+  const catalogo = await loadStoreCatalog(loja)
   const paymentRuntime = await loadPaymentRuntime()
   const agenda = await buildAgendaContext(loja)
   return json({
     ok: true,
+    tabela: catalogo.tabela,
+    produtos: catalogo.produtos,
     payment_runtime: paymentRuntime,
     pagamentos: agenda.pagamentos,
     agentes: agenda.agentes,

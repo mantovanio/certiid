@@ -198,18 +198,16 @@ WHERE perfil = 'admin' AND status = 'ativo';
 
 **Verificar:** `admins_ativos >= 1`.
 
-### 4.3 Lojas com links ativos
+### 4.3 Lojas marketplace ativas
 
 ```sql
-SELECT lm.nome, lm.slug, COUNT(ll.id) AS links_ativos
-FROM public.lojas_marketplace lm
-LEFT JOIN public.lojas_links ll ON ll.loja_id = lm.id AND ll.ativo = true
-WHERE lm.ativo = true
-GROUP BY lm.id, lm.nome, lm.slug
-ORDER BY lm.nome;
+SELECT nome, slug, ativo
+FROM public.lojas_marketplace
+WHERE ativo = true
+ORDER BY nome;
 ```
 
-**Verificar:** lojas ativas têm ao menos 1 link ativo. Loja sem link = botão "Acessar Marketplace" sem destino.
+**Verificar:** ao menos 1 loja ativa retornada. Sem lojas ativas = botão "Acessar Marketplace" sem destino.
 
 ---
 

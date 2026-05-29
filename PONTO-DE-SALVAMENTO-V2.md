@@ -1,294 +1,249 @@
-# Ponto de Salvamento — CertiID 1.0.0
+# Ponto de Salvamento — CertiID
 
-> Última atualização: 2026-05-22
-> Para retomar em nova sessão de IA sem perder contexto.
+Última atualização: 28/05/2026 — sessão 3
 
----
+## Estado atual
 
-## Estado atual do Git
+Sistema funcional em produção local. Smoke test executado contra banco real em 28/05/2026 — **resultado: APROVADO** (todos os 5 domínios verdes).
 
-**Branch:** `main`
-**Último commit publicado em produção:** `a9b50da` — fix: adiciona notificacoes faltantes no build
+Módulos estáveis:
 
-**Situação local:** a correção principal de segurança já está em produção. Ainda existem arquivos paralelos do ambiente do usuário fora desse pacote principal.
-
-### Commits recentes (sessão 2026-05-22)
-
-- `a9b50da` — fix: adiciona notificacoes faltantes no build
-- `2b85214` — fix: protege service role e move acoes admin para edge function
-
-### Commits anteriores (sessão 2026-05-18/19)
-
-- `2e13f81` — ci: deploy automático Edge Function Supabase no GitHub Actions
-- `ff0b7ae` — fix: normaliza telefone E.164 no import, edição manual e Edge Function
-- `468c1da` — feat: phone E.164, template deselect, throttling, follow-up 48h, cancel alerts
-- `9bc8e8f` — fix: converte data DD/MM/YYYY para YYYY-MM-DD na importação
+- Comercial (wizard Nova Venda reestruturado)
+- Chat ao Vivo / Evolution API
+- Financeiro
+- Configurações (usuários com criação de loja do marketplace)
+- Marketplace público (`/loja/:slug`)
 
 ---
 
-## Infraestrutura de deploy
+## O que ficou pronto — Sessão 3 (28/05/2026)
 
-- **VPS:** `147.79.111.76` (root)
-- **Domínio:** `certiid.mantovan.com.br` (sem www — sem registro DNS para www)
-- **Stack:** Docker Swarm + Traefik + Let's Encrypt
-- **Deploy:** push na `main` dispara GitHub Actions → SSH na VPS → `bash /opt/certiid/deploy.sh`
-- **`.env` na VPS** (`/opt/certiid/.env`): preferir `VITE_SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`; manter `VITE_SUPABASE_ANON_KEY` e `SUPABASE_SERVICE_ROLE_KEY` apenas como compatibilidade temporária
-- **Edge Functions publicadas:** `chatwoot-webhook`, `notify-new-user`, `admin-users`
-- **Produção confirmada:** frontend recompilado na VPS e site voltou ao ar após deploy manual
+### 1. Skill `/smoke-test`
 
----
+Arquivo: [.claude/skills/smoke-test.md](/.claude/skills/smoke-test.md)
 
-## Segurança — estado atual (2026-05-22)
+- Skill de validação pré-deploy em 5 domínios: RLS, Schema, Edge Functions, Dados de negócio, Regressões de UX
+- Executado contra banco de produção — todos aprovados
+- Tabelas verificadas: `vendas_certificados`, `leads_contabilidade`, `tabelas_preco`, `lojas_marketplace`, `lgpd_solicitacoes_exclusao`, `agendamentos`, `agendamentos_validacao`, `nfse_emitidas`
 
-### O que foi corrigido
+### 2. Correção de vazamento de mensagens de erro (OWASP A04)
 
-#### 1. `service_role` removida do frontend — CORRIGIDO
-- `src/lib/supabaseAdmin.ts` foi removido
-- `SUPABASE_SERVICE_ROLE_KEY` agora existe apenas server-side
-- arquivos ajustados: `.env.example`, `deploy.sh`, `Dockerfile`, `mcp-server/index.ts`, `query_db.js`
+Arquivo: [src/pages/Comercial.tsx](/src/pages/Comercial.tsx)
 
-#### 2. Gestão admin de usuários movida para backend — CORRIGIDO
-**Arquivos:**
-- `supabase/functions/admin-users/index.ts`
-- `src/lib/adminUsers.ts`
-- `src/pages/Configuracoes.tsx`
+- Corrigidos 12 pontos em fluxos admin que expunham `error.message` diretamente ao usuário
+- Todos substituídos por `traduzirErroDb(error, 'contexto')` — mensagens em português, detalhe técnico apenas no `console.error`
+- Contextos corrigidos: disponibilidade, bloqueio, agente-tabela, loja-marketplace, importar-certificados, excluir-tabela, regra-tabela-matriz, importar-produtos, importar-clientes, importar-vendas, importar-clientes-leads, excluir-nfse
 
-Fluxos preservados:
-- criar usuário
-- trocar senha
-- excluir usuário
+### 3. Redesign do wizard "Nova Venda" — produto primeiro
 
-Tudo isso agora valida sessão e perfil `admin` no backend.
+Arquivo: [src/pages/Comercial.tsx](/src/pages/Comercial.tsx)
 
-#### 3. Produção atualizada — CORRIGIDO
-- push realizado para `main`
-- Edge Function `admin-users` confirmada online
-- deploy manual na VPS concluído após correção de build
+**Antes:** formulário linear único com `<select>` gigante de produtos.
 
-### Próxima camada de endurecimento
+**Depois:** wizard em 3 etapas:
 
-#### 4. Proxy `chatwoot-webhook`
-Situação identificada:
-- ações `_action` do proxy ainda precisavam autenticar com token real da sessão do usuário
-- uso de `SUPABASE_ANON_KEY` como bearer não deve ser tratado como autenticação de usuário
+1. **Produto** — picker visual com filtros por tipo, modelo e prazo; cards agrupados por categoria (inspirado no Certifast); seleção define tabela automaticamente
+2. **Cadastro** — busca/criação de cliente inline, contador/parceiro
+3. **Detalhes** — tipo de emissão, pagamento, vencimento, ponto de atendimento, observações
 
-Objetivo em andamento:
-- exigir `access_token` real nas ações internas do proxy
-- manter eventos inbound do Chatwoot funcionando normalmente
+Estado novo: `vendaWizardStep: 'produto' | 'cadastro' | 'detalhes'` e `filtrosPicker: { tipo, modelo, prazo }`.
 
-#### 5. Núcleo central de segurança — IMPLEMENTADO
+`fecharFormVenda()` centraliza o reset de todo o estado do wizard.
 
-Agora a arquitetura de segurança foi organizada em 3 centros:
+Computed values adicionados:
 
-- `src/lib/security.ts`
-  - permissões padrão por perfil
-  - labels de perfil
-  - helpers:
-    - `isAdminProfile`
-    - `hasPerfil`
-    - `hasPagePermission`
-    - `resolveAllowedPages`
+- `todosItensDisponiveisComCert` — cruza todas as tabelas ativas com itens e certificados
+- `tiposNoPicker`, `modelosNoPicker`, `prazosNoPicker` — opções dinâmicas dos filtros
+- `itensFiltradosPicker` — itens filtrados para exibição no picker
 
-- `supabase/functions/_shared/security.ts`
-  - `adminDb`
-  - `json`
-  - `CORS`
-  - `requireAuthenticatedUser`
-  - `requireAdmin`
+Bloco de links marketplace removido do passo 3 (pertence à configuração, não ao formulário de venda).
 
-#### 6. Preparação para rotação de chaves Supabase — IMPLEMENTADO
+### 4. Remoção do marketplace da aba Comercial
 
-Compatibilidade adicionada:
-- frontend aceita `VITE_SUPABASE_PUBLISHABLE_KEY` com fallback para `VITE_SUPABASE_ANON_KEY`
-- componentes server-side aceitam `SUPABASE_SECRET_KEY` com fallback para `SUPABASE_SERVICE_ROLE_KEY`
+Arquivo: [src/pages/Comercial.tsx](/src/pages/Comercial.tsx)
 
-Arquivos ajustados:
-- `src/lib/supabase.ts`
-- `mcp-server/index.ts`
-- `query_db.js`
-- `.env.example`
-- `deploy.sh`
-- `Dockerfile`
+Removido:
 
-- consumo inicial refatorado em:
-  - `src/App.tsx`
-  - `src/pages/Configuracoes.tsx`
-  - `src/pages/ChatAoVivo.tsx`
-  - `src/pages/Parceiros.tsx`
-  - `src/pages/Renovacoes.tsx`
-  - `supabase/functions/admin-users/index.ts`
-  - `supabase/functions/chatwoot-webhook/index.ts`
+- Aba "Marketplace" (gerenciamento de lojas, links por produto, formulário create/edit)
+- Botão flutuante "Links Produtos" visível em todas as abas
+- 2 botões marketplace em cada linha de venda ("Abrir" e "Copiar link")
+- 2 botões marketplace em "Ações rápidas"
+- Estados: `lojasMarketplace`, `marketplaceOwners`, `showFormLoja`, `editingLojaId`, `formLoja`, `showLinksProdutosPanel`, `selectedLinksLojaId`
+- Funções: `slugifyLoja`, `resolveLojaBaseUrl`, `buildLojaProdutoUrl`, `abrirNovaLojaMarketplace`, `editarLojaMarketplace`, `salvarLojaMarketplace`, `toggleLojaMarketplace`, `obterLinkMarketplaceDaVenda`
+- Query de `lojas_marketplace` e `profiles(owners)` do `fetchCatalogo`
+- Tipos/constantes: `LojaMarketplaceForm`, `LojaMarketplaceConfig`, `EMPTY_LOJA_MARKETPLACE`, `OWNER_LOJA_OPTIONS`
+- Imports: `Store`, `OwnerTipoLojaMarketplace`, `LojaMarketplace`
+
+Mantido:
+
+- `copiarMarketplaceLink` e `abrirMarketplaceLink` — ainda usados na aba Tabelas para o campo `link_safeweb` de cada produto
+- Página pública `MarketplaceLoja.tsx` intacta
+
+**Motivo:** loja do marketplace é atributo do vendedor — gerenciamento pertence ao cadastro do vendedor em Configurações, não solto na aba comercial.
+
+### 5. Criação de loja do marketplace no cadastro de vendedor
+
+Arquivo: [src/pages/Configuracoes.tsx](/src/pages/Configuracoes.tsx)
+
+Em **Configurações → Usuários**:
+
+**Criação:**
+
+- Ao selecionar perfil "Vendedor / Parceiro", aparece seção azul "Loja do Marketplace (opcional)"
+- Campo nome da loja; ao preencher, exibe seletor de tabela de preço
+- Após criar usuário, se nome preenchido, insere automaticamente em `lojas_marketplace` com `owner_profile_id = novoUserId`
+- `createAdminManagedUser()` já retornava `userId` — aproveitado sem alteração no backend
+
+**Edição inline:**
+
+- Quando `editForm.perfil === 'vendedor'`, aparece seção "Loja do Marketplace" abaixo das permissões
+- Mostra loja existente (nome + tabela + slug) com botão "Editar loja"
+- Se não tem loja: "Nenhuma loja configurada ainda" com botão "Criar loja"
+- Formulário inline cria ou atualiza a loja sem recarregar a página
+
+`AbaUsuarios` passou a carregar `tabelas_preco` e `lojas_marketplace` junto com o `load()`.
 
 ---
 
-## SQL aplicado no Supabase (acumulado)
+## O que ficou pronto — Sessão 2 (26/05/2026)
 
-### migration_v2_oficial.sql — APLICADO
-23 tabelas V2 criadas. Ver seção detalhada no histórico abaixo.
+### Bloco anterior: Evolution / Chat ao Vivo / Documentos / Paginação
 
-### renovacoes_migration.sql — APLICADO (2026-05-18)
-Colunas adicionadas à tabela `renovacoes`:
+Ver detalhes no histórico — resumo:
 
-```sql
-ALTER TABLE public.renovacoes
-  ADD COLUMN IF NOT EXISTS pedido          TEXT,
-  ADD COLUMN IF NOT EXISTS protocolo       TEXT,
-  ADD COLUMN IF NOT EXISTS cpf             TEXT,
-  ADD COLUMN IF NOT EXISTS cnpj            TEXT,
-  ADD COLUMN IF NOT EXISTS razao_social    TEXT,
-  ADD COLUMN IF NOT EXISTS agr             TEXT,
-  ADD COLUMN IF NOT EXISTS vendedor        TEXT,
-  ADD COLUMN IF NOT EXISTS contador        TEXT,
-  ADD COLUMN IF NOT EXISTS renovado        BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS ultimo_lembrete TIMESTAMPTZ;
-```
+- chat interno com áudio, imagem, vídeo, nota interna, transferência
+- roteamento de `message_received` e `message_sent` para Chat ao Vivo
+- documentos do contato em modo híbrido (Supabase Storage ou servidor próprio)
+- paginação operacional em Chat, Clientes, Financeiro
 
-### parceiros_gestao_v2.sql — APLICADO
-Extensão da tabela `parceiros` com campos operacionais completos.
+### Certificados e Marketplace (sessão 2)
 
-### Pendente de aplicar
-- FK `certificado_id` em `vendas_certificados` e `produtos_emitidos` (aguarda tabela `certificados` no DB)
-- Popular `formas_pagamento_v2` (Comercial ainda usa `formas_pagamento` antiga)
+- Modal de edição de certificado via `createPortal` (z-index 9999)
+- Campo `periodo_uso` nos certificados (ex: "4 meses", "1 ano")
+- Tipo de emissão "online/vídeo/remoto" exibido como **Fast** no marketplace
+- Cards do marketplace reestruturados: Nome → Descrição → badges
 
 ---
 
-## Mensageria / Chat — estado atual (2026-05-18)
+## Arquivos principais
 
-### O que foi implementado nesta sessão
+| Arquivo | Responsabilidade |
+| --- | --- |
+| [src/pages/Comercial.tsx](/src/pages/Comercial.tsx) | Vendas, wizard produto-primeiro, catálogo, tabelas, comissões |
+| [src/pages/Configuracoes.tsx](/src/pages/Configuracoes.tsx) | Usuários, loja do vendedor, integrações, fiscal, pagamentos |
+| [src/pages/MarketplaceLoja.tsx](/src/pages/MarketplaceLoja.tsx) | Página pública de checkout do marketplace |
+| [src/components/ChatPanel.tsx](/src/components/ChatPanel.tsx) | Chat ao vivo, timeline, áudio, documentos |
+| [src/pages/ChatAoVivo.tsx](/src/pages/ChatAoVivo.tsx) | Container do chat, filtros, Kanban |
+| [supabase/functions/evolution-webhook/index.ts](/supabase/functions/evolution-webhook/index.ts) | Webhook da Evolution API |
+| [supabase/functions/marketplace-checkout/index.ts](/supabase/functions/marketplace-checkout/index.ts) | Edge Function de checkout público |
+| [src/lib/communication.ts](/src/lib/communication.ts) | Envio de mensagens, comunicação automática |
+| [src/lib/security.ts](/src/lib/security.ts) | Permissões, perfis, RLS helpers |
+| [.claude/skills/smoke-test.md](/.claude/skills/smoke-test.md) | Skill de validação pré-deploy |
 
-#### 1. HTTP 422 ao criar contato no Chatwoot — CORRIGIDO
-**Arquivo:** `supabase/functions/chatwoot-webhook/index.ts`
-**Causa:** telefone chegava em formato `(11) 99999-9999` — Chatwoot exige E.164.
-**Fix:** função `normalizePhone()` adicionada; converte `11999999999` → `+5511999999999` antes de criar/buscar contato.
+---
 
-#### 2. Template — seleção conflitante — CORRIGIDO
-**Arquivo:** `src/pages/Renovacoes.tsx`
-- **Checkbox "Padrão"** agora pode ser desmarcado (removi o bloqueio que mostrava erro)
-- **Card do template** agora é clicável para selecionar/desselecionar o template para o envio atual (borda verde/azul quando selecionado); o ícone de lápis continua abrindo o editor
-- Clicar duas vezes no mesmo card deseleciona (volta ao padrão do canal)
+## Migrations relevantes (ordem de aplicação)
 
-#### 3. Dosador de disparos (boas práticas Meta) — IMPLEMENTADO
-**Arquivo:** `src/pages/Renovacoes.tsx`
-- `bulkEnviarWhatsApp`: cada mensagem recebe `scheduled_for = now + (i × 3s)`
-- `bulkEnviarEmail`: cada mensagem recebe `scheduled_for = now + (i × 1.5s)`
-- `enviarMassa`: cada mensagem recebe `scheduled_for = now + (i × 3s)`
-- Toast informa tempo estimado de envio (`~X min para enviar todos`)
-- **Premissa:** N8N processa `communication_outbox` respeitando `scheduled_for`
-
-#### 4. Follow-up automático 48h — IMPLEMENTADO
-**Arquivo:** `src/lib/communication.ts` — nova função `queueWhatsAppFollowUp()`
-**Arquivo:** `src/pages/Renovacoes.tsx` — chamada em `enviarWhatsApp()`
-- Ao disparar WhatsApp individual, agenda automaticamente segunda mensagem idêntica com `scheduled_for = now + 48h`
-- Payload inclui `tipo: 'renovacao_followup_auto'` e `followup_round: 1`
-- **Ação necessária no N8N:** ao processar `tipo = renovacao_followup_auto`, consultar `renovacoes` pelo `renovacao_id` e **cancelar envio** se `status = 'convertido' | 'perdido'`
-
-#### 5. Botão cancelar avisos agendados — IMPLEMENTADO
-**Arquivo:** `src/pages/Renovacoes.tsx`
-- Botão 🔔 em cada linha da tabela de renovações
-- Deleta registros de `communication_outbox` onde `payload->>'renovacao_id' = id` AND `tipo = 'renovacao_followup_auto'` AND `scheduled_for > now`
-
-### O que falta para o ciclo completo de mensageria
-
-| Funcionalidade | Status | O que falta |
-|---|---|---|
-| Disparar mensagem inicial | ✅ Feito | — |
-| Dosagem anti-ban Meta | ✅ Feito | — |
-| Agendar follow-up 48h | ✅ Feito (fila) | N8N verificar status antes de enviar |
-| Cancelar avisos manualmente | ✅ Feito | — |
-| Repetir até responder | 🔶 Parcial | N8N: loop com nova inserção em outbox se sem resposta |
-| Detectar resposta do cliente | 🔶 Infra | Webhook Chatwoot → `message_type = 0` → atualizar status renovação |
-| IA classificar intenção | ❌ Pendente | Edge Function `chatwoot-webhook` chamar Claude API ao receber mensagem de entrada |
-| Mover lead de coluna automaticamente | ❌ Pendente | Webhook atualiza `leads_contabilidade.status` baseado na classificação da IA |
-
-### Arquitetura de mensageria
-
-```
-Renovacoes.tsx
-  ├── enviarWhatsApp() → communication_outbox (scheduled_for = agora)
-  │                   → communication_outbox (scheduled_for = +48h, tipo=followup_auto)
-  ├── bulkEnviarWhatsApp() → communication_outbox × N (espaçados 3s)
-  └── enviarMassa() → communication_outbox × N (espaçados 3s)
-
-N8N Worker
-  └── lê communication_outbox WHERE scheduled_for <= now
-      ├── envia via Chatwoot/WhatsApp
-      ├── se tipo=followup_auto → verifica renovacao.status antes de enviar
-      └── marca registro como processado
-
-Chatwoot Webhook → supabase/functions/chatwoot-webhook/index.ts
-  └── message_created (message_type=0 = cliente respondeu)
-      → atualizar renovacao.status = 'contatado' (TODO: + Claude API)
-      → mover lead no Kanban
+```text
+20260525_nfse_multimunicipio.sql
+20260526_evolution_integration.sql
+20260526_chat_transfer_responsavel.sql
+20260526_chat_lead_documentos.sql
+20260526_chat_lead_documentos_storage.sql
+20260523_marketplace_lojas.sql
+20260523_marketplace_public_read.sql
+20260523_marketplace_checkout_venda.sql
+20260523_bloco4_pagamentos.sql
+20260523_agenda_online_v2.sql
 ```
 
 ---
 
-## Telas — estado por arquivo
+## Edge Functions ativas
 
-### src/pages/Renovacoes.tsx
-- Tipo `RenovacaoV2` com 12 campos V2
-- Importação de planilha: `.csv`, `.xls`, `.xlsx`
-- Conversão automática de data `DD/MM/YYYY` → `YYYY-MM-DD` (`parseBrDate`)
-- Soft delete individual e em lote (`deleted_at`, `deleted_by`, `motivo_exclusao`)
-- Templates: seleção por card (clique) ou dropdown; checkbox Padrão pode ser desmarcado
-- Disparos: individuais (WhatsApp + email), bulk (selecionados), massa (todos elegíveis)
-- Dosador: 3s entre mensagens WhatsApp; 1.5s entre emails
-- Follow-up 48h automático no envio individual
-- Botão cancelar avisos por renovação
+| Função | Autenticação | Descrição |
+| --- | --- | --- |
+| `evolution-webhook` | JWT obrigatório | Recebe eventos da Evolution API |
+| `marketplace-checkout` | Pública (`--no-verify-jwt`) | Checkout do marketplace sem login |
+| `payment-webhook` | JWT obrigatório | Webhook de pagamentos |
+| `admin-users` | JWT obrigatório | CRUD de usuários via admin |
+| `notify-new-user` | JWT obrigatório | Notificação de novo usuário |
 
-### src/pages/Comercial.tsx
-- Aba Vendas migrada para `vendas_certificados` + `cadastros_base` + `titulares_certificado` + `pontos_atendimento`
-- Filtros operacionais: data, pedido, protocolo, cliente/doc, status
-- Transformação incompleta — ainda não está no nível final da referência
+Legado presente (não remover sem validar):
 
-### src/pages/Parceiros.tsx
-- Gestão V2 iniciada com formulário completo (acesso, contatos, endereço, token, bancário, etc.)
-- SQL de apoio em `sql/parceiros_gestao_v2.sql` já aplicado
-
-### src/pages/Financeiro.tsx
-- Tipo `LancamentoV2` aplicado; lógica existente intacta
-
-### src/pages/Configuracoes.tsx
-- Aba "Pontos de Atendimento" adicionada (criar/editar/ativar)
-
-### src/components/ChatPanel.tsx
-- Cria conversa no Chatwoot ao abrir lead sem `id_conversa_chatwoot`
-- Realtime via `communication_events`
-- **Nota:** telefone agora é normalizado pelo Edge Function antes de chegar ao Chatwoot
-
-### src/lib/communication.ts
-- `queueWhatsAppMessage()`, `queueEmailMessage()`, `queueChatwootConversationAction()`
-- `queueWhatsAppFollowUp()` — novo: agenda mensagem com delay configurável (padrão 48h)
-- `renderTemplate()` — substitui variáveis `{{...}}`
-
-### supabase/functions/chatwoot-webhook/index.ts
-- `normalizePhone()` — normaliza para E.164 antes de criar/buscar contato no Chatwoot
-- Proxy: `create_conversation`, `get_messages`, `send_message`
-- Webhook: sincroniza eventos Chatwoot → `leads_contabilidade` e `communication_events`
+- `chatwoot-webhook`
 
 ---
 
-## Regras de segurança permanentes
+## Arquitetura do marketplace
 
-- `SUPABASE_SERVICE_ROLE_KEY` nunca pode usar prefixo `VITE_` nem entrar no bundle
-- operacoes admin devem passar por Edge Function/backend dedicado
-- Campos sensíveis de `nfse_configuracoes` nunca no frontend
-- Edge Functions leem `SERVICE_ROLE_KEY` via `Deno.env.get()`
+```text
+Vendedor → Configurações → Usuários → [Criar Loja]
+                                           ↓
+                              lojas_marketplace (owner_tipo='vendedor', owner_profile_id=userId)
+                                           ↓
+                              /loja/:slug  →  MarketplaceLoja.tsx  →  marketplace-checkout (Edge Function)
+                                           ↓
+                              vendas_certificados (loja_marketplace_id preenchido)
+```
+
+**Regra de acesso:**
+
+- Admin vê e edita todas as lojas via Configurações
+- Vendedor vê/edita apenas sua própria loja via Configurações
+- Público acessa a loja pela URL sem autenticação
 
 ---
 
-## Pendências de infraestrutura
+## Pontos pendentes ou sensíveis
 
-1. **FK `certificado_id`** — adicionar após confirmar tabela `certificados` no DB
-2. **`formas_pagamento_v2`** — popular catálogo (Comercial ainda usa tabela antiga)
-3. **DNS `www`** — adicionar registro A `www.certiid → 147.79.111.76` se quiser suporte ao `www`
-4. **N8N — follow-up condicional** — worker deve checar `renovacao.status` antes de disparar `tipo=renovacao_followup_auto`
-5. **Edge Function deploy** — após commitar `chatwoot-webhook/index.ts`, fazer `supabase functions deploy chatwoot-webhook` na VPS
+### Chat / mídia
+
+- imagem e vídeo recebidos tratados — validar visualmente em fluxo real
+- salvar mídia recebida direto no contato ainda pode melhorar (botão por bolha)
+- editar/apagar mensagem enviada: não implementado (depende de suporte real da Evolution)
+
+### Documentos do contato
+
+- se bucket não existir, upload falha
+- se policies RLS não existirem, erro de acesso
+- modo "Servidor próprio" ainda depende de endpoint externo
+
+### Marketplace — próximos blocos naturais
+
+- **Modo `link_direto`** na loja: escolha do produto fixo ao editar a loja em Configurações (campo `item_fixo_id` + select de produto da tabela)
+- **Link de compartilhamento** para o vendedor: exibir a URL da loja na seção de edição para copiar/compartilhar
+- **Comissão automática** por loja: vendas originadas do marketplace já gravam `loja_marketplace_id`, mas o cálculo de comissão ainda não lê esse campo
+
+### Fiscal / NFS-e
+
+- emissão unitária estável
+- emissão em lote via UI pronta
+- cancelamento fiscal não implementado (depende de homologação municipal)
 
 ---
 
-## Para retomar
+## Validação contínua
 
-1. Verificar arquivos locais não commitados (lista acima)
-2. Confirmar se Edge Function foi redeploy após correção do `normalizePhone`
-3. Próximos blocos: IA de conversa no webhook, lógica "repetir até responder" no N8N, finalizar Comercial
+```powershell
+npx tsc --noEmit   # zero erros
+npm run build      # build limpo
+```
+
+Smoke test:
+
+```text
+/smoke-test   # valida RLS, schema, Edge Functions, dados de negócio e regressões de UX
+```
+
+Último smoke test: 28/05/2026 — **APROVADO** (todos os 5 domínios).
+
+---
+
+## Branch atual
+
+`main` — commits entregues em 28/05/2026:
+
+- `db74dcf` refactor: remove marketplace tab do Comercial
+- `a72437a` feat: loja do marketplace no cadastro de vendedor
+- `6c33c36` chore: assets, smoke-test e ajustes marketplace

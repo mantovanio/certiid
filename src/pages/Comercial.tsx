@@ -4113,12 +4113,8 @@ export default function Comercial() {
                     )}
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 max-h-[52vh] overflow-y-auto pr-1 mb-4">
-                    {itensFiltradosPicker.length === 0 ? (
-                      <p className="col-span-full text-center text-sm text-gray-400 py-10">
-                        Nenhum produto encontrado com os filtros aplicados.
-                      </p>
-                    ) : itensFiltradosPicker.map(({ item, cert, tabela }) => (
+                  {(() => {
+                    const cardProduto = ({ item, cert, tabela }: { item: TabelaPrecoItem; cert: Certificado; tabela: TabelaPreco }, showTipo: boolean) => (
                       <button key={item.id} type="button"
                         onClick={() => setFormV2(p => ({
                           ...p,
@@ -4128,30 +4124,74 @@ export default function Comercial() {
                           valor_venda: item.valor,
                         }))}
                         className={cn(
-                          'text-left rounded-xl border p-3 transition-all',
+                          'text-left rounded-xl border p-3 transition-all flex flex-col',
                           formV2.tabela_preco_item_id === item.id
                             ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30 ring-2 ring-blue-400 ring-offset-1'
                             : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm'
                         )}>
                         <div className="flex items-start justify-between gap-1 mb-1.5">
-                          <span className="font-semibold text-sm text-gray-900 dark:text-gray-100 leading-tight">{cert.tipo}</span>
+                          <span className="font-semibold text-sm text-gray-900 dark:text-gray-100 leading-tight">
+                            {showTipo ? cert.tipo : [cert.modelo, cert.validade].filter(Boolean).join(' · ') || cert.tipo}
+                          </span>
                           {formV2.tabela_preco_item_id === item.id && (
                             <span className="shrink-0 text-blue-600 dark:text-blue-400 text-xs font-bold">✓</span>
                           )}
                         </div>
                         <div className="flex flex-wrap gap-1 mb-2">
-                          {cert.modelo && <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-600 dark:text-slate-300">{cert.modelo}</span>}
-                          {cert.validade && <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-600 dark:text-slate-300">{cert.validade}</span>}
+                          {showTipo && cert.modelo && <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-600 dark:text-slate-300">{cert.modelo}</span>}
+                          {showTipo && cert.validade && <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-600 dark:text-slate-300">{cert.validade}</span>}
                           {cert.categoria && <span className="px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/30 text-[10px] text-amber-700 dark:text-amber-400">{cert.categoria}</span>}
                         </div>
-                        {cert.descricao && <p className="text-[10px] text-gray-500 dark:text-gray-400 mb-2 leading-snug line-clamp-2">{cert.descricao}</p>}
-                        <p className="text-base font-bold text-emerald-600 dark:text-emerald-400">
+                        {(cert.descricao_produto || cert.descricao) && (
+                          <p className="text-[10px] text-gray-500 dark:text-gray-400 mb-2 leading-snug line-clamp-2 flex-1">
+                            {cert.descricao_produto || cert.descricao}
+                          </p>
+                        )}
+                        <p className="text-base font-bold text-emerald-600 dark:text-emerald-400 mt-auto">
                           {item.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
                         </p>
                         <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 truncate">{tabela.nome}</p>
                       </button>
-                    ))}
-                  </div>
+                    )
+
+                    if (itensFiltradosPicker.length === 0) return (
+                      <p className="text-center text-sm text-gray-400 py-10 mb-4">
+                        Nenhum produto encontrado com os filtros aplicados.
+                      </p>
+                    )
+
+                    // Com filtro de tipo ativo: grid flat
+                    if (filtrosPicker.tipo) return (
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 max-h-[52vh] overflow-y-auto pr-1 mb-4">
+                        {itensFiltradosPicker.map(entry => cardProduto(entry, true))}
+                      </div>
+                    )
+
+                    // Sem filtro: agrupado por tipo com cabeçalho
+                    const grupos = itensFiltradosPicker.reduce((acc, entry) => {
+                      const t = entry.cert.tipo
+                      if (!acc[t]) acc[t] = []
+                      acc[t].push(entry)
+                      return acc
+                    }, {} as Record<string, typeof itensFiltradosPicker>)
+
+                    return (
+                      <div className="max-h-[54vh] overflow-y-auto pr-1 mb-4 space-y-5">
+                        {Object.entries(grupos).map(([tipo, itens]) => (
+                          <div key={tipo}>
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" />
+                              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-100">{tipo}</h3>
+                              <span className="text-[10px] text-gray-400">{itens.length} opção{itens.length > 1 ? 'ões' : ''}</span>
+                            </div>
+                            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                              {itens.map(entry => cardProduto(entry, false))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })()}
 
                   <div className="flex justify-end border-t border-gray-100 dark:border-gray-800 pt-4">
                     <button type="button"

@@ -605,6 +605,8 @@ export default function Comercial() {
   const [contadorSearch, setContadorSearch] = useState('')
   const [contadorDropdownOpen, setContadorDropdownOpen] = useState(false)
   const [contadorStepHandled, setContadorStepHandled] = useState(false)
+  const [vendaWizardStep, setVendaWizardStep] = useState<'produto' | 'cadastro' | 'detalhes'>('produto')
+  const [filtrosPicker, setFiltrosPicker] = useState({ tipo: '', modelo: '', prazo: '' })
   const [showClienteForm, setShowClienteForm] = useState(false)
   const [editingClienteId, setEditingClienteId] = useState<string | null>(null)
   const [clienteSearch, setClienteSearch]     = useState('')
@@ -749,6 +751,49 @@ export default function Comercial() {
   }, [pagamentosAtivos, paymentMethods])
   const certificadoById    = useMemo(() => new Map(certificados.map(c => [c.id, c])), [certificados])
   const tabelasAtivas      = useMemo(() => tabelasPreco.filter(t => t.ativo), [tabelasPreco])
+
+  const todosItensDisponiveisComCert = useMemo(() =>
+    tabelasAtivas.flatMap(tabela =>
+      tabelaItens
+        .filter(item => item.tabela_preco_id === tabela.id && item.ativo)
+        .map(item => {
+          const cert = certificadoById.get(item.certificado_id)
+          return cert ? { item, cert, tabela } : null
+        })
+        .filter(Boolean) as Array<{ item: TabelaPrecoItem; cert: Certificado; tabela: TabelaPreco }>
+    ).sort((a, b) => {
+      const t = a.cert.tipo.localeCompare(b.cert.tipo, 'pt-BR')
+      if (t !== 0) return t
+      const m = (a.cert.modelo ?? '').localeCompare(b.cert.modelo ?? '', 'pt-BR')
+      if (m !== 0) return m
+      return a.item.valor - b.item.valor
+    }),
+    [tabelasAtivas, tabelaItens, certificadoById]
+  )
+  const tiposNoPicker = useMemo(() =>
+    [...new Set(todosItensDisponiveisComCert.map(x => x.cert.tipo).filter(Boolean))].sort(),
+    [todosItensDisponiveisComCert]
+  )
+  const modelosNoPicker = useMemo(() =>
+    [...new Set(todosItensDisponiveisComCert.map(x => x.cert.modelo).filter(Boolean) as string[])].sort(),
+    [todosItensDisponiveisComCert]
+  )
+  const prazosNoPicker = useMemo(() =>
+    [...new Set(todosItensDisponiveisComCert.map(x => x.cert.validade).filter(Boolean) as string[])].sort((a, b) => {
+      const n = (s: string) => { const m = s.match(/(\d+)/); return m ? parseInt(m[1]) : 0 }
+      return n(a) - n(b)
+    }),
+    [todosItensDisponiveisComCert]
+  )
+  const itensFiltradosPicker = useMemo(() =>
+    todosItensDisponiveisComCert.filter(({ cert }) => {
+      if (filtrosPicker.tipo && cert.tipo !== filtrosPicker.tipo) return false
+      if (filtrosPicker.modelo && cert.modelo !== filtrosPicker.modelo) return false
+      if (filtrosPicker.prazo && cert.validade !== filtrosPicker.prazo) return false
+      return true
+    }),
+    [todosItensDisponiveisComCert, filtrosPicker]
+  )
   const pontosAtivos       = useMemo(() => pontos.filter(p => p.status === 'ativo'), [pontos])
   const tabelaById         = useMemo(() => new Map(tabelasPreco.map(t => [t.id, t])), [tabelasPreco])
   const itensLojaSelecionada = useMemo(() => {
@@ -830,26 +875,24 @@ export default function Comercial() {
     return null
   }, [formV2.tabela_preco_id, formV2.tipo_emissao, itensTabelaTodos.length, itensTabela.length, certsDaTabela.length])
   const vendaStepStatus = useMemo(() => {
-    const clienteOk = !!formV2.cadastro_base_id
+    const produtoOk = !!formV2.tabela_preco_item_id && !!formV2.certificado_id
+    const clienteOk = produtoOk && !!formV2.cadastro_base_id
     const contadorOk = clienteOk && (contadorStepHandled || !!formV2.contador_id)
-    const tabelaOk = contadorOk && !!formV2.tabela_preco_id
-    const emissaoOk = tabelaOk && !!formV2.tipo_emissao
-    const certificadoOk = emissaoOk && !!formV2.certificado_id && !!formV2.tabela_preco_item_id
-    const pagamentoOk = certificadoOk && !!formV2.forma_pagamento && formV2.valor_venda > 0
+    const emissaoOk = contadorOk && !!formV2.tipo_emissao
+    const pagamentoOk = emissaoOk && !!formV2.forma_pagamento && formV2.valor_venda > 0
     const vencimentoOk = pagamentoOk && !!formV2.data_vencimento
     const pontoOk = vencimentoOk && !!formV2.ponto_atendimento_id
-    return { clienteOk, contadorOk, tabelaOk, emissaoOk, certificadoOk, pagamentoOk, vencimentoOk, pontoOk }
-  }, [contadorStepHandled, formV2.cadastro_base_id, formV2.contador_id, formV2.tabela_preco_id, formV2.tipo_emissao, formV2.certificado_id, formV2.tabela_preco_item_id, formV2.forma_pagamento, formV2.valor_venda, formV2.data_vencimento, formV2.ponto_atendimento_id])
+    return { produtoOk, clienteOk, contadorOk, emissaoOk, pagamentoOk, vencimentoOk, pontoOk }
+  }, [contadorStepHandled, formV2.cadastro_base_id, formV2.contador_id, formV2.tipo_emissao, formV2.certificado_id, formV2.tabela_preco_item_id, formV2.forma_pagamento, formV2.valor_venda, formV2.data_vencimento, formV2.ponto_atendimento_id])
   const vendaSteps = useMemo(() => {
     const steps = [
-      { key: 'cliente', label: '1. Cliente', done: vendaStepStatus.clienteOk, helper: 'Selecione o cliente' },
-      { key: 'contador', label: '2. Contador/Parceiro', done: vendaStepStatus.contadorOk, helper: 'Informe a indicação ou siga sem ela' },
-      { key: 'tabela', label: '3. Tabela de vendas', done: vendaStepStatus.tabelaOk, helper: 'Escolha a tabela de venda' },
-      { key: 'emissao', label: '4. Tipo de emissão', done: vendaStepStatus.emissaoOk, helper: 'Defina como será a emissão' },
-      { key: 'certificado', label: '5. Certificado', done: vendaStepStatus.certificadoOk, helper: 'Escolha o produto compatível' },
-      { key: 'pagamento', label: '6. Forma de pagamento', done: vendaStepStatus.pagamentoOk, helper: 'Defina valor e pagamento' },
-      { key: 'vencimento', label: '7. Vencimento', done: vendaStepStatus.vencimentoOk, helper: 'Escolha a data de vencimento' },
-      { key: 'ponto', label: '8. Ponto de atendimento', done: vendaStepStatus.pontoOk, helper: 'Defina onde será a validação' },
+      { key: 'produto', label: '1. Produto', done: vendaStepStatus.produtoOk },
+      { key: 'cliente', label: '2. Cliente', done: vendaStepStatus.clienteOk },
+      { key: 'contador', label: '3. Contador/Parceiro', done: vendaStepStatus.contadorOk },
+      { key: 'emissao', label: '4. Tipo de emissão', done: vendaStepStatus.emissaoOk },
+      { key: 'pagamento', label: '5. Pagamento', done: vendaStepStatus.pagamentoOk },
+      { key: 'vencimento', label: '6. Vencimento', done: vendaStepStatus.vencimentoOk },
+      { key: 'ponto', label: '7. Ponto de atendimento', done: vendaStepStatus.pontoOk },
     ] as const
     const currentStepIndex = steps.findIndex(step => !step.done)
     return {
@@ -1526,6 +1569,17 @@ export default function Comercial() {
   }, [clienteSelecionadoObj])
 
   // ── V2 mutations ─────────────────────────────────────────────
+  function fecharFormVenda() {
+    setShowFormV(false)
+    setVendaWizardStep('produto')
+    setFiltrosPicker({ tipo: '', modelo: '', prazo: '' })
+    setClienteSelecionadoObj(null)
+    setClienteSearch('')
+    setContadorSearch('')
+    setContadorDropdownOpen(false)
+    setContadorStepHandled(false)
+  }
+
   async function salvarVendaV2() {
     if (!formV2.cadastro_base_id) { showMsg('Selecione um cliente.'); return }
     if (!vendaStepStatus.contadorOk) { showMsg('Confirme a etapa de contador/parceiro antes de seguir.'); return }
@@ -1663,13 +1717,8 @@ export default function Comercial() {
       }
     }
 
-    setShowFormV(false)
+    fecharFormVenda()
     setFormV2({ ...EMPTY_VENDA_V2, ponto_atendimento_id: pontosAtivos[0]?.id ?? '' })
-    setContadorSearch('')
-    setContadorDropdownOpen(false)
-    setContadorStepHandled(false)
-    setClienteSelecionadoObj(null)
-    setClienteSearch('')
     setVendaFilters(EMPTY_VENDA_FILTERS)
     setSelectedIds(new Set())
     showMsg(`Venda salva com sucesso! ${comunicacaoResumo}.`, 'ok')
@@ -1750,6 +1799,8 @@ export default function Comercial() {
     setContadorSearch('')
     setContadorDropdownOpen(false)
     setContadorStepHandled(false)
+    setVendaWizardStep('produto')
+    setFiltrosPicker({ tipo: '', modelo: '', prazo: '' })
     setShowFormV(true)
     setShowClienteForm(false)
   }
@@ -1959,7 +2010,7 @@ export default function Comercial() {
 
     const { error } = await supabase.from('agentes_disponibilidade').insert(payload)
     setSalvandoDisp(false)
-    if (error) { showMsg('Erro ao salvar disponibilidade: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'disponibilidade')); return }
 
     setShowFormDisp(false)
     setFormDisp({
@@ -2003,7 +2054,7 @@ export default function Comercial() {
 
     const { error } = await supabase.from('agentes_indisponibilidades').insert([payload])
     setSalvandoIndisp(false)
-    if (error) { showMsg('Erro ao salvar bloqueio: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'bloqueio')); return }
 
     setShowFormIndisp(false)
     setFormIndisp({
@@ -2043,7 +2094,7 @@ export default function Comercial() {
     }
     const { error } = await supabase.from('agentes_tabelas_preco').insert([payload])
     setSalvandoCatalogo(false)
-    if (error) { showMsg('Erro ao vincular agente à tabela: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'agente-tabela')); return }
     setShowFormAgenteTabela(false)
     setFormAgenteTabela(EMPTY_AGENTE_TABELA)
     void fetchCatalogo()
@@ -2168,7 +2219,7 @@ export default function Comercial() {
       ? await supabase.from('lojas_marketplace').update(payload).eq('id', editingLojaId)
       : await supabase.from('lojas_marketplace').insert([payload])
     setSalvandoCatalogo(false)
-    if (error) { showMsg('Erro ao salvar loja do marketplace: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'loja-marketplace')); return }
 
     setShowFormLoja(false)
     setEditingLojaId(null)
@@ -2292,7 +2343,7 @@ export default function Comercial() {
       for (const { id, ...p } of toUpdate) ops.push(supabase.from('certificados').update(p).eq('id', id) as any)
       const results = await Promise.all(ops)
       const err = results.find(r => r.error)
-      if (err?.error) { showMsg('Erro: ' + err.error.message); return }
+      if (err?.error) { showMsg(traduzirErroDb(err.error, 'importar-certificados')); return }
       showMsg(`${records.length} certificado(s) importado(s)/atualizado(s).`, 'ok')
       void fetchCatalogo()
     } finally {
@@ -2378,7 +2429,7 @@ export default function Comercial() {
   async function excluirTabela(tabela: TabelaPreco) {
     if (!confirm(`Excluir a tabela "${tabela.nome}" e todos os vinculos de produtos/participantes relacionados?`)) return
     const { error } = await supabase.from('tabelas_preco').delete().eq('id', tabela.id)
-    if (error) { showMsg('Erro ao excluir tabela: ' + error.message); return }
+    if (error) { showMsg(traduzirErroDb(error, 'excluir-tabela')); return }
     setTabelasPreco(prev => prev.filter(item => item.id !== tabela.id))
     setTabelaItens(prev => prev.filter(item => item.tabela_preco_id !== tabela.id))
     setTabelaParticipantes(prev => prev.filter(item => item.tabela_preco_id !== tabela.id))
@@ -2489,7 +2540,7 @@ export default function Comercial() {
     setSalvandoCatalogo(false)
 
     if (error) {
-      showMsg('Erro ao salvar regra da tabela matriz: ' + error.message)
+      showMsg(traduzirErroDb(error, 'regra-tabela-matriz'))
       return
     }
 
@@ -2751,7 +2802,7 @@ export default function Comercial() {
       for (const { id, ...p } of toUpdate) ops.push(supabase.from('tabelas_preco_itens').update(p).eq('id', id) as any)
       const results = await Promise.all(ops)
       const err = results.find(r => r.error)
-      if (err?.error) { showMsg('Erro: ' + err.error.message); return }
+      if (err?.error) { showMsg(traduzirErroDb(err.error, 'importar-produtos')); return }
       if (unresolvedRows.length > 0) {
         showMsg(`${records.length} produto(s) importado(s)/atualizado(s). ${unresolvedRows.length} linha(s) ficaram sem vínculo automático e precisam de conferência.` , 'ok')
       } else {
@@ -2806,7 +2857,7 @@ export default function Comercial() {
       for (let i = 0; i < clientesUniq.length; i += BATCH) {
         const { error } = await supabase.from('cadastros_base')
           .upsert(clientesUniq.slice(i, i + BATCH), { onConflict: 'cpf_cnpj', ignoreDuplicates: false })
-        if (error) { showMsg('Erro ao importar clientes: ' + error.message); return }
+        if (error) { showMsg(traduzirErroDb(error, 'importar-clientes')); return }
       }
 
       // 2. busca IDs de clientes para vincular às vendas
@@ -2859,7 +2910,7 @@ export default function Comercial() {
         )
         const results = await Promise.all(ops)
         const err = results.find(r => r.error)
-        if (err?.error) { showMsg('Erro ao importar vendas: ' + err.error.message); return }
+        if (err?.error) { showMsg(traduzirErroDb(err.error, 'importar-vendas')); return }
       }
 
       // 6. conta divergentes: vendas no CRM sem validado_safeweb que têm protocolo fora da planilha
@@ -2928,7 +2979,7 @@ export default function Comercial() {
         const batch = payloads.slice(i, i + BATCH)
         const { error } = await supabase.from('cadastros_base')
           .upsert(batch, { onConflict: 'cpf_cnpj', ignoreDuplicates: false })
-        if (error) { showMsg('Erro ao importar clientes: ' + error.message); return }
+        if (error) { showMsg(traduzirErroDb(error, 'importar-clientes-leads')); return }
       }
 
       setResultClientes({ inseridos, atualizados })
@@ -3452,7 +3503,7 @@ export default function Comercial() {
 
     const { error } = await supabase.from('nfse_emitidas').delete().eq('id', nota.id)
     if (error) {
-      showMsg(`Não foi possível excluir a NFS-e: ${error.message}`, 'err')
+      showMsg(traduzirErroDb(error, 'excluir-nfse'), 'err')
       return
     }
 
@@ -3990,19 +4041,20 @@ export default function Comercial() {
             {showFormV && createPortal(
               <div
                 className="fixed inset-0 z-[9999] flex items-start justify-center overflow-y-auto bg-black/50 backdrop-blur-sm p-4 sm:p-6"
-                onClick={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}
+                onClick={fecharFormVenda}
               >
                 <div className="w-full max-w-5xl my-auto" onClick={e => e.stopPropagation()}>
-              <Panel title="Lançar Venda" onClose={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}>
-                <div className="flex flex-wrap gap-1.5 mb-4">
+              <Panel title="Nova Venda" onClose={fecharFormVenda}>
+                {/* indicadores de passo */}
+                <div className="flex flex-wrap gap-1.5 mb-5">
                   {vendaSteps.steps.map((step, index) => (
                     <div key={step.key} className={cn(
                       'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium',
                       step.done
                         ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/30 dark:bg-green-950/20 dark:text-green-300'
                         : index === vendaSteps.currentStepIndex
-                          ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-300'
-                          : 'border-gray-200 bg-gray-50 text-gray-500 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-400'
+                          ? 'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-900/40 dark:bg-blue-950/20 dark:text-blue-300'
+                          : 'border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-500'
                     )}>
                       {step.done && <span className="text-green-600 dark:text-green-400">✓</span>}
                       {step.label}
@@ -4010,392 +4062,461 @@ export default function Comercial() {
                   ))}
                 </div>
 
-                {/* linha 1: Tipo Venda + Cliente + Novo Cliente */}
-                <div className="grid grid-cols-1 md:grid-cols-[160px_1fr_auto] gap-3 mb-3">
-                  <SelectInput label="Tipo Venda" value={formV2.tipo_venda}
-                    onChange={v => setFormV2(p => ({ ...p, tipo_venda: v }))}
-                    options={TIPO_VENDA_OPTIONS} />
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Cliente *</label>
-                    <div className="relative flex gap-2">
-                      <div className="relative flex-1">
-                        <input
-                          value={formV2.cadastro_base_id && clienteSelecionadoObj
-                            ? `${clienteSelecionadoObj.cpf_cnpj} · ${clienteSelecionadoObj.nome}`
-                            : clienteSearch}
-                          onChange={e => {
-                            const v = e.target.value
-                            setClienteSearch(v)
-                            if (formV2.cadastro_base_id) {
-                              setFormV2(p => ({ ...p, cadastro_base_id: '' }))
-                              setClienteSelecionadoObj(null)
-                            }
-                            if (clienteSearchTimerRef.current) clearTimeout(clienteSearchTimerRef.current)
-                            clienteSearchTimerRef.current = setTimeout(() => void buscarClientes(v), 300)
-                          }}
-                          onFocus={() => { if (clienteResultados.length > 0) setClienteDropdownOpen(true) }}
-                          onBlur={() => setTimeout(() => setClienteDropdownOpen(false), 150)}
-                          placeholder="Nome, CPF, CNPJ ou telefone (mín. 3 caracteres)"
-                          className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 pr-8 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                        {clienteBuscando && (
-                          <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-gray-400 pointer-events-none" />
-                        )}
-                        {clienteDropdownOpen && clienteResultados.length > 0 && (
-                          <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl max-h-64 overflow-y-auto">
-                            {clienteResultados.map(c => (
-                              <button key={c.id} type="button"
-                                onMouseDown={e => e.preventDefault()}
-                                onClick={() => {
-                                  setFormV2(p => ({ ...p, cadastro_base_id: c.id }))
-                                  setClienteSelecionadoObj(c)
-                                  setClienteSearch('')
-                                  setClienteDropdownOpen(false)
-                                  setClienteResultados([])
-                                }}
-                                className="w-full text-left px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 border-b border-gray-100 dark:border-gray-800 last:border-0 transition-colors">
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <p className="text-sm font-medium truncate">{c.nome}</p>
-                                    {c.nome_fantasia && <p className="text-xs text-gray-400 truncate">{c.nome_fantasia}</p>}
-                                  </div>
-                                  <div className="text-right shrink-0">
-                                    <p className="text-xs text-gray-500 font-mono">{c.cpf_cnpj}</p>
-                                    {c.telefone && <p className="text-xs text-gray-400">{c.telefone}</p>}
-                                    {(c.cidade || c.uf) && <p className="text-xs text-gray-400">{[c.cidade, c.uf].filter(Boolean).join('/')}</p>}
-                                  </div>
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        {clienteDropdownOpen && !clienteBuscando && clienteResultados.length === 0 && clienteSearch.length >= 3 && (
-                          <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl px-4 py-3 text-sm text-gray-400">
-                            Nenhum cliente encontrado para "{clienteSearch}"
-                          </div>
-                        )}
-                      </div>
-                      {formV2.cadastro_base_id && (
-                        <button type="button" title="Limpar cliente"
-                          onClick={() => { setFormV2(p => ({ ...p, cadastro_base_id: '' })); setClienteSearch(''); setClienteSelecionadoObj(null) }}
-                          className="px-2 text-gray-400 hover:text-gray-600">
-                          <X size={14} />
+                {/* ── PASSO 1: PRODUTO ─────────────────────────── */}
+                {vendaWizardStep === 'produto' && (<>
+                  <div className="mb-4 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-medium text-gray-500 min-w-[46px]">Tipo:</span>
+                      {['', ...tiposNoPicker].map(t => (
+                        <button key={t} type="button"
+                          onClick={() => setFiltrosPicker(p => ({ ...p, tipo: t }))}
+                          className={cn('px-3 py-1 rounded-full text-xs border transition-colors',
+                            filtrosPicker.tipo === t
+                              ? 'bg-blue-600 text-white border-blue-600'
+                              : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
+                          )}>
+                          {t || 'Todos'}
                         </button>
-                      )}
+                      ))}
                     </div>
-                  </div>
-                  <div className="flex items-end">
-                    <button type="button" onClick={() => {
-                      if (showClienteForm) { setShowClienteForm(false); setEditingClienteId(null); setFormCliente({ ...EMPTY_CLIENTE_BASE }) }
-                      else abrirNovoCliente()
-                    }}
-                      className="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium whitespace-nowrap">
-                      {showClienteForm ? '← Fechar' : '+ Novo Cliente'}
-                    </button>
-                  </div>
-                </div>
-
-                {/* linha 2: Contador */}
-                <div className={cn('mb-3', !vendaStepStatus.clienteOk && 'opacity-60 pointer-events-none')}>
-                  <label className="block text-xs text-blue-600 dark:text-blue-400 font-medium mb-1">Se for indicação de Contador/Parceiro, selecione abaixo:</label>
-                  <div className="relative">
-                    <input
-                      value={formV2.contador_id
-                        ? (() => { const p = parceiros.find(x => x.id === formV2.contador_id); return p ? `${p.cpf_cnpj ?? ''} - ${(p.tipo_parceiro ?? '').toUpperCase()} - ${p.nome}` : '' })()
-                        : contadorSearch}
-                      onChange={e => {
-                        const v = e.target.value
-                        if (formV2.contador_id) {
-                          setFormV2(p => ({ ...p, contador_id: null }))
-                        }
-                        setContadorSearch(v)
-                        setContadorDropdownOpen(true)
-                        setContadorStepHandled(false)
-                      }}
-                      onFocus={() => setContadorDropdownOpen(true)}
-                      onBlur={() => setTimeout(() => setContadorDropdownOpen(false), 150)}
-                      placeholder="Nenhum selecionado"
-                      className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    {contadorDropdownOpen && parceirosParaContador.length > 0 && (
-                      <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                        {parceirosParaContador.map(p => (
-                          <button key={p.id} type="button"
-                            onMouseDown={e => e.preventDefault()}
-                            onClick={() => {
-                              setFormV2(prev => ({ ...prev, contador_id: p.id }))
-                              setContadorStepHandled(true)
-                              setContadorSearch('')
-                              setContadorDropdownOpen(false)
-                            }}
-                            className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800">
-                            {p.cpf_cnpj ?? ''} - {(p.tipo_parceiro ?? '').toUpperCase()} - {p.nome}{p.nome_fantasia ? ` - ${p.nome_fantasia}` : ''}
+                    {modelosNoPicker.length > 1 && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-medium text-gray-500 min-w-[46px]">Modelo:</span>
+                        {['', ...modelosNoPicker].map(m => (
+                          <button key={m} type="button"
+                            onClick={() => setFiltrosPicker(p => ({ ...p, modelo: m }))}
+                            className={cn('px-3 py-1 rounded-full text-xs border transition-colors',
+                              filtrosPicker.modelo === m
+                                ? 'bg-blue-600 text-white border-blue-600'
+                                : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
+                            )}>
+                            {m || 'Todos'}
                           </button>
                         ))}
                       </div>
                     )}
-                    {contadorDropdownOpen && parceirosParaContador.length === 0 && (
-                      <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg px-3 py-2.5 text-sm text-gray-500 dark:text-gray-400">
-                        {contadorSearch.trim()
-                          ? 'Nenhum parceiro vinculado corresponde a esta busca.'
-                          : 'Nenhum parceiro vinculado foi encontrado para o seu usuário.'}
-                      </div>
-                    )}
-                    {formV2.contador_id && (
-                      <button type="button" onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><X size={14} /></button>
-                    )}
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(true) }}
-                      className={cn(
-                        'px-3 py-2 text-xs rounded-lg border transition-colors',
-                        vendaStepStatus.contadorOk && !formV2.contador_id
-                          ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/30 dark:bg-green-950/20 dark:text-green-300'
-                          : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'
-                      )}
-                    >
-                      Seguir sem contador/parceiro
-                    </button>
-                    {!vendaStepStatus.contadorOk && (
-                      <p className="text-[11px] text-red-600 dark:text-red-400">
-                        Confirme esta etapa escolhendo um parceiro ou seguindo sem indicação.
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* linhas 3+4: Tabela de Venda + Tipo Emissão */}
-                <div className="grid grid-cols-1 md:grid-cols-[1fr_200px] gap-3 mb-3">
-                  <div className={cn(!vendaStepStatus.contadorOk && 'opacity-60 pointer-events-none')}>
-                    <label className="block text-xs text-gray-500 mb-1">Tabela de Venda *</label>
-                    <select value={formV2.tabela_preco_id}
-                      onChange={e => {
-                        const tid = e.target.value
-                        setFormV2(p => ({ ...p, tabela_preco_id: tid, certificado_id: '', tabela_preco_item_id: '', valor_venda: 0 }))
-                      }}
-                      className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                      <option value="">Selecione uma tabela</option>
-                      {tabelasAtivas.map(t => <option key={t.id} value={t.id}>{t.nome}</option>)}
-                    </select>
-                    {!vendaStepStatus.contadorOk && <p className="mt-1 text-[11px] text-gray-400">Confirme antes a etapa de contador/parceiro.</p>}
-                  </div>
-                  <div className={cn(!vendaStepStatus.tabelaOk && 'opacity-60 pointer-events-none')}>
-                    <SelectInput label="Tipo Emissão" value={formV2.tipo_emissao}
-                      onChange={v => setFormV2(p => ({ ...p, tipo_emissao: v, certificado_id: '', tabela_preco_item_id: '', valor_venda: 0 }))}
-                      options={[{ value: '', label: 'Selecione' }, ...TIPO_EMISSAO_OPTIONS]} />
-                    {!vendaStepStatus.tabelaOk && (
-                      <p className="mt-1 text-[11px] text-gray-400">Selecione a tabela primeiro.</p>
-                    )}
-                  </div>
-                </div>
-
-                {/* linha 5: Certificado + Validade */}
-                <div className={cn('grid grid-cols-1 md:grid-cols-[1fr_120px] gap-3 mb-3', !vendaStepStatus.emissaoOk && 'opacity-60 pointer-events-none')}>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Certificado *</label>
-                    <select value={formV2.certificado_id}
-                      onChange={e => {
-                        const cid = e.target.value
-                        const found = certsDaTabela.find(x => x.cert.id === cid)
-                        setFormV2(p => ({
-                          ...p,
-                          certificado_id:       cid,
-                          tabela_preco_item_id: found?.item.id ?? '',
-                          valor_venda:          found?.item.valor ?? 0,
-                        }))
-                      }}
-                      disabled={!formV2.tabela_preco_id}
-                      className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50">
-                      <option value="">{motivoSemCertificados ?? 'Selecione o Certificado'}</option>
-                      {certsDaTabela.map(({ cert, item }) => (
-                        <option key={cert.id} value={cert.id}>
-                          {cert.tipo}{cert.descricao ? ` - ${cert.descricao}` : ''}
-                          {!item.ativo ? ' (inativo)' : ''}
-                        </option>
-                      ))}
-                    </select>
-                    {motivoSemCertificados && (
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <p className="text-[11px] text-amber-600 dark:text-amber-400">{motivoSemCertificados}</p>
-                        {formV2.tabela_preco_id && (itensTabelaTodos.length === 0 || itensTabela.length === 0) && (
-                          <button
-                            type="button"
-                            onClick={() => abrirProdutosDaTabela(formV2.tabela_preco_id)}
-                            className="px-2.5 py-1 text-[11px] rounded-lg border border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/20 transition-colors"
-                          >
-                            Abrir Produtos e Preços desta tabela
+                    {prazosNoPicker.length > 1 && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-medium text-gray-500 min-w-[46px]">Prazo:</span>
+                        {['', ...prazosNoPicker].map(pz => (
+                          <button key={pz} type="button"
+                            onClick={() => setFiltrosPicker(p => ({ ...p, prazo: pz }))}
+                            className={cn('px-3 py-1 rounded-full text-xs border transition-colors',
+                              filtrosPicker.prazo === pz
+                                ? 'bg-blue-600 text-white border-blue-600'
+                                : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
+                            )}>
+                            {pz || 'Todos'}
                           </button>
-                        )}
+                        ))}
                       </div>
                     )}
-                    {!vendaStepStatus.emissaoOk && (
-                      <p className="mt-1 text-[11px] text-gray-400">Defina antes o tipo de emissão para liberar os certificados.</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 max-h-[52vh] overflow-y-auto pr-1 mb-4">
+                    {itensFiltradosPicker.length === 0 ? (
+                      <p className="col-span-full text-center text-sm text-gray-400 py-10">
+                        Nenhum produto encontrado com os filtros aplicados.
+                      </p>
+                    ) : itensFiltradosPicker.map(({ item, cert, tabela }) => (
+                      <button key={item.id} type="button"
+                        onClick={() => setFormV2(p => ({
+                          ...p,
+                          certificado_id: cert.id,
+                          tabela_preco_item_id: item.id,
+                          tabela_preco_id: item.tabela_preco_id,
+                          valor_venda: item.valor,
+                        }))}
+                        className={cn(
+                          'text-left rounded-xl border p-3 transition-all',
+                          formV2.tabela_preco_item_id === item.id
+                            ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30 ring-2 ring-blue-400 ring-offset-1'
+                            : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm'
+                        )}>
+                        <div className="flex items-start justify-between gap-1 mb-1.5">
+                          <span className="font-semibold text-sm text-gray-900 dark:text-gray-100 leading-tight">{cert.tipo}</span>
+                          {formV2.tabela_preco_item_id === item.id && (
+                            <span className="shrink-0 text-blue-600 dark:text-blue-400 text-xs font-bold">✓</span>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-1 mb-2">
+                          {cert.modelo && <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-600 dark:text-slate-300">{cert.modelo}</span>}
+                          {cert.validade && <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-600 dark:text-slate-300">{cert.validade}</span>}
+                          {cert.categoria && <span className="px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/30 text-[10px] text-amber-700 dark:text-amber-400">{cert.categoria}</span>}
+                        </div>
+                        {cert.descricao && <p className="text-[10px] text-gray-500 dark:text-gray-400 mb-2 leading-snug line-clamp-2">{cert.descricao}</p>}
+                        <p className="text-base font-bold text-emerald-600 dark:text-emerald-400">
+                          {item.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                        </p>
+                        <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 truncate">{tabela.nome}</p>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex justify-end border-t border-gray-100 dark:border-gray-800 pt-4">
+                    <button type="button"
+                      disabled={!formV2.tabela_preco_item_id}
+                      onClick={() => setVendaWizardStep('cadastro')}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                      Avançar para Cadastro →
+                    </button>
+                  </div>
+                </>)}
+
+                {/* ── PASSO 2: CADASTRO ────────────────────────── */}
+                {vendaWizardStep === 'cadastro' && (() => {
+                  const itemSel = tabelaItens.find(i => i.id === formV2.tabela_preco_item_id)
+                  const certSel = itemSel ? certificadoById.get(itemSel.certificado_id) : null
+                  const tabelaSel = itemSel ? tabelasPreco.find(t => t.id === itemSel.tabela_preco_id) : null
+                  return (<>
+                    {certSel && itemSel && (
+                      <div className="mb-4 flex items-center gap-3 rounded-xl border border-blue-200 dark:border-blue-900/30 bg-blue-50 dark:bg-blue-950/20 px-4 py-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[10px] uppercase tracking-widest text-blue-500 dark:text-blue-400 font-semibold">Produto selecionado</p>
+                          <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mt-0.5">
+                            {certSel.tipo}{certSel.modelo ? ` · ${certSel.modelo}` : ''}{certSel.validade ? ` · ${certSel.validade}` : ''}
+                          </p>
+                          <p className="text-xs text-blue-600 dark:text-blue-400">{tabelaSel?.nome} · {itemSel.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                        </div>
+                        <button type="button" onClick={() => setVendaWizardStep('produto')}
+                          className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200 underline whitespace-nowrap">
+                          Trocar produto
+                        </button>
+                      </div>
                     )}
-                  </div>
-                  <label className="flex flex-col gap-1">
-                    <span className="text-xs text-gray-500">Validade (Meses)</span>
-                    <input readOnly
-                      value={formV2.certificado_id ? (validadeEmMeses(certificadoById.get(formV2.certificado_id)?.validade ?? '') ?? '') : ''}
-                      className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-gray-800 text-gray-500" />
-                  </label>
-                </div>
 
-                {/* linhas 6+7: Valor + Forma Pagamento + Vencimento */}
-                <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_160px] gap-3 mb-3">
-                  <label className={cn('flex flex-col gap-1', !vendaStepStatus.certificadoOk && 'opacity-60 pointer-events-none')}>
-                    <span className="text-xs text-green-600 dark:text-green-400 font-medium">Valor (R$) *</span>
-                    <input type="number" min="0" step="0.01" value={formV2.valor_venda}
-                      onChange={e => setFormV2(p => ({ ...p, valor_venda: parseFloat(e.target.value) || 0 }))}
-                      className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                  </label>
-                  <div className={cn(!vendaStepStatus.certificadoOk && 'opacity-60 pointer-events-none')}>
-                    <SelectInput label="Forma de Pagamento *" value={formV2.forma_pagamento}
-                      onChange={v => setFormV2(p => ({ ...p, forma_pagamento: v }))}
-                      options={[{ value: '', label: 'Selecione' }, ...formasPagamento.map(n => ({ value: n, label: n }))]} />
-                  </div>
-                  <div className={cn(!vendaStepStatus.pagamentoOk && 'opacity-60 pointer-events-none')}>
-                    <TextInput label="Vencimento *" type="date" value={formV2.data_vencimento}
-                      onChange={v => setFormV2(p => ({ ...p, data_vencimento: v }))} />
-                  </div>
-                </div>
-
-                {/* linhas 8+obs: Ponto de Atendimento + Observações */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-                  <div className={cn(!vendaStepStatus.vencimentoOk && 'opacity-60 pointer-events-none')}>
-                    <SelectInput
-                      label="Ponto de Atendimento *"
-                      value={formV2.ponto_atendimento_id}
-                      onChange={v => setFormV2(p => ({ ...p, ponto_atendimento_id: v }))}
-                      options={[
-                        { value: '', label: pontosAtivos.length ? 'Selecione' : 'Cadastre um ponto primeiro' },
-                        ...pontosAtivos.map(ponto => ({
-                          value: ponto.id,
-                          label: [ponto.nome, ponto.cidade, ponto.uf].filter(Boolean).join(' · '),
-                        })),
-                      ]}
-                    />
-                  </div>
-                  <label className="flex flex-col gap-1">
-                    <span className="text-xs text-gray-500">Observações</span>
-                    <textarea rows={2} value={formV2.observacoes ?? ''}
-                      onChange={e => setFormV2(p => ({ ...p, observacoes: e.target.value || null }))}
-                      className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
-                  </label>
-                </div>
-
-                <div className="mb-4 rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/70 dark:bg-emerald-950/20 px-4 py-3">
-                  <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">Link de compra para cliente, AGR ou revendedor</p>
-                  <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1 break-all">
-                    {resolveMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb) ?? 'Marketplace próprio ainda não configurado'}
-                  </p>
-                  <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
-                    {itemSelecionadoMarketplace?.link_safeweb?.trim()
-                      ? 'Este produto possui link específico configurado na tabela.'
-                      : 'Sem link específico neste item. O sistema ficará aguardando o seu marketplace próprio.'}
-                  </p>
-                  <div className="flex flex-wrap gap-2 mt-3">
-                    <button
-                      type="button"
-                      onClick={() => abrirMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb)}
-                      className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors"
-                    >
-                      <ExternalLink size={13} /> Abrir link de compra
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { void copiarMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb, 'Link de compra') }}
-                      className="flex items-center gap-1.5 px-3 py-2 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-medium rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors"
-                    >
-                      <Copy size={13} /> Copiar para enviar
-                    </button>
-                  </div>
-                </div>
-
-
-                {showClienteForm && (
-                  <div className="mt-4 rounded-xl border border-gray-200 dark:border-gray-800 p-4 bg-gray-50 dark:bg-gray-900/40">
-                    <div className="flex items-center justify-between mb-3">
-                      <h4 className="font-semibold text-sm text-gray-700 dark:text-gray-200">
-                        {editingClienteId ? 'Editar Pessoa / Empresa' : 'Cadastro de Pessoa / Empresa'}
-                      </h4>
-                      <button type="button" onClick={() => {
-                        setShowClienteForm(false)
-                        setEditingClienteId(null)
-                        setFormCliente({ ...EMPTY_CLIENTE_BASE })
-                      }} className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Fechar</button>
+                    <div className="grid grid-cols-1 md:grid-cols-[160px_1fr_auto] gap-3 mb-3">
+                      <SelectInput label="Tipo Venda" value={formV2.tipo_venda}
+                        onChange={v => setFormV2(p => ({ ...p, tipo_venda: v }))}
+                        options={TIPO_VENDA_OPTIONS} />
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">Cliente *</label>
+                        <div className="relative flex gap-2">
+                          <div className="relative flex-1">
+                            <input
+                              value={formV2.cadastro_base_id && clienteSelecionadoObj
+                                ? `${clienteSelecionadoObj.cpf_cnpj} · ${clienteSelecionadoObj.nome}`
+                                : clienteSearch}
+                              onChange={e => {
+                                const v = e.target.value
+                                setClienteSearch(v)
+                                if (formV2.cadastro_base_id) {
+                                  setFormV2(p => ({ ...p, cadastro_base_id: '' }))
+                                  setClienteSelecionadoObj(null)
+                                }
+                                if (clienteSearchTimerRef.current) clearTimeout(clienteSearchTimerRef.current)
+                                clienteSearchTimerRef.current = setTimeout(() => void buscarClientes(v), 300)
+                              }}
+                              onFocus={() => { if (clienteResultados.length > 0) setClienteDropdownOpen(true) }}
+                              onBlur={() => setTimeout(() => setClienteDropdownOpen(false), 150)}
+                              placeholder="Nome, CPF, CNPJ ou telefone (mín. 3 caracteres)"
+                              className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 pr-8 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                            {clienteBuscando && (
+                              <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-gray-400 pointer-events-none" />
+                            )}
+                            {clienteDropdownOpen && clienteResultados.length > 0 && (
+                              <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl max-h-64 overflow-y-auto">
+                                {clienteResultados.map(c => (
+                                  <button key={c.id} type="button"
+                                    onMouseDown={e => e.preventDefault()}
+                                    onClick={() => {
+                                      setFormV2(p => ({ ...p, cadastro_base_id: c.id }))
+                                      setClienteSelecionadoObj(c)
+                                      setClienteSearch('')
+                                      setClienteDropdownOpen(false)
+                                      setClienteResultados([])
+                                    }}
+                                    className="w-full text-left px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 border-b border-gray-100 dark:border-gray-800 last:border-0 transition-colors">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <p className="text-sm font-medium truncate">{c.nome}</p>
+                                        {c.nome_fantasia && <p className="text-xs text-gray-400 truncate">{c.nome_fantasia}</p>}
+                                      </div>
+                                      <div className="text-right shrink-0">
+                                        <p className="text-xs text-gray-500 font-mono">{c.cpf_cnpj}</p>
+                                        {c.telefone && <p className="text-xs text-gray-400">{c.telefone}</p>}
+                                        {(c.cidade || c.uf) && <p className="text-xs text-gray-400">{[c.cidade, c.uf].filter(Boolean).join('/')}</p>}
+                                      </div>
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            {clienteDropdownOpen && !clienteBuscando && clienteResultados.length === 0 && clienteSearch.length >= 3 && (
+                              <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl px-4 py-3 text-sm text-gray-400">
+                                Nenhum cliente encontrado para "{clienteSearch}"
+                              </div>
+                            )}
+                          </div>
+                          {formV2.cadastro_base_id && (
+                            <button type="button" title="Limpar cliente"
+                              onClick={() => { setFormV2(p => ({ ...p, cadastro_base_id: '' })); setClienteSearch(''); setClienteSelecionadoObj(null) }}
+                              className="px-2 text-gray-400 hover:text-gray-600">
+                              <X size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-end">
+                        <button type="button" onClick={() => {
+                          if (showClienteForm) { setShowClienteForm(false); setEditingClienteId(null); setFormCliente({ ...EMPTY_CLIENTE_BASE }) }
+                          else abrirNovoCliente()
+                        }}
+                          className="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium whitespace-nowrap">
+                          {showClienteForm ? '← Fechar' : '+ Novo Cliente'}
+                        </button>
+                      </div>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                      <SelectInput label="Tipo" value={formCliente.tipo_cliente}
-                        onChange={v => setFormCliente(p => ({ ...p, tipo_cliente: v as NovoCadastroBase['tipo_cliente'] }))}
-                        options={[{ value: 'pessoa_fisica', label: 'Pessoa Física' }, { value: 'pessoa_juridica', label: 'Pessoa Jurídica' }]} />
-                      <TextInput label="CPF / CNPJ *" value={formCliente.cpf_cnpj}
-                        onChange={v => setFormCliente(p => ({ ...p, cpf_cnpj: v }))} />
-                      <TextInput label="Nome / Razão Social *" value={formCliente.nome}
-                        onChange={v => setFormCliente(p => ({ ...p, nome: v }))} className="md:col-span-2" />
-                      <TextInput label="Nome Fantasia" value={formCliente.nome_fantasia ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, nome_fantasia: v || null }))} className="md:col-span-2" />
-                      <TextInput label="E-mail" type="email" value={formCliente.email ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, email: v || null }))} />
-                      <TextInput label="Telefone" value={formCliente.telefone ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, telefone: v || null }))} />
-                      <TextInput label="CEP" value={formCliente.cep ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, cep: v || null }))}
-                        onBlur={async () => {
-                          const r = await buscarCep(formCliente.cep ?? '')
-                          if (!r) return
-                          setFormCliente(p => ({
-                            ...p,
-                            logradouro: r.logradouro || p.logradouro,
-                            bairro:     r.bairro     || p.bairro,
-                            cidade:     r.localidade || p.cidade,
-                            uf:         r.uf         || p.uf,
-                          }))
-                        }} />
-                      <TextInput label="Cidade" value={formCliente.cidade ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, cidade: v || null }))} />
-                      <TextInput label="UF" value={formCliente.uf ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, uf: v || null }))} />
-                      <TextInput label="Inscrição Municipal" value={formCliente.inscricao_municipal ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, inscricao_municipal: v || null }))} />
-                      <TextInput label="Inscrição Estadual" value={formCliente.inscricao_estadual ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, inscricao_estadual: v || null }))} />
-                      <TextInput label="Logradouro" value={formCliente.logradouro ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, logradouro: v || null }))} className="md:col-span-2" />
-                      <TextInput label="Número" value={formCliente.numero ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, numero: v || null }))} />
-                      <TextInput label="Complemento" value={formCliente.complemento ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, complemento: v || null }))} className="md:col-span-2" />
-                      <TextInput label="Bairro" value={formCliente.bairro ?? ''}
-                        onChange={v => setFormCliente(p => ({ ...p, bairro: v || null }))} />
-                      <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
-                        <input type="checkbox" checked={formCliente.iss_retido}
-                          onChange={e => setFormCliente(p => ({ ...p, iss_retido: e.target.checked }))} />
-                        ISS retido
-                      </label>
-                    </div>
-                    <div className="mt-4 flex justify-end gap-2">
-                      <button type="button" onClick={() => {
-                        setShowClienteForm(false)
-                        setEditingClienteId(null)
-                        setFormCliente({ ...EMPTY_CLIENTE_BASE })
-                      }}
-                        className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm">Cancelar</button>
-                      <button type="button" onClick={() => void salvarCliente()} disabled={salvandoCliente}
-                        className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-50">
-                        {salvandoCliente ? 'Salvando...' : editingClienteId ? 'Salvar alterações' : 'Salvar cliente'}
+
+                    {showClienteForm && (
+                      <div className="mt-4 rounded-xl border border-gray-200 dark:border-gray-800 p-4 bg-gray-50 dark:bg-gray-900/40">
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="font-semibold text-sm text-gray-700 dark:text-gray-200">
+                            {editingClienteId ? 'Editar Pessoa / Empresa' : 'Cadastro de Pessoa / Empresa'}
+                          </h4>
+                          <button type="button" onClick={() => {
+                            setShowClienteForm(false)
+                            setEditingClienteId(null)
+                            setFormCliente({ ...EMPTY_CLIENTE_BASE })
+                          }} className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Fechar</button>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                          <SelectInput label="Tipo" value={formCliente.tipo_cliente}
+                            onChange={v => setFormCliente(p => ({ ...p, tipo_cliente: v as NovoCadastroBase['tipo_cliente'] }))}
+                            options={[{ value: 'pessoa_fisica', label: 'Pessoa Física' }, { value: 'pessoa_juridica', label: 'Pessoa Jurídica' }]} />
+                          <TextInput label="CPF / CNPJ *" value={formCliente.cpf_cnpj}
+                            onChange={v => setFormCliente(p => ({ ...p, cpf_cnpj: v }))} />
+                          <TextInput label="Nome / Razão Social *" value={formCliente.nome}
+                            onChange={v => setFormCliente(p => ({ ...p, nome: v }))} className="md:col-span-2" />
+                          <TextInput label="Nome Fantasia" value={formCliente.nome_fantasia ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, nome_fantasia: v || null }))} className="md:col-span-2" />
+                          <TextInput label="E-mail" type="email" value={formCliente.email ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, email: v || null }))} />
+                          <TextInput label="Telefone" value={formCliente.telefone ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, telefone: v || null }))} />
+                          <TextInput label="CEP" value={formCliente.cep ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, cep: v || null }))}
+                            onBlur={async () => {
+                              const r = await buscarCep(formCliente.cep ?? '')
+                              if (!r) return
+                              setFormCliente(p => ({
+                                ...p,
+                                logradouro: r.logradouro || p.logradouro,
+                                bairro:     r.bairro     || p.bairro,
+                                cidade:     r.localidade || p.cidade,
+                                uf:         r.uf         || p.uf,
+                              }))
+                            }} />
+                          <TextInput label="Cidade" value={formCliente.cidade ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, cidade: v || null }))} />
+                          <TextInput label="UF" value={formCliente.uf ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, uf: v || null }))} />
+                          <TextInput label="Inscrição Municipal" value={formCliente.inscricao_municipal ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, inscricao_municipal: v || null }))} />
+                          <TextInput label="Inscrição Estadual" value={formCliente.inscricao_estadual ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, inscricao_estadual: v || null }))} />
+                          <TextInput label="Logradouro" value={formCliente.logradouro ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, logradouro: v || null }))} className="md:col-span-2" />
+                          <TextInput label="Número" value={formCliente.numero ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, numero: v || null }))} />
+                          <TextInput label="Complemento" value={formCliente.complemento ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, complemento: v || null }))} className="md:col-span-2" />
+                          <TextInput label="Bairro" value={formCliente.bairro ?? ''}
+                            onChange={v => setFormCliente(p => ({ ...p, bairro: v || null }))} />
+                          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                            <input type="checkbox" checked={formCliente.iss_retido}
+                              onChange={e => setFormCliente(p => ({ ...p, iss_retido: e.target.checked }))} />
+                            ISS retido
+                          </label>
+                        </div>
+                        <div className="mt-4 flex justify-end gap-2">
+                          <button type="button" onClick={() => {
+                            setShowClienteForm(false)
+                            setEditingClienteId(null)
+                            setFormCliente({ ...EMPTY_CLIENTE_BASE })
+                          }}
+                            className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm">Cancelar</button>
+                          <button type="button" onClick={() => void salvarCliente()} disabled={salvandoCliente}
+                            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-50">
+                            {salvandoCliente ? 'Salvando...' : editingClienteId ? 'Salvar alterações' : 'Salvar cliente'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between border-t border-gray-100 dark:border-gray-800 pt-4 mt-4">
+                      <button type="button" onClick={() => setVendaWizardStep('produto')}
+                        className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                        ← Voltar
+                      </button>
+                      <button type="button"
+                        disabled={!formV2.cadastro_base_id}
+                        onClick={() => setVendaWizardStep('detalhes')}
+                        className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                        Avançar para Detalhes →
                       </button>
                     </div>
-                  </div>
-                )}
+                  </>)
+                })()}
 
-                <FormActions
-                  onSave={salvarVendaV2}
-                  onCancel={() => { setShowFormV(false); setClienteSelecionadoObj(null); setClienteSearch(''); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}
-                  saving={salvandoV}
-                  disabled={!vendaStepStatus.pontoOk}
-                />
+                {/* ── PASSO 3: DETALHES ────────────────────────── */}
+                {vendaWizardStep === 'detalhes' && (() => {
+                  const itemSel = tabelaItens.find(i => i.id === formV2.tabela_preco_item_id)
+                  const certSel = itemSel ? certificadoById.get(itemSel.certificado_id) : null
+                  return (<>
+                    <div className="mb-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {certSel && itemSel && (
+                        <div className="flex items-center gap-2 rounded-lg border border-blue-200 dark:border-blue-900/30 bg-blue-50 dark:bg-blue-950/20 px-3 py-2">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[10px] text-blue-500 dark:text-blue-400 font-medium">Produto</p>
+                            <p className="text-xs font-semibold text-blue-900 dark:text-blue-100 truncate">
+                              {certSel.tipo}{certSel.modelo ? ` · ${certSel.modelo}` : ''}{certSel.validade ? ` · ${certSel.validade}` : ''}
+                            </p>
+                          </div>
+                          <button type="button" onClick={() => setVendaWizardStep('produto')} className="text-[10px] text-blue-600 hover:text-blue-800 underline">Trocar</button>
+                        </div>
+                      )}
+                      {clienteSelecionadoObj && (
+                        <div className="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 px-3 py-2">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[10px] text-gray-400 font-medium">Cliente</p>
+                            <p className="text-xs font-semibold text-gray-800 dark:text-gray-200 truncate">{clienteSelecionadoObj.nome}</p>
+                            <p className="text-[10px] text-gray-400 font-mono">{clienteSelecionadoObj.cpf_cnpj}</p>
+                          </div>
+                          <button type="button" onClick={() => setVendaWizardStep('cadastro')} className="text-[10px] text-gray-500 hover:text-gray-700 underline">Trocar</button>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mb-3">
+                      <label className="block text-xs text-blue-600 dark:text-blue-400 font-medium mb-1">Se for indicação de Contador/Parceiro:</label>
+                      <div className="relative">
+                        <input
+                          value={formV2.contador_id
+                            ? (() => { const p = parceiros.find(x => x.id === formV2.contador_id); return p ? `${p.cpf_cnpj ?? ''} - ${(p.tipo_parceiro ?? '').toUpperCase()} - ${p.nome}` : '' })()
+                            : contadorSearch}
+                          onChange={e => {
+                            const v = e.target.value
+                            if (formV2.contador_id) setFormV2(p => ({ ...p, contador_id: null }))
+                            setContadorSearch(v)
+                            setContadorDropdownOpen(true)
+                            setContadorStepHandled(false)
+                          }}
+                          onFocus={() => setContadorDropdownOpen(true)}
+                          onBlur={() => setTimeout(() => setContadorDropdownOpen(false), 150)}
+                          placeholder="Nenhum selecionado"
+                          className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        {contadorDropdownOpen && parceirosParaContador.length > 0 && (
+                          <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                            {parceirosParaContador.map(p => (
+                              <button key={p.id} type="button"
+                                onMouseDown={e => e.preventDefault()}
+                                onClick={() => {
+                                  setFormV2(prev => ({ ...prev, contador_id: p.id }))
+                                  setContadorStepHandled(true)
+                                  setContadorSearch('')
+                                  setContadorDropdownOpen(false)
+                                }}
+                                className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800">
+                                {p.cpf_cnpj ?? ''} - {(p.tipo_parceiro ?? '').toUpperCase()} - {p.nome}{p.nome_fantasia ? ` - ${p.nome_fantasia}` : ''}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {contadorDropdownOpen && parceirosParaContador.length === 0 && (
+                          <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg px-3 py-2.5 text-sm text-gray-500 dark:text-gray-400">
+                            {contadorSearch.trim() ? 'Nenhum parceiro vinculado corresponde a esta busca.' : 'Nenhum parceiro vinculado foi encontrado para o seu usuário.'}
+                          </div>
+                        )}
+                        {formV2.contador_id && (
+                          <button type="button" onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><X size={14} /></button>
+                        )}
+                      </div>
+                      <div className="mt-2">
+                        <button type="button"
+                          onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(true) }}
+                          className={cn(
+                            'px-3 py-1.5 text-xs rounded-lg border transition-colors',
+                            vendaStepStatus.contadorOk && !formV2.contador_id
+                              ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/30 dark:bg-green-950/20 dark:text-green-300'
+                              : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'
+                          )}>
+                          Seguir sem contador/parceiro
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mb-3">
+                      <SelectInput label="Tipo Emissão *" value={formV2.tipo_emissao}
+                        onChange={v => setFormV2(p => ({ ...p, tipo_emissao: v }))}
+                        options={[{ value: '', label: 'Selecione' }, ...TIPO_EMISSAO_OPTIONS]} />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_160px] gap-3 mb-3">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-xs text-green-600 dark:text-green-400 font-medium">Valor (R$) *</span>
+                        <input type="number" min="0" step="0.01" value={formV2.valor_venda}
+                          onChange={e => setFormV2(p => ({ ...p, valor_venda: parseFloat(e.target.value) || 0 }))}
+                          className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                      </label>
+                      <SelectInput label="Forma de Pagamento *" value={formV2.forma_pagamento}
+                        onChange={v => setFormV2(p => ({ ...p, forma_pagamento: v }))}
+                        options={[{ value: '', label: 'Selecione' }, ...formasPagamento.map(n => ({ value: n, label: n }))]} />
+                      <TextInput label="Vencimento *" type="date" value={formV2.data_vencimento}
+                        onChange={v => setFormV2(p => ({ ...p, data_vencimento: v }))} />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-3 mb-3">
+                      <SelectInput label="Ponto de Atendimento *" value={formV2.ponto_atendimento_id}
+                        onChange={v => setFormV2(p => ({ ...p, ponto_atendimento_id: v }))}
+                        options={[
+                          { value: '', label: pontosAtivos.length ? 'Selecione' : 'Cadastre um ponto primeiro' },
+                          ...pontosAtivos.map(ponto => ({
+                            value: ponto.id,
+                            label: [ponto.nome, ponto.cidade, ponto.uf].filter(Boolean).join(' · '),
+                          })),
+                        ]} />
+                      <label className="flex flex-col gap-1">
+                        <span className="text-xs text-gray-500">Observações</span>
+                        <textarea rows={2} value={formV2.observacoes ?? ''}
+                          onChange={e => setFormV2(p => ({ ...p, observacoes: e.target.value || null }))}
+                          className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
+                      </label>
+                    </div>
+
+                    <div className="mb-4 rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/70 dark:bg-emerald-950/20 px-4 py-3">
+                      <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">Link de compra para cliente, AGR ou revendedor</p>
+                      <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1 break-all">
+                        {resolveMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb) ?? 'Marketplace próprio ainda não configurado'}
+                      </p>
+                      <div className="flex flex-wrap gap-2 mt-3">
+                        <button type="button" onClick={() => abrirMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb)}
+                          className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors">
+                          <ExternalLink size={13} /> Abrir link de compra
+                        </button>
+                        <button type="button" onClick={() => { void copiarMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb, 'Link de compra') }}
+                          className="flex items-center gap-1.5 px-3 py-2 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-medium rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors">
+                          <Copy size={13} /> Copiar para enviar
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-gray-100 dark:border-gray-800 pt-4">
+                      <button type="button" onClick={() => setVendaWizardStep('cadastro')}
+                        className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                        ← Voltar
+                      </button>
+                      <FormActions
+                        onSave={salvarVendaV2}
+                        onCancel={fecharFormVenda}
+                        saving={salvandoV}
+                        disabled={!vendaStepStatus.pontoOk}
+                      />
+                    </div>
+                  </>)
+                })()}
+
               </Panel>
                 </div>
               </div>,
@@ -4436,16 +4557,10 @@ export default function Comercial() {
                     <Search size={14} /> Pesquisar
                   </button>
                   <button type="button" onClick={() => {
-                    if (showFormV) {
-                      setShowFormV(false)
-                      setClienteSelecionadoObj(null)
-                      setClienteSearch('')
-                      setContadorSearch('')
-                      setContadorDropdownOpen(false)
-                      setContadorStepHandled(false)
-                      return
-                    }
+                    if (showFormV) { fecharFormVenda(); return }
                     setFormV2({ ...EMPTY_VENDA_V2, ponto_atendimento_id: pontosAtivos[0]?.id ?? '' })
+                    setVendaWizardStep('produto')
+                    setFiltrosPicker({ tipo: '', modelo: '', prazo: '' })
                     setClienteSelecionadoObj(null)
                     setClienteSearch('')
                     setContadorSearch('')

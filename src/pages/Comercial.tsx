@@ -29,7 +29,6 @@ import {
   RefreshCcw,
   Search,
   ShoppingBag,
-  Store,
   Tag,
   ToggleLeft,
   ToggleRight,
@@ -65,7 +64,6 @@ import type {
   FormaPagamentoV2,
   DocumentoFinanceiro,
   LancamentoV2,
-  LojaMarketplace,
   NfseConfiguracao,
   NfseEmitida,
   NovaFaixaComissao,
@@ -86,7 +84,6 @@ import type {
   NovaTabelaPrecoParticipante,
   TipoParticipanteTabelaPreco,
   TipoParceiro,
-  OwnerTipoLojaMarketplace,
   PerfilAcesso,
   TipoCliente,
   AgendamentoValidacao,
@@ -211,20 +208,6 @@ type AgenteTabelaForm = {
   ativo: boolean
 }
 
-type LojaMarketplaceForm = {
-  nome_loja: string
-  slug: string
-  tabela_preco_id: string
-  owner_tipo: OwnerTipoLojaMarketplace
-  owner_profile_id: string
-  owner_parceiro_id: string
-  descricao: string
-  dominio_publico: string
-  modo_exibicao: 'vitrine' | 'link_direto'
-  item_fixo_id: string
-  ativo: boolean
-}
-
 type AgendaItem = {
   id: string
   origem: 'agenda_legada' | 'validacao_v2'
@@ -304,11 +287,6 @@ type PaymentMethodConfig = {
   is_default: boolean
 }
 
-type LojaMarketplaceConfig = {
-  modo_exibicao?: 'vitrine' | 'link_direto'
-  item_fixo_id?: string | null
-}
-
 type PaymentRuntimeConfig = {
   modo_teste_geral: boolean
   bloquear_integracoes_reais: boolean
@@ -368,12 +346,11 @@ const DEFAULT_PAYMENT_RUNTIME: PaymentRuntimeConfig = {
 }
 
 // ── tab definition ─────────────────────────────────────────────
-type Tab = 'vendas' | 'agenda' | 'marketplace' | 'certificados' | 'tabelas' | 'comissoes' | 'pagamento' | 'importar'
+type Tab = 'vendas' | 'agenda' | 'certificados' | 'tabelas' | 'comissoes' | 'pagamento' | 'importar'
 
 const TABS: { id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }[] = [
   { id: 'vendas',       label: 'Lançar Vendas',    icon: TrendingUp  },
   { id: 'agenda',       label: 'Agenda',           icon: Calendar    },
-  { id: 'marketplace',  label: 'Marketplace',      icon: Store       },
   { id: 'pagamento',    label: 'Pagamentos',       icon: CreditCard  },
   { id: 'certificados', label: 'Certificados',     icon: ShoppingBag },
   { id: 'tabelas',      label: 'Tabelas de Preço', icon: Tag         },
@@ -533,20 +510,6 @@ const EMPTY_AGENTE_TABELA: AgenteTabelaForm = {
   ponto_atendimento_id: '',
   ativo: true,
 }
-const EMPTY_LOJA_MARKETPLACE: LojaMarketplaceForm = {
-  nome_loja: '',
-  slug: '',
-  tabela_preco_id: '',
-  owner_tipo: 'institucional',
-  owner_profile_id: '',
-  owner_parceiro_id: '',
-  descricao: '',
-  dominio_publico: '',
-  modo_exibicao: 'vitrine',
-  item_fixo_id: '',
-  ativo: true,
-}
-
 type VendaFilters = {
   filtroData:   string
   dataInicial:  string
@@ -578,14 +541,6 @@ const DIAS_SEMANA_OPTIONS = [
   { value: 5, label: 'Sex' },
   { value: 6, label: 'Sáb' },
 ] as const
-
-const OWNER_LOJA_OPTIONS: { value: OwnerTipoLojaMarketplace; label: string }[] = [
-  { value: 'institucional', label: 'Institucional' },
-  { value: 'vendedor', label: 'Vendedor' },
-  { value: 'contador', label: 'Contador' },
-  { value: 'parceiro', label: 'Parceiro' },
-  { value: 'revendedor', label: 'Revendedor' },
-] 
 
 export default function Comercial() {
   const { profile } = useAuth()
@@ -657,10 +612,8 @@ export default function Comercial() {
   const [tabelaItens, setTabelaItens]         = useState<TabelaPrecoItem[]>([])
   const [tabelaParticipantes, setTabelaParticipantes] = useState<TabelaPrecoParticipante[]>([])
   const [agentesTabelaPreco, setAgentesTabelaPreco] = useState<AgenteTabelaPreco[]>([])
-  const [lojasMarketplace, setLojasMarketplace] = useState<LojaMarketplace[]>([])
   const [parceirosAgentesPermitidos, setParceirosAgentesPermitidos] = useState<ParceiroAgentePermitido[]>([])
   const [parceiros, setParceiros]             = useState<ParceiroSimples[]>([])
-  const [marketplaceOwners, setMarketplaceOwners] = useState<Array<{ id: string; nome: string; perfil: PerfilAcesso }>>([])
   const [comissoes, setComissoes]             = useState<FaixaComissao[]>([])
   const [pagamentos, setPagamentos]           = useState<FormaPagamentoV2[]>([])
   const [paymentMethods, setPaymentMethods]   = useState<PaymentMethodConfig[]>([])
@@ -668,7 +621,6 @@ export default function Comercial() {
   const [pricingMatrixRules, setPricingMatrixRules] = useState<PricingMatrixRule[]>([])
   const [loadingCatalogo, setLoadingCatalogo] = useState(true)
   const [catalogoErro, setCatalogoErro]       = useState<string | null>(null)
-  const [marketplaceSchemaWarning, setMarketplaceSchemaWarning] = useState<string | null>(null)
   const [agendaSchemaWarning, setAgendaSchemaWarning] = useState<string | null>(null)
   const [salvandoCatalogo, setSalvandoCatalogo] = useState(false)
   // certificados form
@@ -704,11 +656,6 @@ export default function Comercial() {
   const [formParticipante, setFormParticipante]         = useState<NovaTabelaPrecoParticipante>(EMPTY_PARTICIPANTE)
   const [showFormAgenteTabela, setShowFormAgenteTabela] = useState(false)
   const [formAgenteTabela, setFormAgenteTabela]         = useState<AgenteTabelaForm>(EMPTY_AGENTE_TABELA)
-  const [showFormLoja, setShowFormLoja] = useState(false)
-  const [editingLojaId, setEditingLojaId] = useState<string | null>(null)
-  const [formLoja, setFormLoja] = useState<LojaMarketplaceForm>(EMPTY_LOJA_MARKETPLACE)
-  const [showLinksProdutosPanel, setShowLinksProdutosPanel] = useState(false)
-  const [selectedLinksLojaId, setSelectedLinksLojaId] = useState<string>('')
   const [slotPreviewParceiroId, setSlotPreviewParceiroId] = useState<string>('')
   const [pricingMatrixForm, setPricingMatrixForm] = useState<{ tabela_base_id: string; ajuste_percentual: number }>({
     tabela_base_id: '',
@@ -796,19 +743,6 @@ export default function Comercial() {
   )
   const pontosAtivos       = useMemo(() => pontos.filter(p => p.status === 'ativo'), [pontos])
   const tabelaById         = useMemo(() => new Map(tabelasPreco.map(t => [t.id, t])), [tabelasPreco])
-  const itensLojaSelecionada = useMemo(() => {
-    if (!formLoja.tabela_preco_id) return [] as TabelaPrecoItem[]
-    return tabelaItens.filter(item => item.tabela_preco_id === formLoja.tabela_preco_id)
-  }, [formLoja.tabela_preco_id, tabelaItens])
-  const opcoesItensLojaSelecionada = useMemo(() => (
-    itensLojaSelecionada.map(item => {
-      const cert = certificadoById.get(item.certificado_id)
-      const nome = cert?.tipo ?? 'Produto sem certificado'
-      const validade = cert?.validade ? ` · ${cert.validade}` : ''
-      const status = item.ativo ? '' : ' · inativo'
-      return { value: item.id, label: `${nome}${validade}${status}` }
-    })
-  ), [itensLojaSelecionada, certificadoById])
   const vendaAgendaAtual = useMemo(
     () => formAgendaV2 ? vendasV2.find(v => v.id === formAgendaV2.venda_certificado_id) ?? null : null,
     [formAgendaV2, vendasV2]
@@ -900,40 +834,6 @@ export default function Comercial() {
       currentStepIndex: currentStepIndex === -1 ? steps.length - 1 : currentStepIndex,
     }
   }, [vendaStepStatus])
-  const itemSelecionadoMarketplace = useMemo(
-    () => formV2.tabela_preco_item_id ? tabelaItens.find(item => item.id === formV2.tabela_preco_item_id) ?? null : null,
-    [formV2.tabela_preco_item_id, tabelaItens]
-  )
-  const lojasMarketplaceDoUsuario = useMemo(() => {
-    if (!currentUserId) return [] as LojaMarketplace[]
-    if (isAdmin) {
-      return lojasMarketplace.filter(loja => loja.ativo && loja.owner_tipo === 'vendedor')
-    }
-    if (profile?.perfil === 'vendedor') {
-      return lojasMarketplace.filter(loja =>
-        loja.ativo
-        && loja.owner_tipo === 'vendedor'
-        && loja.owner_profile_id === currentUserId
-      )
-    }
-    return [] as LojaMarketplace[]
-  }, [currentUserId, isAdmin, lojasMarketplace, profile?.perfil])
-  const lojaLinksSelecionada = useMemo(
-    () => lojasMarketplaceDoUsuario.find(loja => loja.id === selectedLinksLojaId) ?? lojasMarketplaceDoUsuario[0] ?? null,
-    [lojasMarketplaceDoUsuario, selectedLinksLojaId]
-  )
-  const produtosLinksDaLojaSelecionada = useMemo(() => {
-    if (!lojaLinksSelecionada) return [] as Array<{ item: TabelaPrecoItem; cert: Certificado | null; link: string }>
-    return tabelaItens
-      .filter(item => item.tabela_preco_id === lojaLinksSelecionada.tabela_preco_id && item.ativo)
-      .map(item => ({
-        item,
-        cert: certificadoById.get(item.certificado_id) ?? null,
-        link: buildLojaProdutoUrl(lojaLinksSelecionada, item.id),
-      }))
-      .sort((a, b) => (a.cert?.tipo ?? '').localeCompare(b.cert?.tipo ?? '', 'pt-BR'))
-  }, [certificadoById, lojaLinksSelecionada, tabelaItens])
-
   const parceiroIdsPermitidosAgente = useMemo(() => {
     if (profile?.perfil !== 'agente_registro' || !currentUserId) return new Set<string>()
     return new Set(
@@ -1369,40 +1269,34 @@ export default function Comercial() {
   const fetchCatalogo = useCallback(async () => {
     setLoadingCatalogo(true)
     setCatalogoErro(null)
-    setMarketplaceSchemaWarning(null)
     setAgendaSchemaWarning(null)
-    const [certsRes, tabelasRes, itensRes, partRes, agentesTabelaRes, lojasRes, parceirosAgentesRes, comissoesRes, pagamentosRes, parcRes, ownersRes, paymentMethodsRes, paymentRuntimeRes, pricingMatrixRes, nfseAutomationRes] = await Promise.all([
+    const [certsRes, tabelasRes, itensRes, partRes, agentesTabelaRes, parceirosAgentesRes, comissoesRes, pagamentosRes, parcRes, paymentMethodsRes, paymentRuntimeRes, pricingMatrixRes, nfseAutomationRes] = await Promise.all([
       supabase.from('certificados').select('*').order('tipo', { ascending: true }),
       supabase.from('tabelas_preco').select('*').order('nome', { ascending: true }),
       supabase.from('tabelas_preco_itens').select('*').order('created_at', { ascending: true }),
       supabase.from('tabelas_preco_participantes').select('*'),
       supabase.from('agentes_tabelas_preco').select('*').order('created_at', { ascending: true }),
-      supabase.from('lojas_marketplace').select('*').order('created_at', { ascending: true }),
       supabase.from('parceiros_agentes_permitidos').select('*').order('created_at', { ascending: true }),
       supabase.from('faixas_comissao').select('*').order('ordem', { ascending: true }),
       supabase.from('formas_pagamento_v2').select('*').order('nome', { ascending: true }),
       supabase.from('parceiros').select('id, cpf_cnpj, nome, nome_fantasia, tipo_parceiro, gestor_1_id, gestor_2_id, gestor_3_id, gestor_4_id, gestor_5_id').eq('status', 'ativo').order('nome'),
-      supabase.from('profiles').select('id, nome, perfil').in('perfil', ['admin', 'vendedor']).eq('status', 'ativo').order('nome'),
       supabase.from('app_settings').select('value').eq('key', 'payment_methods').maybeSingle(),
       supabase.from('app_settings').select('value').eq('key', 'payment_runtime').maybeSingle(),
       supabase.from('app_settings').select('value').eq('key', 'pricing_matrix_rules').maybeSingle(),
       supabase.from('app_settings').select('value').eq('key', 'nfse_automation_settings').maybeSingle(),
     ])
-    const lojasMarketplaceAusente = !!lojasRes.error?.message?.includes("public.lojas_marketplace")
     const parceirosAgentesAusente = !!parceirosAgentesRes.error?.message?.includes("public.parceiros_agentes_permitidos")
-    const error = certsRes.error ?? tabelasRes.error ?? comissoesRes.error ?? pagamentosRes.error ?? ownersRes.error
+    const error = certsRes.error ?? tabelasRes.error ?? comissoesRes.error ?? pagamentosRes.error
     if (error) { setCatalogoErro(error.message); setLoadingCatalogo(false); return }
     setCertificados((certsRes.data ?? []) as Certificado[])
     setTabelasPreco((tabelasRes.data ?? []) as TabelaPreco[])
     setTabelaItens((itensRes.data ?? []) as TabelaPrecoItem[])
     setTabelaParticipantes((partRes.data ?? []) as TabelaPrecoParticipante[])
     setAgentesTabelaPreco((agentesTabelaRes.data ?? []) as AgenteTabelaPreco[])
-    setLojasMarketplace(lojasMarketplaceAusente ? [] : ((lojasRes.data ?? []) as LojaMarketplace[]))
     setParceirosAgentesPermitidos(parceirosAgentesAusente ? [] : ((parceirosAgentesRes.data ?? []) as ParceiroAgentePermitido[]))
     setComissoes((comissoesRes.data ?? []) as FaixaComissao[])
     setPagamentos((pagamentosRes.data ?? []) as FormaPagamentoV2[])
     setParceiros((parcRes.data ?? []) as ParceiroSimples[])
-    setMarketplaceOwners((ownersRes.data ?? []) as Array<{ id: string; nome: string; perfil: PerfilAcesso }>)
     const savedMethods = Array.isArray(paymentMethodsRes.data?.value?.methods)
       ? (paymentMethodsRes.data?.value.methods as PaymentMethodConfig[])
       : []
@@ -1418,11 +1312,6 @@ export default function Comercial() {
       : []
     setPricingMatrixRules(savedPricingRules)
     setNfseAutomationSettings(normalizeNfseAutomationSettings(nfseAutomationRes.data?.value as Partial<NfseAutomationSettings> | undefined))
-    if (lojasMarketplaceAusente) {
-      setMarketplaceSchemaWarning('A tabela de lojas do marketplace ainda nao existe no Supabase. O restante do comercial segue liberado para testes.')
-    } else if (lojasRes.error) {
-      setMarketplaceSchemaWarning(lojasRes.error.message)
-    }
     if (parceirosAgentesAusente) {
       setAgendaSchemaWarning('A tabela parceiros_agentes_permitidos ainda nao existe no Supabase. Regras avancadas de agenda por parceiro ficam desativadas ate aplicar o SQL da agenda online V2.')
     } else if (parceirosAgentesRes.error) {
@@ -1457,16 +1346,6 @@ export default function Comercial() {
   }, [])
 
   useEffect(() => {
-    if (!lojasMarketplaceDoUsuario.length) {
-      setSelectedLinksLojaId('')
-      return
-    }
-    if (!selectedLinksLojaId || !lojasMarketplaceDoUsuario.some(loja => loja.id === selectedLinksLojaId)) {
-      setSelectedLinksLojaId(lojasMarketplaceDoUsuario[0]?.id ?? '')
-    }
-  }, [lojasMarketplaceDoUsuario, selectedLinksLojaId])
-
-  useEffect(() => {
     if (pontosAtivos.length > 0 && !formV2.ponto_atendimento_id) {
       setFormV2(p => ({ ...p, ponto_atendimento_id: pontosAtivos[0].id }))
     }
@@ -1479,18 +1358,6 @@ export default function Comercial() {
       setFormV2(prev => ({ ...prev, certificado_id: '', tabela_preco_item_id: '', valor_venda: 0 }))
     }
   }, [formV2.certificado_id, certsDaTabela])
-
-  useEffect(() => {
-    if (!showFormLoja) return
-    const itemValido = !formLoja.item_fixo_id || itensLojaSelecionada.some(item => item.id === formLoja.item_fixo_id)
-    if (formLoja.modo_exibicao !== 'link_direto' && formLoja.item_fixo_id) {
-      setFormLoja(prev => ({ ...prev, item_fixo_id: '' }))
-      return
-    }
-    if (!itemValido) {
-      setFormLoja(prev => ({ ...prev, item_fixo_id: '' }))
-    }
-  }, [showFormLoja, formLoja.modo_exibicao, formLoja.item_fixo_id, itensLojaSelecionada])
 
   useEffect(() => {
     if (canManageAgenda) {
@@ -2108,128 +1975,6 @@ export default function Comercial() {
   async function excluirAgenteTabela(id: string) {
     await supabase.from('agentes_tabelas_preco').delete().eq('id', id)
     setAgentesTabelaPreco(prev => prev.filter(v => v.id !== id))
-  }
-
-  function slugifyLoja(value: string) {
-    return value
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-  }
-
-  function normalizeLojaMarketplaceConfig(configuracoes: Record<string, unknown> | null | undefined): { modo_exibicao: 'vitrine' | 'link_direto'; item_fixo_id: string } {
-    const modo = configuracoes?.modo_exibicao === 'link_direto' ? 'link_direto' : 'vitrine'
-    const itemFixo = typeof configuracoes?.item_fixo_id === 'string' ? configuracoes.item_fixo_id : ''
-    return { modo_exibicao: modo, item_fixo_id: itemFixo }
-  }
-
-  function resolveLojaBaseUrl(loja: Pick<LojaMarketplace, 'slug' | 'dominio_publico'>) {
-    const path = `/loja/${loja.slug}`
-    const dominio = loja.dominio_publico?.trim()
-    if (dominio) return `${dominio.replace(/\/$/, '')}${path}`
-    if (typeof window !== 'undefined' && window.location.origin) return `${window.location.origin}${path}`
-    return path
-  }
-
-  function buildLojaProdutoUrl(loja: Pick<LojaMarketplace, 'slug' | 'dominio_publico'>, itemId?: string | null) {
-    const baseUrl = resolveLojaBaseUrl(loja)
-    if (!itemId) return baseUrl
-    return `${baseUrl}?produto=${encodeURIComponent(itemId)}`
-  }
-
-  function abrirNovaLojaMarketplace() {
-    setEditingLojaId(null)
-    setFormLoja({
-      ...EMPTY_LOJA_MARKETPLACE,
-      tabela_preco_id: tabelasAtivas[0]?.id ?? '',
-    })
-    setShowFormLoja(true)
-  }
-
-  function editarLojaMarketplace(loja: LojaMarketplace) {
-    const config = normalizeLojaMarketplaceConfig(loja.configuracoes)
-    setEditingLojaId(loja.id)
-    setFormLoja({
-      nome_loja: loja.nome_loja,
-      slug: loja.slug,
-      tabela_preco_id: loja.tabela_preco_id,
-      owner_tipo: loja.owner_tipo,
-      owner_profile_id: loja.owner_profile_id ?? '',
-      owner_parceiro_id: loja.owner_parceiro_id ?? '',
-      descricao: loja.descricao ?? '',
-      dominio_publico: loja.dominio_publico ?? '',
-      modo_exibicao: config.modo_exibicao,
-      item_fixo_id: config.item_fixo_id,
-      ativo: loja.ativo,
-    })
-    setShowFormLoja(true)
-  }
-
-  async function salvarLojaMarketplace() {
-    if (!formLoja.nome_loja.trim() || !formLoja.tabela_preco_id) {
-      showMsg('Preencha nome da loja e tabela de preço.')
-      return
-    }
-
-    const slug = slugifyLoja(formLoja.slug || formLoja.nome_loja)
-    if (!slug) {
-      showMsg('Informe um nome ou slug válido para a loja.')
-      return
-    }
-
-    if (formLoja.owner_tipo === 'vendedor' && !formLoja.owner_profile_id) {
-      showMsg('Selecione o vendedor responsável por esta loja.')
-      return
-    }
-
-    if (['contador', 'parceiro', 'revendedor'].includes(formLoja.owner_tipo) && !formLoja.owner_parceiro_id) {
-      showMsg('Selecione o parceiro responsável por esta loja.')
-      return
-    }
-
-    const itemDaTabela = formLoja.item_fixo_id
-      ? tabelaItens.find(item => item.id === formLoja.item_fixo_id && item.tabela_preco_id === formLoja.tabela_preco_id)
-      : null
-
-    if (formLoja.modo_exibicao === 'link_direto' && !itemDaTabela) {
-      showMsg('Selecione o produto fixo para a loja em modo link direto.')
-      return
-    }
-
-    const payload = {
-      nome_loja: formLoja.nome_loja.trim(),
-      slug,
-      tabela_preco_id: formLoja.tabela_preco_id,
-      owner_tipo: formLoja.owner_tipo,
-      owner_profile_id: formLoja.owner_tipo === 'vendedor' ? formLoja.owner_profile_id || null : null,
-      owner_parceiro_id: ['contador', 'parceiro', 'revendedor'].includes(formLoja.owner_tipo) ? formLoja.owner_parceiro_id || null : null,
-      descricao: formLoja.descricao.trim() || null,
-      dominio_publico: formLoja.dominio_publico.trim() || null,
-      ativo: formLoja.ativo,
-      configuracoes: {
-        modo_exibicao: formLoja.modo_exibicao,
-        item_fixo_id: formLoja.modo_exibicao === 'link_direto' ? itemDaTabela?.id ?? null : null,
-      },
-    }
-
-    setSalvandoCatalogo(true)
-    const { error } = editingLojaId
-      ? await supabase.from('lojas_marketplace').update(payload).eq('id', editingLojaId)
-      : await supabase.from('lojas_marketplace').insert([payload])
-    setSalvandoCatalogo(false)
-    if (error) { showMsg(traduzirErroDb(error, 'loja-marketplace')); return }
-
-    setShowFormLoja(false)
-    setEditingLojaId(null)
-    setFormLoja({ ...EMPTY_LOJA_MARKETPLACE })
-    void fetchCatalogo()
-  }
-
-  async function toggleLojaMarketplace(loja: LojaMarketplace) {
-    await supabase.from('lojas_marketplace').update({ ativo: !loja.ativo }).eq('id', loja.id)
-    setLojasMarketplace(prev => prev.map(item => item.id === loja.id ? { ...item, ativo: !item.ativo } : item))
   }
 
   // ── catalog mutations ────────────────────────────────────────
@@ -3093,12 +2838,7 @@ export default function Comercial() {
   }
 
   function resolveMarketplaceLink(link?: string | null) {
-    const finalLink = link?.trim()
-    if (finalLink) return finalLink
-    // Usa qualquer loja ativa, incluindo institucional
-    const anyLoja = lojasMarketplace.find(l => l.ativo)
-    if (anyLoja) return resolveLojaBaseUrl(anyLoja)
-    return null
+    return link?.trim() || null
   }
 
   async function copiarMarketplaceLink(link?: string | null, contexto = 'Link do marketplace') {
@@ -3812,16 +3552,6 @@ export default function Comercial() {
     showMsg(`Emissão fora da etapa concluída. Emitidas: ${emitidas}. Falhas: ${falhas}.`, falhas === 0 ? 'ok' : 'err')
   }
 
-  function obterLinkMarketplaceDaVenda(venda: VendaRow) {
-    const item = venda.tabela_preco_item_id
-      ? tabelaItens.find(row => row.id === venda.tabela_preco_item_id)
-      : null
-    // Se o item tiver link externo (Safeweb), usa-o; senão, constrói URL interna com produto
-    if (item?.link_safeweb?.trim()) return resolveMarketplaceLink(item.link_safeweb)
-    const anyLoja = lojasMarketplace.find(l => l.ativo)
-    if (anyLoja) return buildLojaProdutoUrl(anyLoja, venda.tabela_preco_item_id)
-    return null
-  }
 
   // ── paginação: reset ao mudar filtros ────────────────────────
   useEffect(() => { setPaginaAtual(1) }, [vendaFilters])
@@ -4007,19 +3737,6 @@ export default function Comercial() {
       </div>
 
       <div className="flex-1 overflow-auto p-6">
-        {lojasMarketplaceDoUsuario.length > 0 && (
-          <div className="mb-4 flex justify-end">
-            <button
-              type="button"
-              onClick={() => setShowLinksProdutosPanel(true)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors shadow-sm"
-            >
-              <ShoppingBag size={15} />
-              Links Produtos
-            </button>
-          </div>
-        )}
-
         {/* ── VENDAS ─────────────────────────────────────────── */}
         {tab === 'vendas' && (
           <div className="space-y-4">
@@ -4625,14 +4342,6 @@ export default function Comercial() {
 
               {showVendaAcoesExtras && (
                 <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-gray-100 dark:border-gray-800">
-                  <button type="button" onClick={() => abrirMarketplaceLink()}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition-colors">
-                    <ExternalLink size={14} /> Marketplace
-                  </button>
-                  <button type="button" onClick={() => { void copiarMarketplaceLink(undefined, 'Link geral do marketplace') }}
-                    className="flex items-center gap-1.5 px-4 py-2 border border-emerald-300 text-emerald-700 dark:text-emerald-300 text-sm font-medium rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors">
-                    <Copy size={14} /> Copiar link
-                  </button>
                   {nfseAutomationSettings.permitir_emissao_lote_comercial && (
                     <VendaActionBtn
                       icon={FileText}
@@ -4719,8 +4428,6 @@ export default function Comercial() {
                             <VendaIconBtn title="Notifica Eventos"  icon={Bell}          color="blue"    onClick={() => openFeatureNotice('Notificações de eventos', 'A central de notificações dessa venda ainda não foi conectada aos eventos operacionais.', 'Pode ser ligada depois ao histórico de contato e automações.')} />
                             <VendaIconBtn title="Emitir Protocolo"  icon={ClipboardList} color="purple"  onClick={() => abrirProtocolo(v)} />
                             <VendaIconBtn title="Agendar"           icon={Calendar}      color="emerald" onClick={() => prepararAgendamento(v)} />
-                            <VendaIconBtn title="Abrir marketplace" icon={ExternalLink}  color="teal"    onClick={() => abrirMarketplaceLink(obterLinkMarketplaceDaVenda(v))} />
-                            <VendaIconBtn title="Copiar link do marketplace" icon={Copy} color="gray"    onClick={() => { void copiarMarketplaceLink(obterLinkMarketplaceDaVenda(v), 'Link da venda no marketplace') }} />
                             <VendaIconBtn title="Upload Documentos" icon={Upload}        color="orange"  onClick={() => openFeatureNotice('Upload de documentos', 'A estrutura de documentos financeiros existe, mas o fluxo de upload desta tela ainda não foi conectado.', 'Próximo bloco: ligar `documentos_financeiros` a esta venda.')} />
                             <VendaIconBtn title="Fatura"            icon={Receipt}       color="teal"    onClick={() => void abrirFaturaVenda(v)} />
                             <VendaIconBtn title="Excluir"           icon={Trash2}        color="red"     onClick={() => void excluirVenda(v.id)} />
@@ -5291,247 +4998,6 @@ export default function Comercial() {
           </div>
         )}
 
-        {tab === 'marketplace' && (
-          <CatalogSection title="Lojas do Marketplace" actionLabel="Nova Loja" onAction={abrirNovaLojaMarketplace} loading={loadingCatalogo} error={catalogoErro}>
-            {marketplaceSchemaWarning && (
-              <div className="rounded-xl border border-amber-200 dark:border-amber-900/30 bg-amber-50/80 dark:bg-amber-950/20 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
-                {marketplaceSchemaWarning}
-              </div>
-            )}
-            <div className="rounded-xl border border-blue-100 dark:border-blue-900/20 bg-blue-50/50 dark:bg-blue-950/10 px-4 py-3">
-              <p className="text-sm font-medium text-blue-700 dark:text-blue-300">
-                Cada loja do marketplace fica vinculada a uma tabela de preço e a um dono comercial.
-              </p>
-              <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-                Isso garante que a venda nasça rastreável desde a origem: loja, tabela, vendedor/parceiro/contador e depois agente de registro.
-              </p>
-            </div>
-
-            {showFormLoja && (
-              <Panel title={editingLojaId ? 'Editar Loja do Marketplace' : 'Nova Loja do Marketplace'} onClose={() => setShowFormLoja(false)}>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <TextInput label="Nome da Loja *" value={formLoja.nome_loja} onChange={v => setFormLoja(p => ({ ...p, nome_loja: v, slug: p.slug || slugifyLoja(v) }))} />
-                  <TextInput label="Slug da Loja *" value={formLoja.slug} onChange={v => setFormLoja(p => ({ ...p, slug: slugifyLoja(v) }))} />
-                  <SelectInput
-                    label="Tabela de Preço *"
-                    value={formLoja.tabela_preco_id}
-                    onChange={v => setFormLoja(p => ({ ...p, tabela_preco_id: v, item_fixo_id: '' }))}
-                    options={[{ value: '', label: 'Selecione' }, ...tabelasAtivas.map(t => ({ value: t.id, label: t.nome }))]}
-                  />
-                  <SelectInput
-                    label="Dono da Loja"
-                    value={formLoja.owner_tipo}
-                    onChange={v => setFormLoja(p => ({ ...p, owner_tipo: v as OwnerTipoLojaMarketplace, owner_profile_id: '', owner_parceiro_id: '' }))}
-                    options={OWNER_LOJA_OPTIONS}
-                  />
-                  {formLoja.owner_tipo === 'vendedor' && (
-                    <SelectInput
-                      label="Vendedor Responsável *"
-                      value={formLoja.owner_profile_id}
-                      onChange={v => setFormLoja(p => ({ ...p, owner_profile_id: v }))}
-                      options={[{ value: '', label: 'Selecione' }, ...marketplaceOwners.map(owner => ({ value: owner.id, label: owner.nome }))]}
-                    />
-                  )}
-                  {['contador', 'parceiro', 'revendedor'].includes(formLoja.owner_tipo) && (
-                    <SelectInput
-                      label="Parceiro Responsável *"
-                      value={formLoja.owner_parceiro_id}
-                      onChange={v => setFormLoja(p => ({ ...p, owner_parceiro_id: v }))}
-                      options={[{ value: '', label: 'Selecione' }, ...parceiros.map(parceiro => ({ value: parceiro.id, label: `${parceiro.nome}${parceiro.tipo_parceiro ? ` · ${(parceiro.tipo_parceiro ?? '').toUpperCase()}` : ''}` }))]}
-                    />
-                  )}
-                  <SelectInput
-                    label="Modo da Loja"
-                    value={formLoja.modo_exibicao}
-                    onChange={v => setFormLoja(p => ({ ...p, modo_exibicao: v as LojaMarketplaceForm['modo_exibicao'], item_fixo_id: v === 'link_direto' ? p.item_fixo_id : '' }))}
-                    options={[
-                      { value: 'vitrine', label: 'Menu de escolhas por produtos' },
-                      { value: 'link_direto', label: 'Link direto para um produto' },
-                    ]}
-                  />
-                  {formLoja.modo_exibicao === 'link_direto' && (
-                    <SelectInput
-                      label="Produto Fixo *"
-                      value={formLoja.item_fixo_id}
-                      onChange={v => setFormLoja(p => ({ ...p, item_fixo_id: v }))}
-                      options={[{ value: '', label: opcoesItensLojaSelecionada.length ? 'Selecione o produto' : 'Nenhum produto nesta tabela' }, ...opcoesItensLojaSelecionada]}
-                    />
-                  )}
-                  <TextInput label="Domínio Público" value={formLoja.dominio_publico} onChange={v => setFormLoja(p => ({ ...p, dominio_publico: v }))} />
-                  <TextInput label="Descrição" value={formLoja.descricao} onChange={v => setFormLoja(p => ({ ...p, descricao: v }))} className="md:col-span-2" />
-                  <div className="md:col-span-2 rounded-xl border border-gray-200 dark:border-gray-800 px-4 py-3 bg-gray-50/70 dark:bg-gray-800/30">
-                    <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">URL futura da loja</p>
-                    <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 mt-1">
-                      {buildLojaProdutoUrl(
-                        {
-                          slug: formLoja.slug || slugifyLoja(formLoja.nome_loja) || 'sua-loja',
-                          dominio_publico: formLoja.dominio_publico.trim() || null,
-                        },
-                        formLoja.modo_exibicao === 'link_direto' ? formLoja.item_fixo_id || null : null
-                      )}
-                    </p>
-                  </div>
-                  <ActiveSelect value={formLoja.ativo} onChange={v => setFormLoja(p => ({ ...p, ativo: v }))} />
-                </div>
-                <FormActions onSave={salvarLojaMarketplace} onCancel={() => setShowFormLoja(false)} saving={salvandoCatalogo} />
-              </Panel>
-            )}
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {lojasMarketplace.length === 0 ? (
-                <EmptyBlock label="Nenhuma loja cadastrada ainda." />
-              ) : (
-                lojasMarketplace.map(loja => {
-                  const tabela = tabelasPreco.find(item => item.id === loja.tabela_preco_id)
-                  const ownerProfile = marketplaceOwners.find(item => item.id === loja.owner_profile_id)
-                  const ownerParceiro = parceiros.find(item => item.id === loja.owner_parceiro_id)
-                  const ownerNome = ownerProfile?.nome ?? ownerParceiro?.nome ?? 'Institucional'
-                  const config = normalizeLojaMarketplaceConfig(loja.configuracoes)
-                  const itensDaLoja = tabelaItens.filter(item => item.tabela_preco_id === loja.tabela_preco_id && item.ativo)
-                  const produtoFixo = config.item_fixo_id ? itensDaLoja.find(item => item.id === config.item_fixo_id) ?? null : null
-                  const certProdutoFixo = produtoFixo ? certificadoById.get(produtoFixo.certificado_id) : null
-                  const urlFutura = buildLojaProdutoUrl(loja, config.modo_exibicao === 'link_direto' ? config.item_fixo_id : null)
-
-                  return (
-                    <div key={loja.id} className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 space-y-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">{loja.nome_loja}</p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">{urlFutura}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <StatusPill active={loja.ativo} />
-                          <RowActions active={loja.ativo} onEdit={() => editarLojaMarketplace(loja)} onToggle={() => void toggleLojaMarketplace(loja)} />
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <InfoCardMini label="Tabela" value={tabela?.nome ?? '—'} />
-                        <InfoCardMini label="Origem" value={`${capitalize(loja.owner_tipo)} · ${ownerNome}`} />
-                        <InfoCardMini label="Modo" value={config.modo_exibicao === 'link_direto' ? 'Link direto' : 'Menu de escolhas'} />
-                        <InfoCardMini label="Produto fixo" value={certProdutoFixo?.tipo ?? 'Livre escolha'} />
-                      </div>
-                      {loja.descricao && (
-                        <p className="text-xs text-gray-500 dark:text-gray-400">{loja.descricao}</p>
-                      )}
-                      <div className="flex flex-wrap gap-2">
-                        <button type="button" onClick={() => { void copiarMarketplaceLink(resolveLojaBaseUrl(loja), 'Link geral da loja') }}
-                          className="px-3 py-2 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700">
-                          Copiar link da loja
-                        </button>
-                        <button type="button" onClick={() => abrirMarketplaceLink(urlFutura)}
-                          className="px-3 py-2 text-xs rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
-                          Abrir loja
-                        </button>
-                      </div>
-                      {itensDaLoja.length > 0 && (
-                        <div className="rounded-xl border border-gray-200 dark:border-gray-800 p-3 space-y-2">
-                          <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Links por produto</p>
-                          <div className="space-y-2">
-                            {itensDaLoja.map(item => {
-                              const cert = certificadoById.get(item.certificado_id)
-                              const linkProduto = buildLojaProdutoUrl(loja, item.id)
-                              return (
-                                <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg bg-gray-50/70 dark:bg-gray-800/30 px-3 py-2">
-                                  <div className="min-w-0">
-                                    <p className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">{cert?.tipo ?? 'Produto'}</p>
-                                    <p className="text-[11px] text-gray-500 dark:text-gray-400">{formatCurrency(item.valor)}</p>
-                                  </div>
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    <button type="button" onClick={() => { void copiarMarketplaceLink(linkProduto, `Link de ${cert?.tipo ?? 'produto'}`) }}
-                                      className="px-2.5 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-white dark:hover:bg-gray-900">
-                                      Copiar
-                                    </button>
-                                    <button type="button" onClick={() => abrirMarketplaceLink(linkProduto)}
-                                      className="px-2.5 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-white dark:hover:bg-gray-900">
-                                      Abrir
-                                    </button>
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )
-                })
-              )}
-            </div>
-          </CatalogSection>
-        )}
-
-        {showLinksProdutosPanel && (
-          <Panel title="Links Produtos" onClose={() => setShowLinksProdutosPanel(false)}>
-            <div className="space-y-4">
-              <div className="rounded-xl border border-blue-100 dark:border-blue-900/20 bg-blue-50/50 dark:bg-blue-950/10 px-4 py-3">
-                <p className="text-sm font-medium text-blue-700 dark:text-blue-300">
-                  Escolha o produto para abrir o link de compra do seu marketplace.
-                </p>
-                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-                  Cada vendedor acessa apenas os links vinculados às próprias lojas ativas.
-                </p>
-              </div>
-
-              {lojasMarketplaceDoUsuario.length > 1 && (
-                <SelectInput
-                  label="Loja / Link do vendedor"
-                  value={selectedLinksLojaId}
-                  onChange={setSelectedLinksLojaId}
-                  options={[
-                    { value: '', label: 'Selecione' },
-                    ...lojasMarketplaceDoUsuario.map(loja => ({ value: loja.id, label: loja.nome_loja })),
-                  ]}
-                />
-              )}
-
-              {lojaLinksSelecionada && (
-                <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-800/30 px-4 py-3">
-                  <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Loja selecionada</p>
-                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 mt-1">{lojaLinksSelecionada.nome_loja}</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 break-all">{resolveLojaBaseUrl(lojaLinksSelecionada)}</p>
-                </div>
-              )}
-
-              {!lojaLinksSelecionada ? (
-                <EmptyBlock label="Nenhuma loja de marketplace disponível para este usuário." />
-              ) : produtosLinksDaLojaSelecionada.length === 0 ? (
-                <EmptyBlock label="Essa loja ainda não possui produtos ativos para gerar links." />
-              ) : (
-                <div className="space-y-2">
-                  {produtosLinksDaLojaSelecionada.map(({ item, cert, link }) => (
-                    <div key={item.id} className="flex flex-col md:flex-row md:items-center justify-between gap-3 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-4 py-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">{cert?.tipo ?? 'Produto'}</p>
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                          {cert?.validade ?? 'Validade não informada'} · {formatCurrency(item.valor)}
-                        </p>
-                        <p className="text-[11px] text-gray-400 mt-1 break-all">{link}</p>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => abrirMarketplaceLink(link)}
-                          className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors"
-                        >
-                          <ExternalLink size={13} />
-                          Abrir link
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { void copiarMarketplaceLink(link, `Link de ${cert?.tipo ?? 'produto'}`) }}
-                          className="flex items-center gap-1.5 px-3 py-2 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-xs font-medium rounded-lg transition-colors"
-                        >
-                          <Copy size={13} />
-                          Copiar
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </Panel>
-        )}
 
         {/* ── CERTIFICADOS ───────────────────────────────────── */}
         {tab === 'certificados' && (

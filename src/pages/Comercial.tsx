@@ -4525,23 +4525,6 @@ export default function Comercial() {
                       </label>
                     </div>
 
-                    <div className="mb-4 rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/70 dark:bg-emerald-950/20 px-4 py-3">
-                      <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">Link de compra para cliente, AGR ou revendedor</p>
-                      <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1 break-all">
-                        {resolveMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb) ?? 'Marketplace próprio ainda não configurado'}
-                      </p>
-                      <div className="flex flex-wrap gap-2 mt-3">
-                        <button type="button" onClick={() => abrirMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb)}
-                          className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors">
-                          <ExternalLink size={13} /> Abrir link de compra
-                        </button>
-                        <button type="button" onClick={() => { void copiarMarketplaceLink(itemSelecionadoMarketplace?.link_safeweb, 'Link de compra') }}
-                          className="flex items-center gap-1.5 px-3 py-2 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-medium rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors">
-                          <Copy size={13} /> Copiar para enviar
-                        </button>
-                      </div>
-                    </div>
-
                     <div className="flex items-center justify-between border-t border-gray-100 dark:border-gray-800 pt-4">
                       <button type="button" onClick={() => setVendaWizardStep('cadastro')}
                         className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">

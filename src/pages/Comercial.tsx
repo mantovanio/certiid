@@ -699,6 +699,45 @@ export default function Comercial() {
 
   const pontosAtivos       = useMemo(() => pontos.filter(p => p.status === 'ativo'), [pontos])
   const tabelaById         = useMemo(() => new Map(tabelasPreco.map(t => [t.id, t])), [tabelasPreco])
+
+  const preflightProblemas = useMemo(() => {
+    if (!showFormV) return []
+    const p: Array<{ titulo: string; descricao: string; onde: string }> = []
+    if (pontosAtivos.length === 0) {
+      p.push({
+        titulo: 'Nenhum ponto de atendimento ativo',
+        descricao: 'O sistema exige ao menos um ponto de atendimento cadastrado e ativo para registrar vendas.',
+        onde: 'Comercial → aba Agentes → Pontos de Atendimento → Novo ponto',
+      })
+    }
+    const tabelasComItens = tabelasAtivas.filter(t =>
+      tabelaItens.some(i => i.tabela_preco_id === t.id && i.ativo)
+    )
+    if (tabelasAtivas.length === 0) {
+      p.push({
+        titulo: 'Nenhuma tabela de preço ativa',
+        descricao: 'É necessário ter ao menos uma tabela de preço ativa com produtos configurados.',
+        onde: 'Comercial → aba Tabelas → Nova tabela',
+      })
+    } else if (tabelasComItens.length === 0) {
+      p.push({
+        titulo: 'Tabelas sem produtos configurados',
+        descricao: 'As tabelas existem, mas nenhuma tem itens ativos. A venda não conseguirá listar produtos.',
+        onde: 'Comercial → aba Tabelas → selecione a tabela → adicionar itens',
+      })
+    }
+    if (profile?.perfil === 'agente_registro' && currentUserId) {
+      const tabelasDoAgente = agentesTabelaPreco.filter(a => a.agente_registro_id === currentUserId && a.ativo)
+      if (tabelasDoAgente.length === 0) {
+        p.push({
+          titulo: 'Seu usuário não está vinculado a nenhuma tabela de preço',
+          descricao: 'Agentes de registro precisam ter ao menos uma tabela liberada para lançar vendas.',
+          onde: 'Peça ao administrador: Comercial → aba Agentes → Tabelas por Agente → vincule seu nome',
+        })
+      }
+    }
+    return p
+  }, [showFormV, pontosAtivos, tabelasAtivas, tabelaItens, profile?.perfil, currentUserId, agentesTabelaPreco])
   const vendaAgendaAtual = useMemo(
     () => formAgendaV2 ? vendasV2.find(v => v.id === formAgendaV2.venda_certificado_id) ?? null : null,
     [formAgendaV2, vendasV2]
@@ -3715,6 +3754,21 @@ export default function Comercial() {
               >
                 <div className="w-full max-w-5xl my-auto" onClick={e => e.stopPropagation()}>
               <Panel title="Nova Venda" onClose={fecharFormVenda}>
+                {/* ── Aviso de pré-requisitos ausentes ── */}
+                {preflightProblemas.length > 0 && (
+                  <div className="mb-5 rounded-xl border border-red-200 dark:border-red-800/40 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
+                    <p className="text-xs font-bold text-red-700 dark:text-red-300">Configuração incompleta — resolva antes de salvar</p>
+                    {preflightProblemas.map((prob, i) => (
+                      <div key={i} className={cn('pt-2', i > 0 && 'border-t border-red-200 dark:border-red-800/40')}>
+                        <p className="text-xs font-semibold text-red-700 dark:text-red-300">{prob.titulo}</p>
+                        <p className="text-[11px] text-red-600 dark:text-red-400 mt-0.5">{prob.descricao}</p>
+                        <p className="text-[11px] text-red-500 dark:text-red-500 mt-1">
+                          Onde corrigir: <strong>{prob.onde}</strong>
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {/* indicadores de passo */}
                 <div className="flex flex-wrap gap-1.5 mb-5">
                   {vendaSteps.steps.map((step, index) => (

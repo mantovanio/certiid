@@ -707,14 +707,60 @@ function AbaUsuarios() {
       {novoModal.aberto && (
         <ModalOverlay titulo="Criar novo usuário" onClose={() => setNovoModal({ aberto: false })}>
           {criadoOk ? (
-            <div className="text-center space-y-3 py-2">
-              <div className="w-12 h-12 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center mx-auto">
-                <Check size={22} className="text-green-600 dark:text-green-400" />
+            <div className="space-y-4 py-1">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center shrink-0">
+                  <Check size={20} className="text-green-600 dark:text-green-400" />
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-900 dark:text-white">Usuário criado!</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">{novoEmail} já pode fazer login.</p>
+                </div>
               </div>
-              <p className="font-semibold text-gray-900 dark:text-white">Usuário criado!</p>
-              <p className="text-xs text-gray-500 dark:text-gray-400">{novoEmail} já pode fazer login.</p>
+              {novoPerfil === 'agente_registro' && (
+                <div className="rounded-xl border border-amber-200 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-950/20 p-3 space-y-2">
+                  <p className="text-xs font-bold text-amber-700 dark:text-amber-300">Próximos passos obrigatórios</p>
+                  <p className="text-[11px] text-amber-700 dark:text-amber-400">Este agente ainda não consegue lançar vendas. Faça agora:</p>
+                  <div className="space-y-2">
+                    <div className="flex gap-2 items-start">
+                      <span className="text-amber-500 font-bold text-xs shrink-0">1.</span>
+                      <div>
+                        <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">Vincular ao Ponto de Atendimento</p>
+                        <p className="text-[11px] text-amber-600 dark:text-amber-400">Comercial → aba Agentes → Pontos de Atendimento → edite o ponto → adicione <strong>{novoNome}</strong>.</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 items-start">
+                      <span className="text-amber-500 font-bold text-xs shrink-0">2.</span>
+                      <div>
+                        <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">Liberar Tabela de Preço</p>
+                        <p className="text-[11px] text-amber-600 dark:text-amber-400">Comercial → aba Agentes → Tabelas por Agente → vincule a tabela a <strong>{novoNome}</strong>.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {novoPerfil === 'vendedor' && (
+                <div className="rounded-xl border border-blue-200 dark:border-blue-900/30 bg-blue-50 dark:bg-blue-950/20 p-3 space-y-1">
+                  <p className="text-xs font-bold text-blue-700 dark:text-blue-300">Pronto para usar</p>
+                  <p className="text-[11px] text-blue-600 dark:text-blue-400">
+                    <strong>{novoNome}</strong> já aparece como opção de Contador/Parceiro no lançamento de vendas.
+                    {!novoLojaNome.trim() && ' Se quiser criar uma loja do marketplace depois, edite o usuário aqui em Configurações.'}
+                  </p>
+                </div>
+              )}
+              {(novoPerfil === 'admin' || novoPerfil === 'usuario') && (
+                <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/40 p-3">
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                    {novoPerfil === 'admin'
+                      ? `${novoNome} tem acesso completo ao sistema e já pode usar todas as funcionalidades.`
+                      : `${novoNome} tem acesso de leitura. Para ampliar permissões, edite o perfil do usuário.`}
+                  </p>
+                </div>
+              )}
               <button type="button" onClick={() => setNovoModal({ aberto: false })}
-                className="text-sm text-blue-600 dark:text-blue-400 hover:underline">Fechar</button>
+                className="w-full px-4 py-2.5 text-sm rounded-xl bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 font-medium transition-colors">
+                Fechar
+              </button>
             </div>
           ) : (
             <form onSubmit={criarUsuario} className="space-y-3">
@@ -741,8 +787,42 @@ function AbaUsuarios() {
                   <option value="usuario">Usuário</option>
                 </select>
               </div>
+              {/* ── Guia do perfil selecionado ── */}
+              {novoPerfil === 'agente_registro' && (
+                <div className="rounded-xl border border-amber-200 dark:border-amber-800/40 bg-amber-50/60 dark:bg-amber-950/20 p-3 space-y-1.5">
+                  <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">⚠ Agente de Registro — configurações obrigatórias após criar</p>
+                  <p className="text-[11px] text-amber-700 dark:text-amber-400 leading-relaxed">
+                    Para este usuário conseguir lançar vendas, você precisará fazer mais 2 passos depois que clicar em Criar:
+                  </p>
+                  <ol className="text-[11px] text-amber-700 dark:text-amber-400 space-y-1 pl-3 list-decimal">
+                    <li><strong>Vincular a um Ponto de Atendimento</strong> — vá em Comercial → aba Agentes → seção Pontos de Atendimento, edite o ponto e adicione este agente.</li>
+                    <li><strong>Liberar uma Tabela de Preço</strong> — na mesma aba Agentes, seção Tabelas por Agente, vincule o agente à tabela que ele poderá usar.</li>
+                  </ol>
+                  <p className="text-[11px] text-amber-600 dark:text-amber-500">Sem esses dois passos o sistema bloqueará o lançamento de vendas para este agente.</p>
+                </div>
+              )}
+              {novoPerfil === 'usuario' && (
+                <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/40 p-3">
+                  <p className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1">Usuário — acesso de leitura</p>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                    Pode consultar informações do sistema, mas não lança vendas nem altera cadastros. Não há configurações adicionais necessárias.
+                  </p>
+                </div>
+              )}
+              {novoPerfil === 'admin' && (
+                <div className="rounded-xl border border-purple-200 dark:border-purple-800/40 bg-purple-50/60 dark:bg-purple-950/20 p-3">
+                  <p className="text-xs font-semibold text-purple-700 dark:text-purple-300 mb-1">Administrador — acesso total</p>
+                  <p className="text-[11px] text-purple-600 dark:text-purple-400 leading-relaxed">
+                    Acesso completo ao sistema: vendas, cadastros, configurações, exclusões e relatórios. Não há configurações adicionais necessárias.
+                  </p>
+                </div>
+              )}
               {novoPerfil === 'vendedor' && (
                 <div className="rounded-xl border border-blue-200 dark:border-blue-900/30 bg-blue-50/60 dark:bg-blue-950/20 p-3 space-y-2">
+                  <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">Vendedor / Parceiro</p>
+                  <p className="text-[11px] text-blue-600 dark:text-blue-400 leading-relaxed">
+                    Aparece como opção de Contador/Parceiro no lançamento de vendas. Loja do Marketplace é opcional — configure agora ou depois na edição do usuário.
+                  </p>
                   <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">Loja do Marketplace (opcional)</p>
                   <p className="text-[11px] text-blue-600 dark:text-blue-400">Configure a loja agora ou depois, na edição do usuário.</p>
                   <div>

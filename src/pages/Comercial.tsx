@@ -560,8 +560,6 @@ export default function Comercial() {
   const [contadorSearch, setContadorSearch] = useState('')
   const [contadorDropdownOpen, setContadorDropdownOpen] = useState(false)
   const [contadorStepHandled, setContadorStepHandled] = useState(false)
-  const [vendaWizardStep, setVendaWizardStep] = useState<'produto' | 'cadastro' | 'detalhes'>('produto')
-  const [filtrosPicker, setFiltrosPicker] = useState({ tipo: '', modelo: '', prazo: '' })
   const [showClienteForm, setShowClienteForm] = useState(false)
   const [editingClienteId, setEditingClienteId] = useState<string | null>(null)
   const [clienteSearch, setClienteSearch]     = useState('')
@@ -699,48 +697,6 @@ export default function Comercial() {
   const certificadoById    = useMemo(() => new Map(certificados.map(c => [c.id, c])), [certificados])
   const tabelasAtivas      = useMemo(() => tabelasPreco.filter(t => t.ativo), [tabelasPreco])
 
-  const todosItensDisponiveisComCert = useMemo(() =>
-    tabelasAtivas.flatMap(tabela =>
-      tabelaItens
-        .filter(item => item.tabela_preco_id === tabela.id && item.ativo)
-        .map(item => {
-          const cert = certificadoById.get(item.certificado_id)
-          return cert ? { item, cert, tabela } : null
-        })
-        .filter(Boolean) as Array<{ item: TabelaPrecoItem; cert: Certificado; tabela: TabelaPreco }>
-    ).sort((a, b) => {
-      const t = a.cert.tipo.localeCompare(b.cert.tipo, 'pt-BR')
-      if (t !== 0) return t
-      const m = (a.cert.modelo ?? '').localeCompare(b.cert.modelo ?? '', 'pt-BR')
-      if (m !== 0) return m
-      return a.item.valor - b.item.valor
-    }),
-    [tabelasAtivas, tabelaItens, certificadoById]
-  )
-  const tiposNoPicker = useMemo(() =>
-    [...new Set(todosItensDisponiveisComCert.map(x => x.cert.tipo).filter(Boolean))].sort(),
-    [todosItensDisponiveisComCert]
-  )
-  const modelosNoPicker = useMemo(() =>
-    [...new Set(todosItensDisponiveisComCert.map(x => x.cert.modelo).filter(Boolean) as string[])].sort(),
-    [todosItensDisponiveisComCert]
-  )
-  const prazosNoPicker = useMemo(() =>
-    [...new Set(todosItensDisponiveisComCert.map(x => x.cert.validade).filter(Boolean) as string[])].sort((a, b) => {
-      const n = (s: string) => { const m = s.match(/(\d+)/); return m ? parseInt(m[1]) : 0 }
-      return n(a) - n(b)
-    }),
-    [todosItensDisponiveisComCert]
-  )
-  const itensFiltradosPicker = useMemo(() =>
-    todosItensDisponiveisComCert.filter(({ cert }) => {
-      if (filtrosPicker.tipo && cert.tipo !== filtrosPicker.tipo) return false
-      if (filtrosPicker.modelo && cert.modelo !== filtrosPicker.modelo) return false
-      if (filtrosPicker.prazo && cert.validade !== filtrosPicker.prazo) return false
-      return true
-    }),
-    [todosItensDisponiveisComCert, filtrosPicker]
-  )
   const pontosAtivos       = useMemo(() => pontos.filter(p => p.status === 'ativo'), [pontos])
   const tabelaById         = useMemo(() => new Map(tabelasPreco.map(t => [t.id, t])), [tabelasPreco])
   const vendaAgendaAtual = useMemo(
@@ -809,19 +765,20 @@ export default function Comercial() {
     return null
   }, [formV2.tabela_preco_id, formV2.tipo_emissao, itensTabelaTodos.length, itensTabela.length, certsDaTabela.length])
   const vendaStepStatus = useMemo(() => {
+    const clienteOk = !!formV2.cadastro_base_id
     const produtoOk = !!formV2.tabela_preco_item_id && !!formV2.certificado_id
-    const clienteOk = produtoOk && !!formV2.cadastro_base_id
-    const contadorOk = clienteOk && (contadorStepHandled || !!formV2.contador_id)
+    const baseOk = clienteOk && produtoOk
+    const contadorOk = baseOk && (contadorStepHandled || !!formV2.contador_id)
     const emissaoOk = contadorOk && !!formV2.tipo_emissao
     const pagamentoOk = emissaoOk && !!formV2.forma_pagamento && formV2.valor_venda > 0
     const vencimentoOk = pagamentoOk && !!formV2.data_vencimento
     const pontoOk = vencimentoOk && !!formV2.ponto_atendimento_id
-    return { produtoOk, clienteOk, contadorOk, emissaoOk, pagamentoOk, vencimentoOk, pontoOk }
+    return { clienteOk, produtoOk, contadorOk, emissaoOk, pagamentoOk, vencimentoOk, pontoOk }
   }, [contadorStepHandled, formV2.cadastro_base_id, formV2.contador_id, formV2.tipo_emissao, formV2.certificado_id, formV2.tabela_preco_item_id, formV2.forma_pagamento, formV2.valor_venda, formV2.data_vencimento, formV2.ponto_atendimento_id])
   const vendaSteps = useMemo(() => {
     const steps = [
-      { key: 'produto', label: '1. Produto', done: vendaStepStatus.produtoOk },
-      { key: 'cliente', label: '2. Cliente', done: vendaStepStatus.clienteOk },
+      { key: 'cliente', label: '1. Cliente', done: vendaStepStatus.clienteOk },
+      { key: 'produto', label: '2. Produto', done: vendaStepStatus.produtoOk },
       { key: 'contador', label: '3. Contador/Parceiro', done: vendaStepStatus.contadorOk },
       { key: 'emissao', label: '4. Tipo de emissão', done: vendaStepStatus.emissaoOk },
       { key: 'pagamento', label: '5. Pagamento', done: vendaStepStatus.pagamentoOk },
@@ -1438,8 +1395,6 @@ export default function Comercial() {
   // ── V2 mutations ─────────────────────────────────────────────
   function fecharFormVenda() {
     setShowFormV(false)
-    setVendaWizardStep('produto')
-    setFiltrosPicker({ tipo: '', modelo: '', prazo: '' })
     setClienteSelecionadoObj(null)
     setClienteSearch('')
     setContadorSearch('')
@@ -1666,8 +1621,6 @@ export default function Comercial() {
     setContadorSearch('')
     setContadorDropdownOpen(false)
     setContadorStepHandled(false)
-    setVendaWizardStep('produto')
-    setFiltrosPicker({ tipo: '', modelo: '', prazo: '' })
     setShowFormV(true)
     setShowClienteForm(false)
   }
@@ -3779,483 +3732,311 @@ export default function Comercial() {
                   ))}
                 </div>
 
-                {/* ── PASSO 1: PRODUTO ─────────────────────────── */}
-                {vendaWizardStep === 'produto' && (<>
-                  <div className="mb-4 space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs font-medium text-gray-500 min-w-[46px]">Tipo:</span>
-                      {['', ...tiposNoPicker].map(t => (
-                        <button key={t} type="button"
-                          onClick={() => setFiltrosPicker(p => ({ ...p, tipo: t }))}
-                          className={cn('px-3 py-1 rounded-full text-xs border transition-colors',
-                            filtrosPicker.tipo === t
-                              ? 'bg-blue-600 text-white border-blue-600'
-                              : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
-                          )}>
-                          {t || 'Todos'}
-                        </button>
-                      ))}
-                    </div>
-                    {modelosNoPicker.length > 1 && (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs font-medium text-gray-500 min-w-[46px]">Modelo:</span>
-                        {['', ...modelosNoPicker].map(m => (
-                          <button key={m} type="button"
-                            onClick={() => setFiltrosPicker(p => ({ ...p, modelo: m }))}
-                            className={cn('px-3 py-1 rounded-full text-xs border transition-colors',
-                              filtrosPicker.modelo === m
-                                ? 'bg-blue-600 text-white border-blue-600'
-                                : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
-                            )}>
-                            {m || 'Todos'}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {prazosNoPicker.length > 1 && (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs font-medium text-gray-500 min-w-[46px]">Prazo:</span>
-                        {['', ...prazosNoPicker].map(pz => (
-                          <button key={pz} type="button"
-                            onClick={() => setFiltrosPicker(p => ({ ...p, prazo: pz }))}
-                            className={cn('px-3 py-1 rounded-full text-xs border transition-colors',
-                              filtrosPicker.prazo === pz
-                                ? 'bg-blue-600 text-white border-blue-600'
-                                : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
-                            )}>
-                            {pz || 'Todos'}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                {/* ── FORMULÁRIO DE NOVA VENDA ─────────────────── */}
+                <div className="space-y-4">
 
-                  {(() => {
-                    const cardProduto = ({ item, cert, tabela }: { item: TabelaPrecoItem; cert: Certificado; tabela: TabelaPreco }, showTipo: boolean) => (
-                      <button key={item.id} type="button"
-                        onClick={() => setFormV2(p => ({
-                          ...p,
-                          certificado_id: cert.id,
-                          tabela_preco_item_id: item.id,
-                          tabela_preco_id: item.tabela_preco_id,
-                          valor_venda: item.valor,
-                        }))}
-                        className={cn(
-                          'text-left rounded-xl border p-3 transition-all flex flex-col',
-                          formV2.tabela_preco_item_id === item.id
-                            ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30 ring-2 ring-blue-400 ring-offset-1'
-                            : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm'
-                        )}>
-                        <div className="flex items-start justify-between gap-1 mb-1.5">
-                          <span className="font-semibold text-sm text-gray-900 dark:text-gray-100 leading-tight">
-                            {showTipo ? cert.tipo : [cert.modelo, cert.validade].filter(Boolean).join(' · ') || cert.tipo}
-                          </span>
-                          {formV2.tabela_preco_item_id === item.id && (
-                            <span className="shrink-0 text-blue-600 dark:text-blue-400 text-xs font-bold">✓</span>
+                  {/* 1. Cliente */}
+                  <div className="grid grid-cols-1 md:grid-cols-[160px_1fr_auto] gap-3">
+                    <SelectInput label="Tipo Venda" value={formV2.tipo_venda}
+                      onChange={v => setFormV2(p => ({ ...p, tipo_venda: v }))}
+                      options={TIPO_VENDA_OPTIONS} />
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Cliente *</label>
+                      <div className="relative flex gap-2">
+                        <div className="relative flex-1">
+                          <input
+                            value={formV2.cadastro_base_id && clienteSelecionadoObj
+                              ? `${clienteSelecionadoObj.cpf_cnpj} · ${clienteSelecionadoObj.nome}`
+                              : clienteSearch}
+                            onChange={e => {
+                              const v = e.target.value
+                              setClienteSearch(v)
+                              if (formV2.cadastro_base_id) {
+                                setFormV2(p => ({ ...p, cadastro_base_id: '' }))
+                                setClienteSelecionadoObj(null)
+                              }
+                              if (clienteSearchTimerRef.current) clearTimeout(clienteSearchTimerRef.current)
+                              clienteSearchTimerRef.current = setTimeout(() => void buscarClientes(v), 300)
+                            }}
+                            onFocus={() => { if (clienteResultados.length > 0) setClienteDropdownOpen(true) }}
+                            onBlur={() => setTimeout(() => setClienteDropdownOpen(false), 150)}
+                            placeholder="Nome, CPF, CNPJ ou telefone (mín. 3 caracteres)"
+                            className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 pr-8 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                          {clienteBuscando && (
+                            <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-gray-400 pointer-events-none" />
                           )}
-                        </div>
-                        <div className="flex flex-wrap gap-1 mb-2">
-                          {showTipo && cert.modelo && <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-600 dark:text-slate-300">{cert.modelo}</span>}
-                          {showTipo && cert.validade && <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-600 dark:text-slate-300">{cert.validade}</span>}
-                          {cert.categoria && <span className="px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/30 text-[10px] text-amber-700 dark:text-amber-400">{cert.categoria}</span>}
-                        </div>
-                        {(cert.descricao_produto || cert.descricao) && (
-                          <p className="text-[10px] text-gray-500 dark:text-gray-400 mb-2 leading-snug line-clamp-2 flex-1">
-                            {cert.descricao_produto || cert.descricao}
-                          </p>
-                        )}
-                        <p className="text-base font-bold text-emerald-600 dark:text-emerald-400 mt-auto">
-                          {item.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
-                        </p>
-                        <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 truncate">{tabela.nome}</p>
-                      </button>
-                    )
-
-                    if (itensFiltradosPicker.length === 0) return (
-                      <p className="text-center text-sm text-gray-400 py-10 mb-4">
-                        Nenhum produto encontrado com os filtros aplicados.
-                      </p>
-                    )
-
-                    // Com filtro de tipo ativo: grid flat
-                    if (filtrosPicker.tipo) return (
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 max-h-[52vh] overflow-y-auto pr-1 mb-4">
-                        {itensFiltradosPicker.map(entry => cardProduto(entry, true))}
-                      </div>
-                    )
-
-                    // Sem filtro: agrupado por tipo com cabeçalho
-                    const grupos = itensFiltradosPicker.reduce((acc, entry) => {
-                      const t = entry.cert.tipo
-                      if (!acc[t]) acc[t] = []
-                      acc[t].push(entry)
-                      return acc
-                    }, {} as Record<string, typeof itensFiltradosPicker>)
-
-                    return (
-                      <div className="max-h-[54vh] overflow-y-auto pr-1 mb-4 space-y-5">
-                        {Object.entries(grupos).map(([tipo, itens]) => (
-                          <div key={tipo}>
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" />
-                              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-100">{tipo}</h3>
-                              <span className="text-[10px] text-gray-400">{itens.length} opção{itens.length > 1 ? 'ões' : ''}</span>
-                            </div>
-                            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                              {itens.map(entry => cardProduto(entry, false))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )
-                  })()}
-
-                  <div className="flex justify-end border-t border-gray-100 dark:border-gray-800 pt-4">
-                    <button type="button"
-                      disabled={!formV2.tabela_preco_item_id}
-                      onClick={() => setVendaWizardStep('cadastro')}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-                      Avançar para Cadastro →
-                    </button>
-                  </div>
-                </>)}
-
-                {/* ── PASSO 2: CADASTRO ────────────────────────── */}
-                {vendaWizardStep === 'cadastro' && (() => {
-                  const itemSel = tabelaItens.find(i => i.id === formV2.tabela_preco_item_id)
-                  const certSel = itemSel ? certificadoById.get(itemSel.certificado_id) : null
-                  const tabelaSel = itemSel ? tabelasPreco.find(t => t.id === itemSel.tabela_preco_id) : null
-                  return (<>
-                    {certSel && itemSel && (
-                      <div className="mb-4 flex items-center gap-3 rounded-xl border border-blue-200 dark:border-blue-900/30 bg-blue-50 dark:bg-blue-950/20 px-4 py-3">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-[10px] uppercase tracking-widest text-blue-500 dark:text-blue-400 font-semibold">Produto selecionado</p>
-                          <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mt-0.5">
-                            {certSel.tipo}{certSel.modelo ? ` · ${certSel.modelo}` : ''}{certSel.validade ? ` · ${certSel.validade}` : ''}
-                          </p>
-                          <p className="text-xs text-blue-600 dark:text-blue-400">{tabelaSel?.nome} · {itemSel.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
-                        </div>
-                        <button type="button" onClick={() => setVendaWizardStep('produto')}
-                          className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200 underline whitespace-nowrap">
-                          Trocar produto
-                        </button>
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-1 md:grid-cols-[160px_1fr_auto] gap-3 mb-3">
-                      <SelectInput label="Tipo Venda" value={formV2.tipo_venda}
-                        onChange={v => setFormV2(p => ({ ...p, tipo_venda: v }))}
-                        options={TIPO_VENDA_OPTIONS} />
-                      <div>
-                        <label className="block text-xs text-gray-500 mb-1">Cliente *</label>
-                        <div className="relative flex gap-2">
-                          <div className="relative flex-1">
-                            <input
-                              value={formV2.cadastro_base_id && clienteSelecionadoObj
-                                ? `${clienteSelecionadoObj.cpf_cnpj} · ${clienteSelecionadoObj.nome}`
-                                : clienteSearch}
-                              onChange={e => {
-                                const v = e.target.value
-                                setClienteSearch(v)
-                                if (formV2.cadastro_base_id) {
-                                  setFormV2(p => ({ ...p, cadastro_base_id: '' }))
-                                  setClienteSelecionadoObj(null)
-                                }
-                                if (clienteSearchTimerRef.current) clearTimeout(clienteSearchTimerRef.current)
-                                clienteSearchTimerRef.current = setTimeout(() => void buscarClientes(v), 300)
-                              }}
-                              onFocus={() => { if (clienteResultados.length > 0) setClienteDropdownOpen(true) }}
-                              onBlur={() => setTimeout(() => setClienteDropdownOpen(false), 150)}
-                              placeholder="Nome, CPF, CNPJ ou telefone (mín. 3 caracteres)"
-                              className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 pr-8 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                            {clienteBuscando && (
-                              <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-gray-400 pointer-events-none" />
-                            )}
-                            {clienteDropdownOpen && clienteResultados.length > 0 && (
-                              <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl max-h-64 overflow-y-auto">
-                                {clienteResultados.map(c => (
-                                  <button key={c.id} type="button"
-                                    onMouseDown={e => e.preventDefault()}
-                                    onClick={() => {
-                                      setFormV2(p => ({ ...p, cadastro_base_id: c.id }))
-                                      setClienteSelecionadoObj(c)
-                                      setClienteSearch('')
-                                      setClienteDropdownOpen(false)
-                                      setClienteResultados([])
-                                    }}
-                                    className="w-full text-left px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 border-b border-gray-100 dark:border-gray-800 last:border-0 transition-colors">
-                                    <div className="flex items-center justify-between gap-3">
-                                      <div className="min-w-0">
-                                        <p className="text-sm font-medium truncate">{c.nome}</p>
-                                        {c.nome_fantasia && <p className="text-xs text-gray-400 truncate">{c.nome_fantasia}</p>}
-                                      </div>
-                                      <div className="text-right shrink-0">
-                                        <p className="text-xs text-gray-500 font-mono">{c.cpf_cnpj}</p>
-                                        {c.telefone && <p className="text-xs text-gray-400">{c.telefone}</p>}
-                                        {(c.cidade || c.uf) && <p className="text-xs text-gray-400">{[c.cidade, c.uf].filter(Boolean).join('/')}</p>}
-                                      </div>
+                          {clienteDropdownOpen && clienteResultados.length > 0 && (
+                            <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl max-h-64 overflow-y-auto">
+                              {clienteResultados.map(c => (
+                                <button key={c.id} type="button"
+                                  onMouseDown={e => e.preventDefault()}
+                                  onClick={() => {
+                                    setFormV2(p => ({ ...p, cadastro_base_id: c.id }))
+                                    setClienteSelecionadoObj(c)
+                                    setClienteSearch('')
+                                    setClienteDropdownOpen(false)
+                                    setClienteResultados([])
+                                  }}
+                                  className="w-full text-left px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 border-b border-gray-100 dark:border-gray-800 last:border-0 transition-colors">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-medium truncate">{c.nome}</p>
+                                      {c.nome_fantasia && <p className="text-xs text-gray-400 truncate">{c.nome_fantasia}</p>}
                                     </div>
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                            {clienteDropdownOpen && !clienteBuscando && clienteResultados.length === 0 && clienteSearch.length >= 3 && (
-                              <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl px-4 py-3 text-sm text-gray-400">
-                                Nenhum cliente encontrado para "{clienteSearch}"
-                              </div>
-                            )}
-                          </div>
-                          {formV2.cadastro_base_id && (
-                            <button type="button" title="Limpar cliente"
-                              onClick={() => { setFormV2(p => ({ ...p, cadastro_base_id: '' })); setClienteSearch(''); setClienteSelecionadoObj(null) }}
-                              className="px-2 text-gray-400 hover:text-gray-600">
-                              <X size={14} />
-                            </button>
+                                    <div className="text-right shrink-0">
+                                      <p className="text-xs text-gray-500 font-mono">{c.cpf_cnpj}</p>
+                                      {c.telefone && <p className="text-xs text-gray-400">{c.telefone}</p>}
+                                      {(c.cidade || c.uf) && <p className="text-xs text-gray-400">{[c.cidade, c.uf].filter(Boolean).join('/')}</p>}
+                                    </div>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          {clienteDropdownOpen && !clienteBuscando && clienteResultados.length === 0 && clienteSearch.length >= 3 && (
+                            <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl px-4 py-3 text-sm text-gray-400">
+                              Nenhum cliente encontrado para "{clienteSearch}"
+                            </div>
                           )}
                         </div>
-                      </div>
-                      <div className="flex items-end">
-                        <button type="button" onClick={() => {
-                          if (showClienteForm) { setShowClienteForm(false); setEditingClienteId(null); setFormCliente({ ...EMPTY_CLIENTE_BASE }) }
-                          else abrirNovoCliente()
-                        }}
-                          className="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium whitespace-nowrap">
-                          {showClienteForm ? '← Fechar' : '+ Novo Cliente'}
-                        </button>
-                      </div>
-                    </div>
-
-                    {showClienteForm && (
-                      <div className="mt-4 rounded-xl border border-gray-200 dark:border-gray-800 p-4 bg-gray-50 dark:bg-gray-900/40">
-                        <div className="flex items-center justify-between mb-3">
-                          <h4 className="font-semibold text-sm text-gray-700 dark:text-gray-200">
-                            {editingClienteId ? 'Editar Pessoa / Empresa' : 'Cadastro de Pessoa / Empresa'}
-                          </h4>
-                          <button type="button" onClick={() => {
-                            setShowClienteForm(false)
-                            setEditingClienteId(null)
-                            setFormCliente({ ...EMPTY_CLIENTE_BASE })
-                          }} className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Fechar</button>
-                        </div>
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                          <SelectInput label="Tipo" value={formCliente.tipo_cliente}
-                            onChange={v => setFormCliente(p => ({ ...p, tipo_cliente: v as NovoCadastroBase['tipo_cliente'] }))}
-                            options={[{ value: 'pessoa_fisica', label: 'Pessoa Física' }, { value: 'pessoa_juridica', label: 'Pessoa Jurídica' }]} />
-                          <TextInput label="CPF / CNPJ *" value={formCliente.cpf_cnpj}
-                            onChange={v => setFormCliente(p => ({ ...p, cpf_cnpj: v }))} />
-                          <TextInput label="Nome / Razão Social *" value={formCliente.nome}
-                            onChange={v => setFormCliente(p => ({ ...p, nome: v }))} className="md:col-span-2" />
-                          <TextInput label="Nome Fantasia" value={formCliente.nome_fantasia ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, nome_fantasia: v || null }))} className="md:col-span-2" />
-                          <TextInput label="E-mail" type="email" value={formCliente.email ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, email: v || null }))} />
-                          <TextInput label="Telefone" value={formCliente.telefone ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, telefone: v || null }))} />
-                          <TextInput label="CEP" value={formCliente.cep ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, cep: v || null }))}
-                            onBlur={async () => {
-                              const r = await buscarCep(formCliente.cep ?? '')
-                              if (!r) return
-                              setFormCliente(p => ({
-                                ...p,
-                                logradouro: r.logradouro || p.logradouro,
-                                bairro:     r.bairro     || p.bairro,
-                                cidade:     r.localidade || p.cidade,
-                                uf:         r.uf         || p.uf,
-                              }))
-                            }} />
-                          <TextInput label="Cidade" value={formCliente.cidade ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, cidade: v || null }))} />
-                          <TextInput label="UF" value={formCliente.uf ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, uf: v || null }))} />
-                          <TextInput label="Inscrição Municipal" value={formCliente.inscricao_municipal ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, inscricao_municipal: v || null }))} />
-                          <TextInput label="Inscrição Estadual" value={formCliente.inscricao_estadual ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, inscricao_estadual: v || null }))} />
-                          <TextInput label="Logradouro" value={formCliente.logradouro ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, logradouro: v || null }))} className="md:col-span-2" />
-                          <TextInput label="Número" value={formCliente.numero ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, numero: v || null }))} />
-                          <TextInput label="Complemento" value={formCliente.complemento ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, complemento: v || null }))} className="md:col-span-2" />
-                          <TextInput label="Bairro" value={formCliente.bairro ?? ''}
-                            onChange={v => setFormCliente(p => ({ ...p, bairro: v || null }))} />
-                          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
-                            <input type="checkbox" checked={formCliente.iss_retido}
-                              onChange={e => setFormCliente(p => ({ ...p, iss_retido: e.target.checked }))} />
-                            ISS retido
-                          </label>
-                        </div>
-                        <div className="mt-4 flex justify-end gap-2">
-                          <button type="button" onClick={() => {
-                            setShowClienteForm(false)
-                            setEditingClienteId(null)
-                            setFormCliente({ ...EMPTY_CLIENTE_BASE })
-                          }}
-                            className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm">Cancelar</button>
-                          <button type="button" onClick={() => void salvarCliente()} disabled={salvandoCliente}
-                            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-50">
-                            {salvandoCliente ? 'Salvando...' : editingClienteId ? 'Salvar alterações' : 'Salvar cliente'}
+                        {formV2.cadastro_base_id && (
+                          <button type="button" title="Limpar cliente"
+                            onClick={() => { setFormV2(p => ({ ...p, cadastro_base_id: '' })); setClienteSearch(''); setClienteSelecionadoObj(null) }}
+                            className="px-2 text-gray-400 hover:text-gray-600">
+                            <X size={14} />
                           </button>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-between border-t border-gray-100 dark:border-gray-800 pt-4 mt-4">
-                      <button type="button" onClick={() => setVendaWizardStep('produto')}
-                        className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
-                        ← Voltar
-                      </button>
-                      <button type="button"
-                        disabled={!formV2.cadastro_base_id}
-                        onClick={() => setVendaWizardStep('detalhes')}
-                        className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-                        Avançar para Detalhes →
-                      </button>
-                    </div>
-                  </>)
-                })()}
-
-                {/* ── PASSO 3: DETALHES ────────────────────────── */}
-                {vendaWizardStep === 'detalhes' && (() => {
-                  const itemSel = tabelaItens.find(i => i.id === formV2.tabela_preco_item_id)
-                  const certSel = itemSel ? certificadoById.get(itemSel.certificado_id) : null
-                  return (<>
-                    <div className="mb-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {certSel && itemSel && (
-                        <div className="flex items-center gap-2 rounded-lg border border-blue-200 dark:border-blue-900/30 bg-blue-50 dark:bg-blue-950/20 px-3 py-2">
-                          <div className="flex-1 min-w-0">
-                            <p className="text-[10px] text-blue-500 dark:text-blue-400 font-medium">Produto</p>
-                            <p className="text-xs font-semibold text-blue-900 dark:text-blue-100 truncate">
-                              {certSel.tipo}{certSel.modelo ? ` · ${certSel.modelo}` : ''}{certSel.validade ? ` · ${certSel.validade}` : ''}
-                            </p>
-                          </div>
-                          <button type="button" onClick={() => setVendaWizardStep('produto')} className="text-[10px] text-blue-600 hover:text-blue-800 underline">Trocar</button>
-                        </div>
-                      )}
-                      {clienteSelecionadoObj && (
-                        <div className="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 px-3 py-2">
-                          <div className="flex-1 min-w-0">
-                            <p className="text-[10px] text-gray-400 font-medium">Cliente</p>
-                            <p className="text-xs font-semibold text-gray-800 dark:text-gray-200 truncate">{clienteSelecionadoObj.nome}</p>
-                            <p className="text-[10px] text-gray-400 font-mono">{clienteSelecionadoObj.cpf_cnpj}</p>
-                          </div>
-                          <button type="button" onClick={() => setVendaWizardStep('cadastro')} className="text-[10px] text-gray-500 hover:text-gray-700 underline">Trocar</button>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="mb-3">
-                      <label className="block text-xs text-blue-600 dark:text-blue-400 font-medium mb-1">Se for indicação de Contador/Parceiro:</label>
-                      <div className="relative">
-                        <input
-                          value={formV2.contador_id
-                            ? (() => { const p = parceiros.find(x => x.id === formV2.contador_id); return p ? `${p.cpf_cnpj ?? ''} - ${(p.tipo_parceiro ?? '').toUpperCase()} - ${p.nome}` : '' })()
-                            : contadorSearch}
-                          onChange={e => {
-                            const v = e.target.value
-                            if (formV2.contador_id) setFormV2(p => ({ ...p, contador_id: null }))
-                            setContadorSearch(v)
-                            setContadorDropdownOpen(true)
-                            setContadorStepHandled(false)
-                          }}
-                          onFocus={() => setContadorDropdownOpen(true)}
-                          onBlur={() => setTimeout(() => setContadorDropdownOpen(false), 150)}
-                          placeholder="Nenhum selecionado"
-                          className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                        {contadorDropdownOpen && parceirosParaContador.length > 0 && (
-                          <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                            {parceirosParaContador.map(p => (
-                              <button key={p.id} type="button"
-                                onMouseDown={e => e.preventDefault()}
-                                onClick={() => {
-                                  setFormV2(prev => ({ ...prev, contador_id: p.id }))
-                                  setContadorStepHandled(true)
-                                  setContadorSearch('')
-                                  setContadorDropdownOpen(false)
-                                }}
-                                className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800">
-                                {p.cpf_cnpj ?? ''} - {(p.tipo_parceiro ?? '').toUpperCase()} - {p.nome}{p.nome_fantasia ? ` - ${p.nome_fantasia}` : ''}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        {contadorDropdownOpen && parceirosParaContador.length === 0 && (
-                          <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg px-3 py-2.5 text-sm text-gray-500 dark:text-gray-400">
-                            {contadorSearch.trim() ? 'Nenhum parceiro vinculado corresponde a esta busca.' : 'Nenhum parceiro vinculado foi encontrado para o seu usuário.'}
-                          </div>
-                        )}
-                        {formV2.contador_id && (
-                          <button type="button" onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><X size={14} /></button>
                         )}
                       </div>
-                      <div className="mt-2">
-                        <button type="button"
-                          onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(true) }}
-                          className={cn(
-                            'px-3 py-1.5 text-xs rounded-lg border transition-colors',
-                            vendaStepStatus.contadorOk && !formV2.contador_id
-                              ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/30 dark:bg-green-950/20 dark:text-green-300'
-                              : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'
-                          )}>
-                          Seguir sem contador/parceiro
+                    </div>
+                    <div className="flex items-end">
+                      <button type="button" onClick={() => {
+                        if (showClienteForm) { setShowClienteForm(false); setEditingClienteId(null); setFormCliente({ ...EMPTY_CLIENTE_BASE }) }
+                        else abrirNovoCliente()
+                      }}
+                        className="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium whitespace-nowrap">
+                        {showClienteForm ? '← Fechar' : '+ Novo Cliente'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {showClienteForm && (
+                    <div className="rounded-xl border border-gray-200 dark:border-gray-800 p-4 bg-gray-50 dark:bg-gray-900/40">
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="font-semibold text-sm text-gray-700 dark:text-gray-200">
+                          {editingClienteId ? 'Editar Pessoa / Empresa' : 'Cadastro de Pessoa / Empresa'}
+                        </h4>
+                        <button type="button" onClick={() => {
+                          setShowClienteForm(false)
+                          setEditingClienteId(null)
+                          setFormCliente({ ...EMPTY_CLIENTE_BASE })
+                        }} className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Fechar</button>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <SelectInput label="Tipo" value={formCliente.tipo_cliente}
+                          onChange={v => setFormCliente(p => ({ ...p, tipo_cliente: v as NovoCadastroBase['tipo_cliente'] }))}
+                          options={[{ value: 'pessoa_fisica', label: 'Pessoa Física' }, { value: 'pessoa_juridica', label: 'Pessoa Jurídica' }]} />
+                        <TextInput label="CPF / CNPJ *" value={formCliente.cpf_cnpj}
+                          onChange={v => setFormCliente(p => ({ ...p, cpf_cnpj: v }))} />
+                        <TextInput label="Nome / Razão Social *" value={formCliente.nome}
+                          onChange={v => setFormCliente(p => ({ ...p, nome: v }))} className="md:col-span-2" />
+                        <TextInput label="Nome Fantasia" value={formCliente.nome_fantasia ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, nome_fantasia: v || null }))} className="md:col-span-2" />
+                        <TextInput label="E-mail" type="email" value={formCliente.email ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, email: v || null }))} />
+                        <TextInput label="Telefone" value={formCliente.telefone ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, telefone: v || null }))} />
+                        <TextInput label="CEP" value={formCliente.cep ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, cep: v || null }))}
+                          onBlur={async () => {
+                            const r = await buscarCep(formCliente.cep ?? '')
+                            if (!r) return
+                            setFormCliente(p => ({
+                              ...p,
+                              logradouro: r.logradouro || p.logradouro,
+                              bairro:     r.bairro     || p.bairro,
+                              cidade:     r.localidade || p.cidade,
+                              uf:         r.uf         || p.uf,
+                            }))
+                          }} />
+                        <TextInput label="Cidade" value={formCliente.cidade ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, cidade: v || null }))} />
+                        <TextInput label="UF" value={formCliente.uf ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, uf: v || null }))} />
+                        <TextInput label="Inscrição Municipal" value={formCliente.inscricao_municipal ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, inscricao_municipal: v || null }))} />
+                        <TextInput label="Inscrição Estadual" value={formCliente.inscricao_estadual ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, inscricao_estadual: v || null }))} />
+                        <TextInput label="Logradouro" value={formCliente.logradouro ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, logradouro: v || null }))} className="md:col-span-2" />
+                        <TextInput label="Número" value={formCliente.numero ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, numero: v || null }))} />
+                        <TextInput label="Complemento" value={formCliente.complemento ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, complemento: v || null }))} className="md:col-span-2" />
+                        <TextInput label="Bairro" value={formCliente.bairro ?? ''}
+                          onChange={v => setFormCliente(p => ({ ...p, bairro: v || null }))} />
+                        <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                          <input type="checkbox" checked={formCliente.iss_retido}
+                            onChange={e => setFormCliente(p => ({ ...p, iss_retido: e.target.checked }))} />
+                          ISS retido
+                        </label>
+                      </div>
+                      <div className="mt-4 flex justify-end gap-2">
+                        <button type="button" onClick={() => {
+                          setShowClienteForm(false)
+                          setEditingClienteId(null)
+                          setFormCliente({ ...EMPTY_CLIENTE_BASE })
+                        }}
+                          className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm">Cancelar</button>
+                        <button type="button" onClick={() => void salvarCliente()} disabled={salvandoCliente}
+                          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-50">
+                          {salvandoCliente ? 'Salvando...' : editingClienteId ? 'Salvar alterações' : 'Salvar cliente'}
                         </button>
                       </div>
                     </div>
+                  )}
 
-                    <div className="mb-3">
-                      <SelectInput label="Tipo Emissão *" value={formV2.tipo_emissao}
-                        onChange={v => setFormV2(p => ({ ...p, tipo_emissao: v }))}
-                        options={[{ value: '', label: 'Selecione' }, ...TIPO_EMISSAO_OPTIONS]} />
+                  {/* 2. Produto */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <SelectInput label="Tabela de Preço *" value={formV2.tabela_preco_id}
+                      onChange={v => setFormV2(p => ({ ...p, tabela_preco_id: v, certificado_id: '', tabela_preco_item_id: '', valor_venda: 0 }))}
+                      options={[
+                        { value: '', label: 'Selecione a tabela' },
+                        ...tabelasAtivas.map(t => ({ value: t.id, label: t.nome })),
+                      ]} />
+                    <SelectInput label="Produto *" value={formV2.tabela_preco_item_id}
+                      onChange={v => {
+                        const item = itensTabela.find(i => i.id === v)
+                        setFormV2(p => ({
+                          ...p,
+                          tabela_preco_item_id: v,
+                          certificado_id: item?.certificado_id ?? '',
+                          valor_venda: item?.valor ?? p.valor_venda,
+                        }))
+                      }}
+                      options={[
+                        { value: '', label: formV2.tabela_preco_id ? 'Selecione o produto' : 'Selecione a tabela primeiro' },
+                        ...itensTabela.map(item => {
+                          const cert = certificadoById.get(item.certificado_id)
+                          const label = cert
+                            ? `${cert.tipo}${cert.modelo ? ' · ' + cert.modelo : ''}${cert.validade ? ' · ' + cert.validade : ''} — ${item.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`
+                            : item.id
+                          return { value: item.id, label }
+                        }),
+                      ]} />
+                  </div>
+
+                  {/* 3. Contador/Parceiro */}
+                  <div>
+                    <label className="block text-xs text-blue-600 dark:text-blue-400 font-medium mb-1">Se for indicação de Contador/Parceiro:</label>
+                    <div className="relative">
+                      <input
+                        value={formV2.contador_id
+                          ? (() => { const p = parceiros.find(x => x.id === formV2.contador_id); return p ? `${p.cpf_cnpj ?? ''} - ${(p.tipo_parceiro ?? '').toUpperCase()} - ${p.nome}` : '' })()
+                          : contadorSearch}
+                        onChange={e => {
+                          const v = e.target.value
+                          if (formV2.contador_id) setFormV2(p => ({ ...p, contador_id: null }))
+                          setContadorSearch(v)
+                          setContadorDropdownOpen(true)
+                          setContadorStepHandled(false)
+                        }}
+                        onFocus={() => setContadorDropdownOpen(true)}
+                        onBlur={() => setTimeout(() => setContadorDropdownOpen(false), 150)}
+                        placeholder="Nenhum selecionado"
+                        className="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                      {contadorDropdownOpen && parceirosParaContador.length > 0 && (
+                        <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                          {parceirosParaContador.map(p => (
+                            <button key={p.id} type="button"
+                              onMouseDown={e => e.preventDefault()}
+                              onClick={() => {
+                                setFormV2(prev => ({ ...prev, contador_id: p.id }))
+                                setContadorStepHandled(true)
+                                setContadorSearch('')
+                                setContadorDropdownOpen(false)
+                              }}
+                              className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800">
+                              {p.cpf_cnpj ?? ''} - {(p.tipo_parceiro ?? '').toUpperCase()} - {p.nome}{p.nome_fantasia ? ` - ${p.nome_fantasia}` : ''}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {contadorDropdownOpen && parceirosParaContador.length === 0 && (
+                        <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg px-3 py-2.5 text-sm text-gray-500 dark:text-gray-400">
+                          {contadorSearch.trim() ? 'Nenhum parceiro vinculado corresponde a esta busca.' : 'Nenhum parceiro vinculado foi encontrado para o seu usuário.'}
+                        </div>
+                      )}
+                      {formV2.contador_id && (
+                        <button type="button" onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(false) }}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><X size={14} /></button>
+                      )}
                     </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_160px] gap-3 mb-3">
-                      <label className="flex flex-col gap-1">
-                        <span className="text-xs text-green-600 dark:text-green-400 font-medium">Valor (R$) *</span>
-                        <input type="number" min="0" step="0.01" value={formV2.valor_venda}
-                          onChange={e => setFormV2(p => ({ ...p, valor_venda: parseFloat(e.target.value) || 0 }))}
-                          className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                      </label>
-                      <SelectInput label="Forma de Pagamento *" value={formV2.forma_pagamento}
-                        onChange={v => setFormV2(p => ({ ...p, forma_pagamento: v }))}
-                        options={[{ value: '', label: 'Selecione' }, ...formasPagamento.map(n => ({ value: n, label: n }))]} />
-                      <TextInput label="Vencimento *" type="date" value={formV2.data_vencimento}
-                        onChange={v => setFormV2(p => ({ ...p, data_vencimento: v }))} />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-3 mb-3">
-                      <SelectInput label="Ponto de Atendimento *" value={formV2.ponto_atendimento_id}
-                        onChange={v => setFormV2(p => ({ ...p, ponto_atendimento_id: v }))}
-                        options={[
-                          { value: '', label: pontosAtivos.length ? 'Selecione' : 'Cadastre um ponto primeiro' },
-                          ...pontosAtivos.map(ponto => ({
-                            value: ponto.id,
-                            label: [ponto.nome, ponto.cidade, ponto.uf].filter(Boolean).join(' · '),
-                          })),
-                        ]} />
-                      <label className="flex flex-col gap-1">
-                        <span className="text-xs text-gray-500">Observações</span>
-                        <textarea rows={2} value={formV2.observacoes ?? ''}
-                          onChange={e => setFormV2(p => ({ ...p, observacoes: e.target.value || null }))}
-                          className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
-                      </label>
-                    </div>
-
-                    <div className="flex items-center justify-between border-t border-gray-100 dark:border-gray-800 pt-4">
-                      <button type="button" onClick={() => setVendaWizardStep('cadastro')}
-                        className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
-                        ← Voltar
+                    <div className="mt-2">
+                      <button type="button"
+                        onClick={() => { setFormV2(p => ({ ...p, contador_id: null })); setContadorSearch(''); setContadorDropdownOpen(false); setContadorStepHandled(true) }}
+                        className={cn(
+                          'px-3 py-1.5 text-xs rounded-lg border transition-colors',
+                          vendaStepStatus.contadorOk && !formV2.contador_id
+                            ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/30 dark:bg-green-950/20 dark:text-green-300'
+                            : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'
+                        )}>
+                        Seguir sem contador/parceiro
                       </button>
-                      <FormActions
-                        onSave={salvarVendaV2}
-                        onCancel={fecharFormVenda}
-                        saving={salvandoV}
-                        disabled={!vendaStepStatus.pontoOk}
-                      />
                     </div>
-                  </>)
-                })()}
+                  </div>
+
+                  {/* 4. Tipo emissão */}
+                  <div>
+                    <SelectInput label="Tipo Emissão *" value={formV2.tipo_emissao}
+                      onChange={v => setFormV2(p => ({ ...p, tipo_emissao: v }))}
+                      options={[{ value: '', label: 'Selecione' }, ...TIPO_EMISSAO_OPTIONS]} />
+                  </div>
+
+                  {/* 5. Valor / Pagamento / Vencimento */}
+                  <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_160px] gap-3">
+                    <label className="flex flex-col gap-1">
+                      <span className="text-xs text-green-600 dark:text-green-400 font-medium">Valor (R$) *</span>
+                      <input type="number" min="0" step="0.01" value={formV2.valor_venda}
+                        onChange={e => setFormV2(p => ({ ...p, valor_venda: parseFloat(e.target.value) || 0 }))}
+                        className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                    </label>
+                    <SelectInput label="Forma de Pagamento *" value={formV2.forma_pagamento}
+                      onChange={v => setFormV2(p => ({ ...p, forma_pagamento: v }))}
+                      options={[{ value: '', label: 'Selecione' }, ...formasPagamento.map(n => ({ value: n, label: n }))]} />
+                    <TextInput label="Vencimento *" type="date" value={formV2.data_vencimento}
+                      onChange={v => setFormV2(p => ({ ...p, data_vencimento: v }))} />
+                  </div>
+
+                  {/* 6. Ponto / Observações */}
+                  <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-3">
+                    <SelectInput label="Ponto de Atendimento *" value={formV2.ponto_atendimento_id}
+                      onChange={v => setFormV2(p => ({ ...p, ponto_atendimento_id: v }))}
+                      options={[
+                        { value: '', label: pontosAtivos.length ? 'Selecione' : 'Cadastre um ponto primeiro' },
+                        ...pontosAtivos.map(ponto => ({
+                          value: ponto.id,
+                          label: [ponto.nome, ponto.cidade, ponto.uf].filter(Boolean).join(' · '),
+                        })),
+                      ]} />
+                    <label className="flex flex-col gap-1">
+                      <span className="text-xs text-gray-500">Observações</span>
+                      <textarea rows={2} value={formV2.observacoes ?? ''}
+                        onChange={e => setFormV2(p => ({ ...p, observacoes: e.target.value || null }))}
+                        className="border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
+                    </label>
+                  </div>
+
+                  {/* 7. Ações */}
+                  <div className="flex justify-end border-t border-gray-100 dark:border-gray-800 pt-4">
+                    <FormActions
+                      onSave={salvarVendaV2}
+                      onCancel={fecharFormVenda}
+                      saving={salvandoV}
+                      disabled={!vendaStepStatus.pontoOk}
+                    />
+                  </div>
+
+                </div>
 
               </Panel>
                 </div>
@@ -4299,8 +4080,6 @@ export default function Comercial() {
                   <button type="button" onClick={() => {
                     if (showFormV) { fecharFormVenda(); return }
                     setFormV2({ ...EMPTY_VENDA_V2, ponto_atendimento_id: pontosAtivos[0]?.id ?? '' })
-                    setVendaWizardStep('produto')
-                    setFiltrosPicker({ tipo: '', modelo: '', prazo: '' })
                     setClienteSelecionadoObj(null)
                     setClienteSearch('')
                     setContadorSearch('')

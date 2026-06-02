@@ -10,6 +10,110 @@ quando ele precisar executar algo manualmente.
 
 ---
 
+## Plano oficial desta fase
+
+O usuario quer o **sistema inteiro funcionando** antes de configurar as APIs reais dos parceiros.
+
+Premissa obrigatoria:
+
+- primeiro fechar todo o sistema internamente
+- depois conectar credenciais reais de parceiros, gateways e prefeituras
+
+Prazo registrado como referencia:
+
+- `10 a 15 dias uteis` para deixar o sistema operacional interno
+- `15 a 25 dias uteis` para deixar mais redondo e testado
+
+### Ordem obrigatoria de execucao
+
+1. estabilizacao estrutural
+2. fechamento do nucleo operacional
+3. fechamento do financeiro
+4. preparacao de pagamentos e NFS-e com mocks e contratos
+5. mensageria e automacoes
+6. fechamento operacional e testes internos
+
+### Leitura atual de prioridade
+
+- seguranca: organizada
+- parceiros: avancado
+- renovacoes: avancado
+- comercial: parcial/avancado
+- clientes: incompleto
+- agenda/agentes: parcial
+- financeiro: parcial
+- pagamentos + webhook + NFS-e: maior lacuna
+
+### Regra de arquitetura
+
+O arquivo `CertiID_Sistema_Completo.md.txt` e uma referencia funcional do sistema alvo, mas a execucao real deve respeitar a arquitetura V2 existente.
+
+Entao a IA nao deve:
+
+- recriar modelagem legada desnecessaria
+- duplicar `vendas`, `clientes` ou `forma_pagamento` se a V2 ja cobre isso
+
+A IA deve adaptar o plano para:
+
+- `cadastros_base`
+- `vendas_certificados`
+- `formas_pagamento_v2`
+- `agendamentos_validacao`
+- `ordens_pagamento`
+- `nfse_configuracoes`
+- `nfse_emitidas`
+
+---
+
+## Ponto de retomada salvo nesta sessao
+
+### Bloco 1 em andamento
+
+Ja foi feito:
+
+- reorganizacao do menu principal por logica de negocio
+- estabilizacao de permissoes e fallback de navegacao
+- alinhamento parcial do Financeiro com a V2
+- reorganizacao das abas internas de Comercial e Financeiro
+- alinhamento da aba de pagamentos do Comercial para `formas_pagamento_v2`
+- substituicao de placeholders mais grosseiros do Comercial por avisos operacionais consistentes
+
+### Navegacao principal atual
+
+- Operacao
+  - Dashboard
+  - Comercial
+  - Renovacoes
+- Relacionamento
+  - Clientes
+  - Chat ao Vivo
+  - Parceiros
+- Gestao
+  - Financeiro
+  - Relatorios
+- Sistema
+  - Configuracoes
+
+### Proximo passo exato
+
+Quando retomar, comecar daqui:
+
+1. ligar `Ver NF-e` e `Fatura` do Comercial a leitura real por venda
+2. revisar `Clientes` para fechar visao operacional
+3. revisar `Agenda/Agendamentos` para fechar o nucleo do Bloco 1
+
+### Estado pratico agora
+
+- navegacao: melhor organizada
+- permissoes: mais estaveis
+- financeiro: mais real
+- comercial: menos placeholder
+- clientes: ainda incompleto
+- agenda/agentes: ainda parcial
+- pagamentos/webhook/NFS-e ponta a ponta: principal lacuna
+
+---
+
 ## Estado geral
 
 - A base oficial da `V2` ja foi implantada no projeto e salva no GitHub.

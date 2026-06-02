@@ -13,6 +13,7 @@ import Relatorios from './pages/Relatorios'
 import Parceiros from './pages/Parceiros'
 import Configuracoes from './pages/Configuracoes'
 import MarketplaceLoja from './pages/MarketplaceLoja'
+import ContestacaoAssinatura from './pages/ContestacaoAssinatura'
 import type { PermissaoPagina } from './types'
 import { APP_VERSION } from './lib/version'
 import { DEFAULT_AGENCY_CONFIG, fetchAgencyConfig } from './lib/agencyConfig'
@@ -29,6 +30,8 @@ function AppContent() {
   const isShopRoute = /^\/shop\/?$/.test(pathname)
   const lojaMatch = pathname.match(/^\/loja\/([^/]+)\/?$/)
   const lojaSlug = lojaMatch?.[1] ? decodeURIComponent(lojaMatch[1]) : null
+  const contestacaoMatch = pathname.match(/^\/contestacao\/([^/]+)\/?$/)
+  const contestacaoToken = contestacaoMatch?.[1] ? decodeURIComponent(contestacaoMatch[1]) : null
   const [page, setPage] = useState<Page>('dashboard')
   const [dark, setDark] = useState(() => localStorage.getItem('theme') === 'dark')
   const [agencyConfig, setAgencyConfig] = useState(DEFAULT_AGENCY_CONFIG)
@@ -88,6 +91,10 @@ function AppContent() {
 
   if (lojaSlug) {
     return <MarketplaceLoja slug={lojaSlug} />
+  }
+
+  if (contestacaoToken) {
+    return <ContestacaoAssinatura token={contestacaoToken} />
   }
 
   if (!user) return <Login />

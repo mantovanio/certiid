@@ -52,3 +52,8 @@ jobs:
         run: supabase functions deploy admin-users --project-ref cvfrhfiaprdtwxxplngk
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Publicar Edge Function evolution-webhook
+        run: supabase functions deploy evolution-webhook --project-ref cvfrhfiaprdtwxxplngk
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

@@ -71,6 +71,20 @@ interface AgentOption {
   perfil: string
 }
 
+interface RenovacaoCRM {
+  id: string
+  cliente: string | null
+  razao_social: string | null
+  tipo_certificado: string
+  data_vencimento: string
+  dias_restantes: number
+  valor: number | null
+  prioridade: string
+  status: string
+  pedido: string | null
+  protocolo: string | null
+}
+
 interface EvolutionIntegration {
   id: string
   name: string | null
@@ -232,6 +246,7 @@ export default function ChatInboxCRM() {
     sessionStorage.removeItem('crm:open-chat-nome')
     return nome
   })
+  const [renovacoesCRM, setRenovacoesCRM] = useState<RenovacaoCRM[]>([])
   const [loading, setLoading] = useState(true)
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -365,6 +380,28 @@ export default function ChatInboxCRM() {
   useEffect(() => {
     void bootstrap()
   }, [])
+
+  useEffect(() => {
+    if (!selectedConversation) { setRenovacoesCRM([]); return }
+    const phone = (selectedConversation.telefone || selectedConversation.document_key || '').replace(/\D/g, '')
+    const last11 = phone.slice(-11)
+    const cpf = selectedConversation.cpf ?? null
+    const cnpj = selectedConversation.cnpj ?? null
+
+    let query = supabase
+      .from('renovacoes')
+      .select('id,cliente,razao_social,tipo_certificado,data_vencimento,dias_restantes,valor,prioridade,status,pedido,protocolo')
+      .is('deleted_at', null)
+      .in('status', ['pendente', 'contatado'])
+      .order('data_vencimento', { ascending: true })
+      .limit(5)
+
+    if (cpf) query = query.eq('cpf', cpf)
+    else if (cnpj) query = query.eq('cnpj', cnpj)
+    else if (last11) query = query.like('telefone', `%${last11}`)
+
+    void query.then(({ data }) => setRenovacoesCRM((data ?? []) as RenovacaoCRM[]))
+  }, [selectedConversation?.id])
 
   useEffect(() => {
     if (!deepLinkPhone || loading) return
@@ -1528,6 +1565,30 @@ export default function ChatInboxCRM() {
                       <InfoRow icon={<Clock3 size={14} />} label="Status CRM" value={selectedConversation.contato_status || 'Nao definido'} />
                       <InfoRow icon={<UserCheck size={14} />} label="Agente atual" value={selectedConversation.agente_atual || selectedConversation.agente_nome || 'Nao atribuido'} />
                     </PanelBlock>
+
+                    {renovacoesCRM.length > 0 && (
+                      <PanelBlock title={`Renovacoes pendentes (${renovacoesCRM.length})`}>
+                        <div className="space-y-3">
+                          {renovacoesCRM.map(r => {
+                            const dias = r.dias_restantes
+                            const urgencia = dias <= 0 ? 'text-red-600 bg-red-50' : dias <= 7 ? 'text-orange-600 bg-orange-50' : dias <= 15 ? 'text-yellow-600 bg-yellow-50' : 'text-blue-600 bg-blue-50'
+                            const diasLabel = dias <= 0 ? `Vencido há ${Math.abs(dias)} dias` : dias === 1 ? '1 dia restante' : `${dias} dias restantes`
+                            return (
+                              <div key={r.id} className="rounded-xl border border-slate-200 bg-white p-3 space-y-1.5">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs font-semibold text-slate-700 leading-tight">{r.tipo_certificado}</span>
+                                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${urgencia}`}>{diasLabel}</span>
+                                </div>
+                                {r.pedido && <p className="text-[11px] text-slate-500">Pedido: <span className="font-mono text-slate-700">{r.pedido}</span></p>}
+                                {r.protocolo && <p className="text-[11px] text-slate-500">Protocolo: <span className="font-mono text-slate-700">{r.protocolo}</span></p>}
+                                <p className="text-[11px] text-slate-500">Vencimento: <span className="text-slate-700">{new Date(r.data_vencimento).toLocaleDateString('pt-BR')}</span></p>
+                                {r.valor != null && <p className="text-[11px] text-slate-500">Valor: <span className="font-semibold text-slate-700">R$ {r.valor.toFixed(2).replace('.', ',')}</span></p>}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </PanelBlock>
+                    )}
 
                     <PanelBlock title="Controles do atendimento">
                       <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Etapa do Kanban</label>

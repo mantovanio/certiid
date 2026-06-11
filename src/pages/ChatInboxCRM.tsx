@@ -703,7 +703,7 @@ export default function ChatInboxCRM() {
       .from('crm_chat_assignments')
       .insert([{
         conversation_id: conversationId,
-        agente_id: agent.id,
+        agent_id: agent.id,
         agente_nome: agent.nome,
         ativo: true,
       }])

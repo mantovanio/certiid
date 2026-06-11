@@ -58,7 +58,7 @@ CREATE INDEX IF NOT EXISTS idx_crm_chat_msg_conv
 CREATE TABLE IF NOT EXISTS public.crm_chat_assignments (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id  UUID NOT NULL REFERENCES public.crm_chat_conversations(id) ON DELETE CASCADE,
-  agente_id        UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  agent_id         UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
   agente_nome      TEXT,
   atribuido_em     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   ativo            BOOLEAN NOT NULL DEFAULT TRUE

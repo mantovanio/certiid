@@ -222,6 +222,11 @@ export default function ChatInboxCRM() {
   const [messages, setMessages] = useState<CrmMessage[]>([])
   const [agents, setAgents] = useState<AgentOption[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [deepLinkPhone, setDeepLinkPhone] = useState<string | null>(() => {
+    const phone = sessionStorage.getItem('crm:open-chat-phone')
+    if (phone) sessionStorage.removeItem('crm:open-chat-phone')
+    return phone ?? null
+  })
   const [loading, setLoading] = useState(true)
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -355,6 +360,19 @@ export default function ChatInboxCRM() {
   useEffect(() => {
     void bootstrap()
   }, [])
+
+  useEffect(() => {
+    if (!deepLinkPhone || conversations.length === 0) return
+    const digits = deepLinkPhone.replace(/\D/g, '')
+    const match = conversations.find(item =>
+      (item.document_key ?? '').replace(/\D/g, '').endsWith(digits) ||
+      (item.telefone ?? '').replace(/\D/g, '').endsWith(digits)
+    )
+    if (match) {
+      setSelectedId(match.id)
+      setDeepLinkPhone(null)
+    }
+  }, [conversations, deepLinkPhone])
 
   useEffect(() => {
     if (!selectedConversation) {
@@ -493,13 +511,6 @@ export default function ChatInboxCRM() {
     const rows = (data ?? []) as ConversationRow[]
     setConversations(rows)
     setSelectedId(current => {
-      // Abre direto a conversa vinda de outra página (ex: Renovações)
-      const deepPhone = sessionStorage.getItem('crm:open-chat-phone')
-      if (deepPhone) {
-        sessionStorage.removeItem('crm:open-chat-phone')
-        const match = rows.find(item => (item.document_key ?? '').replace(/\D/g, '').endsWith(deepPhone.replace(/\D/g, '')) || (item.telefone ?? '').replace(/\D/g, '').endsWith(deepPhone.replace(/\D/g, '')))
-        if (match) return match.id
-      }
       if (current && rows.some(item => item.id === current)) return current
       return rows[0]?.id ?? null
     })

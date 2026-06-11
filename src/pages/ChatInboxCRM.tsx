@@ -225,6 +225,8 @@ export default function ChatInboxCRM() {
   const layoutRef = useRef<HTMLDivElement>(null)
   const detailRef = useRef<HTMLDivElement>(null)
   const inboxListRef = useRef<HTMLDivElement>(null)
+  const messagesViewportRef = useRef<HTMLDivElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -283,6 +285,14 @@ export default function ChatInboxCRM() {
     setShowEmoji(false)
     void loadMessages(selectedConversation.id)
   }, [selectedConversation?.id])
+
+  useEffect(() => {
+    if (!selectedConversation || loadingMessages) return
+
+    requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    })
+  }, [selectedConversation?.id, messages, loadingMessages])
 
   useEffect(() => {
     const channel = supabase
@@ -1106,23 +1116,24 @@ export default function ChatInboxCRM() {
                     </div>
                   </div>
 
-                  <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50 px-4 py-4">
-                    {loadingMessages ? (
-                      <div className="text-sm text-slate-400">Carregando mensagens...</div>
-                    ) : messages.length === 0 ? (
-                      <EmptyState text="Ainda nao existem mensagens gravadas para esta conversa." />
-                    ) : (
-                      <div className="space-y-3">
-                        {messages.map(message => (
-                          <MessageRow
-                            key={message.id}
-                            message={message}
-                            fallbackHumanName={currentHumanAgentName}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                    <div ref={messagesViewportRef} className="min-h-0 flex-1 overflow-y-auto bg-slate-50 px-4 py-4">
+                      {loadingMessages ? (
+                        <div className="text-sm text-slate-400">Carregando mensagens...</div>
+                      ) : messages.length === 0 ? (
+                        <EmptyState text="Ainda nao existem mensagens gravadas para esta conversa." />
+                      ) : (
+                        <div className="space-y-3">
+                          {messages.map(message => (
+                            <MessageRow
+                              key={message.id}
+                              message={message}
+                              fallbackHumanName={currentHumanAgentName}
+                            />
+                          ))}
+                          <div ref={messagesEndRef} />
+                        </div>
+                      )}
+                    </div>
 
                   {humanModeActive && (
                     <div className="relative shrink-0 border-t border-slate-200 bg-white px-4 py-3">

@@ -480,6 +480,7 @@ export default function Renovacoes() {
   function openChat(r: RenovacaoV2) {
     if (!r.telefone) { showMsg('Cliente sem telefone para chat.', 'err'); return }
     sessionStorage.setItem('crm:open-chat-phone', r.telefone.replace(/\D/g, ''))
+    sessionStorage.setItem('crm:open-chat-nome', r.razao_social ?? r.cliente ?? '')
     window.dispatchEvent(new CustomEvent('crm:navigate', { detail: { page: 'chat' } }))
   }
 

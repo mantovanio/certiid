@@ -227,6 +227,11 @@ export default function ChatInboxCRM() {
     if (phone) sessionStorage.removeItem('crm:open-chat-phone')
     return phone ?? null
   })
+  const [deepLinkNome, setDeepLinkNome] = useState<string>(() => {
+    const nome = sessionStorage.getItem('crm:open-chat-nome') ?? ''
+    sessionStorage.removeItem('crm:open-chat-nome')
+    return nome
+  })
   const [loading, setLoading] = useState(true)
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -362,7 +367,7 @@ export default function ChatInboxCRM() {
   }, [])
 
   useEffect(() => {
-    if (!deepLinkPhone || conversations.length === 0) return
+    if (!deepLinkPhone || loading) return
     const digits = deepLinkPhone.replace(/\D/g, '')
     const match = conversations.find(item =>
       (item.document_key ?? '').replace(/\D/g, '').endsWith(digits) ||
@@ -370,9 +375,24 @@ export default function ChatInboxCRM() {
     )
     if (match) {
       setSelectedId(match.id)
-      setDeepLinkPhone(null)
+    } else {
+      // Sem conversa existente — abre Nova Conversa preenchida
+      setManualConversation(prev => ({
+        ...prev,
+        phone: deepLinkPhone,
+        contactName: deepLinkNome,
+      }))
+      void openManualConversationModal().then(() => {
+        setManualConversation(prev => ({
+          ...prev,
+          phone: deepLinkPhone,
+          contactName: deepLinkNome,
+        }))
+      })
     }
-  }, [conversations, deepLinkPhone])
+    setDeepLinkPhone(null)
+    setDeepLinkNome('')
+  }, [conversations, deepLinkPhone, loading])
 
   useEffect(() => {
     if (!selectedConversation) {

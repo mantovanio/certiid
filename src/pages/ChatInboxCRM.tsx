@@ -142,6 +142,13 @@ function formatRelative(value: string | null | undefined) {
   return `${days} d`
 }
 
+function minutesSince(value: string | null | undefined) {
+  if (!value) return 0
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 0
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / 60000))
+}
+
 function formatRecTime(seconds: number) {
   return `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`
 }
@@ -157,6 +164,20 @@ function isClosedConversationStatus(status: string | null | undefined) {
 
 function queueLabel(fila: QueueType) {
   return fila === 'renovacao' ? 'Renovacao' : 'Atendimento'
+}
+
+function hasRegisteredCustomer(item: ConversationRow | null | undefined) {
+  if (!item) return false
+  return Boolean(item.crm_customer_id || item.nome_crm || item.email_principal || item.cpf || item.cnpj)
+}
+
+function getUrgencyMeta(item: ConversationRow, humanActive: boolean) {
+  if (item.ultima_mensagem_direcao !== 'incoming') return null
+  const waitingMinutes = minutesSince(item.ultima_interacao_em)
+  if (humanActive && waitingMinutes >= 30) return { label: 'Aguardando humano', tone: 'red' as const }
+  if (!humanActive && waitingMinutes >= 20) return { label: 'Sem retorno', tone: 'red' as const }
+  if (waitingMinutes >= 8) return { label: 'Atencao', tone: 'amber' as const }
+  return null
 }
 
 function normalizePhone(value: string) {
@@ -211,6 +232,7 @@ export default function ChatInboxCRM() {
   const [queueFilter, setQueueFilter] = useState<'todas' | QueueType>('todas')
   const [humanFilter, setHumanFilter] = useState<'todos' | 'ia' | 'humano'>('todos')
   const [showClosedConversations, setShowClosedConversations] = useState(false)
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({})
   const [viewMode, setViewMode] = useState<'lista' | 'kanban'>('lista')
   const [kanbanOpen, setKanbanOpen] = useState(false)
   const [selectedAgentId, setSelectedAgentId] = useState('')
@@ -343,6 +365,12 @@ export default function ChatInboxCRM() {
       return
     }
 
+    setUnreadCounts(prev => {
+      if (!prev[selectedConversation.id]) return prev
+      const next = { ...prev }
+      delete next[selectedConversation.id]
+      return next
+    })
     setHumanMessage('')
     setShowEmoji(false)
     void loadMessages(selectedConversation.id)
@@ -375,13 +403,17 @@ export default function ChatInboxCRM() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_chat_conversations' }, () => {
         void loadConversations(false)
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_chat_messages' }, payload => {
-        const nextRow = (payload.new ?? {}) as Record<string, unknown>
-        const prevRow = (payload.old ?? {}) as Record<string, unknown>
-        const conversationId = String((nextRow['conversation_id'] as string | undefined) ?? (prevRow['conversation_id'] as string | undefined) ?? '')
-        void loadConversations(false)
-        if (selectedId && conversationId === selectedId) void loadMessages(selectedId)
-      })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_chat_messages' }, payload => {
+          const nextRow = (payload.new ?? {}) as Record<string, unknown>
+          const prevRow = (payload.old ?? {}) as Record<string, unknown>
+          const conversationId = String((nextRow['conversation_id'] as string | undefined) ?? (prevRow['conversation_id'] as string | undefined) ?? '')
+          const direction = String((nextRow['direction'] as string | undefined) ?? '')
+          if (payload.eventType === 'INSERT' && conversationId && direction === 'incoming' && conversationId !== selectedId) {
+            setUnreadCounts(prev => ({ ...prev, [conversationId]: (prev[conversationId] ?? 0) + 1 }))
+          }
+          void loadConversations(false)
+          if (selectedId && conversationId === selectedId) void loadMessages(selectedId)
+        })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_chat_assignments' }, () => {
         void loadConversations(false)
       })
@@ -1046,26 +1078,45 @@ export default function ChatInboxCRM() {
     })
   }, [conversations, search])
 
-  const operationalConversations = useMemo(() => (
-    searchMatchedConversations.filter(item => showClosedConversations || !isClosedConversationStatus(item.kanban_status))
-  ), [searchMatchedConversations, showClosedConversations])
+  const activeConversations = useMemo(() => (
+    searchMatchedConversations.filter(item => !isClosedConversationStatus(item.kanban_status))
+  ), [searchMatchedConversations])
+
+  const closedConversations = useMemo(() => (
+    searchMatchedConversations.filter(item => isClosedConversationStatus(item.kanban_status))
+  ), [searchMatchedConversations])
+
+  function matchesOperationalFilters(item: ConversationRow) {
+    const matchesQueue = queueFilter === 'todas' || item.fila === queueFilter
+    const matchesHuman = humanFilter === 'todos'
+      || (humanFilter === 'humano' && (item.atendimento_humano || humanOverrideIds.includes(item.id)))
+      || (humanFilter === 'ia' && !item.atendimento_humano && !humanOverrideIds.includes(item.id))
+    return matchesQueue && matchesHuman
+  }
 
   const filteredConversations = useMemo(() => {
-    return operationalConversations.filter(item => {
-      const matchesQueue = queueFilter === 'todas' || item.fila === queueFilter
-      const matchesHuman = humanFilter === 'todos'
-        || (humanFilter === 'humano' && (item.atendimento_humano || humanOverrideIds.includes(item.id)))
-        || (humanFilter === 'ia' && !item.atendimento_humano && !humanOverrideIds.includes(item.id))
-      return matchesQueue && matchesHuman
-    })
-  }, [operationalConversations, queueFilter, humanFilter, humanOverrideIds])
+    return activeConversations.filter(matchesOperationalFilters)
+  }, [activeConversations, queueFilter, humanFilter, humanOverrideIds])
+
+  const filteredClosedConversations = useMemo(() => (
+    closedConversations.filter(matchesOperationalFilters)
+  ), [closedConversations, queueFilter, humanFilter, humanOverrideIds])
+
+  const visibleConversations = useMemo(() => (
+    showClosedConversations ? [...filteredConversations, ...filteredClosedConversations] : filteredConversations
+  ), [filteredConversations, filteredClosedConversations, showClosedConversations])
 
   const summary = useMemo(() => ({
-      total: operationalConversations.length,
-      atendimento: operationalConversations.filter(item => item.fila === 'atendimento').length,
-      renovacao: operationalConversations.filter(item => item.fila === 'renovacao').length,
-      humano: operationalConversations.filter(item => item.atendimento_humano || humanOverrideIds.includes(item.id)).length,
-    }), [operationalConversations, humanOverrideIds])
+      total: activeConversations.length,
+      atendimento: activeConversations.filter(item => item.fila === 'atendimento').length,
+      renovacao: activeConversations.filter(item => item.fila === 'renovacao').length,
+      humano: activeConversations.filter(item => item.atendimento_humano || humanOverrideIds.includes(item.id)).length,
+    }), [activeConversations, humanOverrideIds])
+
+  const unreadTotal = useMemo(
+    () => Object.values(unreadCounts).reduce((acc, value) => acc + value, 0),
+    [unreadCounts],
+  )
 
   const activeShortcut = useMemo(() => ({
     all: queueFilter === 'todas' && humanFilter === 'todos',
@@ -1082,15 +1133,15 @@ export default function ChatInboxCRM() {
     }, [filteredConversations])
 
   useEffect(() => {
-    if (filteredConversations.length === 0) {
+    if (visibleConversations.length === 0) {
       if (selectedId) setSelectedId(null)
       return
     }
 
-    if (!selectedId || !filteredConversations.some(item => item.id === selectedId)) {
-      setSelectedId(filteredConversations[0]?.id ?? null)
+    if (!selectedId || !visibleConversations.some(item => item.id === selectedId)) {
+      setSelectedId(visibleConversations[0]?.id ?? null)
     }
-  }, [filteredConversations, selectedId])
+  }, [visibleConversations, selectedId])
 
   function applySummaryShortcut(target: 'all' | 'atendimento' | 'renovacao' | 'humano') {
     const nextQueue: 'todas' | QueueType =
@@ -1103,20 +1154,22 @@ export default function ChatInboxCRM() {
     setQueueFilter(nextQueue)
     setHumanFilter(nextHuman)
 
-    const nextConversation = searchMatchedConversations.find(item => {
-      const matchesQueue = nextQueue === 'todas' || item.fila === nextQueue
-      const matchesHuman = nextHuman === 'todos'
-        || (nextHuman === 'humano' && (item.atendimento_humano || humanOverrideIds.includes(item.id)))
-      return matchesQueue && matchesHuman
-    })
+      const nextConversation = activeConversations.find(item => {
+        const matchesQueue = nextQueue === 'todas' || item.fila === nextQueue
+        let matchesHuman = false
+        if (nextHuman === 'todos') matchesHuman = true
+        else if (nextHuman === 'humano') matchesHuman = item.atendimento_humano || humanOverrideIds.includes(item.id)
+        else matchesHuman = !item.atendimento_humano && !humanOverrideIds.includes(item.id)
+        return matchesQueue && matchesHuman
+      })
 
     setSelectedId(nextConversation?.id ?? null)
     requestAnimationFrame(() => {
       inboxListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
-  }
+    }
 
-  return (
+    return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-slate-50 text-slate-900">
       <div className="shrink-0 border-b border-slate-200 bg-white px-6 py-4">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -1173,9 +1226,9 @@ export default function ChatInboxCRM() {
                 ? 'border-sky-300 bg-sky-50 text-sky-700'
                 : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
             }`}
-          >
-            {showClosedConversations ? 'Ocultar encerradas' : 'Mostrar encerradas'}
-          </button>
+            >
+              {showClosedConversations ? `Ocultar encerradas (${filteredClosedConversations.length})` : `Mostrar encerradas (${filteredClosedConversations.length})`}
+            </button>
         </div>
       </div>
 
@@ -1187,21 +1240,60 @@ export default function ChatInboxCRM() {
         <div className="flex flex-1 items-center justify-center text-slate-400">Carregando conversas do CRM...</div>
       ) : (
         <div ref={layoutRef} className="flex min-h-0 flex-1 flex-col gap-4 p-4 xl:flex-row">
-          <section className="min-h-0 shrink-0 overflow-hidden rounded-3xl border border-slate-200 bg-white" style={{ width: `${leftPanelWidth}px` }}>
-            <div className="border-b border-slate-200 px-4 py-3">
-              <h2 className="text-sm font-semibold text-slate-700">Inbox operacional</h2>
-              <p className="text-xs text-slate-400">Lista viva de conversas com filtros e abertura imediata do chat.</p>
-            </div>
-
-              <div ref={inboxListRef} className="h-[calc(100%-73px)] overflow-y-auto p-3">
-                <div className="space-y-3">
-                {filteredConversations.map(item => (
-                  <ConversationCard key={item.id} item={item} selected={item.id === selectedId} onClick={() => setSelectedId(item.id)} human={item.atendimento_humano || humanOverrideIds.includes(item.id)} />
-                ))}
-                {filteredConversations.length === 0 && <EmptyState text="Nenhuma conversa encontrada com os filtros atuais." />}
+            <section className="min-h-0 shrink-0 overflow-hidden rounded-3xl border border-slate-200 bg-white" style={{ width: `${leftPanelWidth}px` }}>
+              <div className="border-b border-slate-200 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-slate-700">Inbox operacional</h2>
+                    <p className="text-xs text-slate-400">Lista viva de conversas com filtros e abertura imediata do chat.</p>
+                  </div>
+                  <div className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+                    {unreadTotal} nao lidas
+                  </div>
+                </div>
               </div>
-            </div>
-          </section>
+
+                <div ref={inboxListRef} className="h-[calc(100%-73px)] overflow-y-auto p-3">
+                  <div className="space-y-3">
+                  {filteredConversations.map(item => (
+                    <ConversationCard
+                      key={item.id}
+                      item={item}
+                      selected={item.id === selectedId}
+                      onClick={() => setSelectedId(item.id)}
+                      human={item.atendimento_humano || humanOverrideIds.includes(item.id)}
+                      unreadCount={unreadCounts[item.id] ?? 0}
+                    />
+                  ))}
+                  {filteredConversations.length === 0 && <EmptyState text="Nenhuma conversa encontrada com os filtros atuais." />}
+                  {showClosedConversations && (
+                    <div className="pt-2">
+                      <div className="mb-3 flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-700">Encerradas</p>
+                          <p className="text-[11px] text-slate-500">Separadas do inbox operacional para nao poluir o atendimento.</p>
+                        </div>
+                        <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600">{filteredClosedConversations.length}</span>
+                      </div>
+                      <div className="space-y-3">
+                        {filteredClosedConversations.map(item => (
+                          <ConversationCard
+                            key={item.id}
+                            item={item}
+                            selected={item.id === selectedId}
+                            onClick={() => setSelectedId(item.id)}
+                            human={item.atendimento_humano || humanOverrideIds.includes(item.id)}
+                            unreadCount={unreadCounts[item.id] ?? 0}
+                            closed
+                          />
+                        ))}
+                        {filteredClosedConversations.length === 0 && <EmptyState text="Nenhuma conversa encerrada com os filtros atuais." compact />}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
 
           <div className="hidden w-2 shrink-0 cursor-col-resize rounded-full bg-slate-200/80 transition hover:bg-sky-300 xl:block" onMouseDown={() => setIsResizingLeft(true)} />
 
@@ -1223,12 +1315,17 @@ export default function ChatInboxCRM() {
                         <Badge text={humanModeActive ? 'Humano' : 'IA'} tone={humanModeActive ? 'green' : 'amber'} />
                       </div>
                     </div>
-                    <div className="mt-3 grid gap-2 text-xs text-slate-500 md:grid-cols-3">
-                      <div>Instancia: <strong className="text-slate-700">{selectedConversation.whatsapp_instance || 'Nao definida'}</strong></div>
-                      <div>Numero receptor: <strong className="text-slate-700">{selectedConversation.numero_receptor || 'Nao definido'}</strong></div>
-                      <div>Ultima interacao: <strong className="text-slate-700">{formatDateTime(selectedConversation.ultima_interacao_em)}</strong></div>
+                      <div className="mt-3 grid gap-2 text-xs text-slate-500 md:grid-cols-3">
+                        <div>Instancia: <strong className="text-slate-700">{selectedConversation.whatsapp_instance || 'Nao definida'}</strong></div>
+                        <div>Numero receptor: <strong className="text-slate-700">{selectedConversation.numero_receptor || 'Nao definido'}</strong></div>
+                        <div>Ultima interacao: <strong className="text-slate-700">{formatDateTime(selectedConversation.ultima_interacao_em)}</strong></div>
+                      </div>
+                      {!hasRegisteredCustomer(selectedConversation) && (
+                        <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                          Esse numero ainda nao tem cadastro completo no CRM. Cadastre o contato antes de resolver ou encerrar a conversa.
+                        </div>
+                      )}
                     </div>
-                  </div>
 
                     <div ref={messagesViewportRef} className="min-h-0 flex-1 overflow-y-auto bg-slate-50 px-4 py-4">
                       {loadingMessages ? (
@@ -1237,13 +1334,14 @@ export default function ChatInboxCRM() {
                         <EmptyState text="Ainda nao existem mensagens gravadas para esta conversa." />
                       ) : (
                         <div className="space-y-3">
-                          {displayMessages.map(message => (
-                            <MessageRow
-                              key={message.id}
-                              message={message}
-                              fallbackHumanName={currentHumanAgentName}
-                            />
-                          ))}
+                            {displayMessages.map(message => (
+                              <MessageRow
+                                key={message.id}
+                                message={message}
+                                fallbackHumanName={currentHumanAgentName}
+                                conversation={selectedConversation}
+                              />
+                            ))}
                           <div ref={messagesEndRef} />
                         </div>
                       )}
@@ -1580,14 +1678,15 @@ export default function ChatInboxCRM() {
                     <div className="min-h-0 flex-1 overflow-y-auto p-2">
                       <div className="space-y-2">
                         {column.items.map(item => (
-                          <ConversationMiniCard
-                            key={item.id}
-                            item={item}
-                            selected={item.id === selectedId}
-                            onClick={() => selectConversationFromKanban(item.id)}
-                            human={item.atendimento_humano || humanOverrideIds.includes(item.id)}
-                            draggable
-                            onDragStart={event => {
+                            <ConversationMiniCard
+                              key={item.id}
+                              item={item}
+                              selected={item.id === selectedId}
+                              onClick={() => selectConversationFromKanban(item.id)}
+                              human={item.atendimento_humano || humanOverrideIds.includes(item.id)}
+                              unreadCount={unreadCounts[item.id] ?? 0}
+                              draggable
+                              onDragStart={event => {
                               setDraggedConversationId(item.id)
                               event.dataTransfer.setData('text/plain', item.id)
                               event.dataTransfer.effectAllowed = 'move'
@@ -1644,24 +1743,53 @@ function SummaryCard({
   )
 }
 
-function ConversationCard({ item, selected, onClick, human }: { item: ConversationRow; selected: boolean; onClick: () => void; human: boolean }) {
-  return (
-    <button type="button" onClick={onClick} className={`w-full rounded-2xl border px-4 py-3 text-left transition ${selected ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{item.cliente_nome || item.nome_crm || 'Sem nome'}</p>
-          <p className={`mt-1 truncate text-xs ${selected ? 'text-slate-300' : 'text-slate-500'}`}>{item.telefone || item.document_key}</p>
+function ConversationCard({
+  item,
+  selected,
+  onClick,
+  human,
+  unreadCount = 0,
+  closed = false,
+}: {
+  item: ConversationRow
+  selected: boolean
+  onClick: () => void
+  human: boolean
+  unreadCount?: number
+  closed?: boolean
+}) {
+    const urgency = getUrgencyMeta(item, human)
+    const selectedClass = selected
+      ? 'border-slate-900 bg-slate-900 text-white'
+      : closed
+        ? 'border-slate-200 bg-slate-50 hover:border-slate-300'
+        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+
+    return (
+      <button type="button" onClick={onClick} className={`w-full rounded-2xl border px-4 py-3 text-left transition ${selectedClass}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">{item.cliente_nome || item.nome_crm || 'Sem nome'}</p>
+            <p className={`mt-1 truncate text-xs ${selected ? 'text-slate-300' : 'text-slate-500'}`}>{item.telefone || item.document_key}</p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${selected ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600'}`}>{queueLabel(item.fila)}</span>
+            {unreadCount > 0 && (
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${selected ? 'bg-red-500 text-white' : 'bg-red-100 text-red-700'}`}>{unreadCount} nova{unreadCount > 1 ? 's' : ''}</span>
+            )}
+            {human ? <UserRound size={14} /> : <Bot size={14} />}
+          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${selected ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600'}`}>{queueLabel(item.fila)}</span>
-          {human ? <UserRound size={14} /> : <Bot size={14} />}
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {urgency && <Badge text={urgency.label} tone={urgency.tone} />}
+          {!hasRegisteredCustomer(item) && <Badge text="Contato sem cadastro" tone="amber" />}
+          {closed && <Badge text="Encerrada" tone="slate" />}
         </div>
-      </div>
-      <p className={`mt-3 line-clamp-2 text-sm ${selected ? 'text-slate-100' : 'text-slate-600'}`}>{item.ultima_mensagem || 'Sem ultima mensagem gravada.'}</p>
-      <div className={`mt-3 flex items-center justify-between text-xs ${selected ? 'text-slate-300' : 'text-slate-500'}`}>
-        <span>{statusLabel(item.kanban_status)}</span>
-        <span>{formatRelative(item.ultima_interacao_em)}</span>
-      </div>
+        <p className={`mt-3 line-clamp-2 text-sm ${selected ? 'text-slate-100' : 'text-slate-600'}`}>{item.ultima_mensagem || 'Sem ultima mensagem gravada.'}</p>
+        <div className={`mt-3 flex items-center justify-between text-xs ${selected ? 'text-slate-300' : 'text-slate-500'}`}>
+          <span>{statusLabel(item.kanban_status)}</span>
+          <span>{formatRelative(item.ultima_interacao_em)}</span>
+        </div>
     </button>
   )
 }
@@ -1671,6 +1799,7 @@ function ConversationMiniCard({
   selected,
   onClick,
   human,
+  unreadCount = 0,
   draggable = false,
   onDragStart,
   onDragEnd,
@@ -1679,47 +1808,68 @@ function ConversationMiniCard({
   selected: boolean
   onClick: () => void
   human: boolean
+  unreadCount?: number
   draggable?: boolean
   onDragStart?: (event: React.DragEvent<HTMLButtonElement>) => void
   onDragEnd?: () => void
 }) {
-  return (
-    <button
-      type="button"
+    const urgency = getUrgencyMeta(item, human)
+    return (
+      <button
+        type="button"
       onClick={onClick}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       className={`w-full rounded-xl border px-3 py-3 text-left ${selected ? 'border-slate-900 bg-slate-900 text-white' : 'border-white/70 bg-white hover:border-slate-300'}`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <p className="truncate text-sm font-semibold">{item.cliente_nome || item.nome_crm || 'Sem nome'}</p>
-        {human ? <UserRound size={14} /> : <Bot size={14} />}
-      </div>
-      <p className={`mt-1 truncate text-xs ${selected ? 'text-slate-300' : 'text-slate-500'}`}>{item.telefone || item.document_key}</p>
-      <p className={`mt-2 line-clamp-2 text-xs ${selected ? 'text-slate-100' : 'text-slate-600'}`}>{item.ultima_mensagem || 'Sem mensagem'}</p>
-    </button>
-  )
-}
-
-function MessageRow({ message, fallbackHumanName }: { message: CrmMessage; fallbackHumanName?: string | null }) {
-    const isOutgoing = message.direction === 'outgoing'
-  const senderLabel = message.sender_type === 'cliente'
-    ? 'Cliente'
-    : message.sender_type === 'ia'
-      ? 'IA Clara'
-      : message.sender_name || fallbackHumanName || 'Humano'
-
-  return (
-    <div className={`flex ${isOutgoing ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[78%] rounded-2xl px-4 py-3 shadow-sm ${isOutgoing ? 'bg-emerald-100 text-emerald-950' : 'bg-white text-slate-800'}`}>
-        <div className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-          <span>{senderLabel}</span>
-          <span>•</span>
-          <span>{formatDateTime(message.created_at)}</span>
+      >
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-sm font-semibold">{item.cliente_nome || item.nome_crm || 'Sem nome'}</p>
+          <div className="flex items-center gap-2">
+            {unreadCount > 0 && <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${selected ? 'bg-red-500 text-white' : 'bg-red-100 text-red-700'}`}>{unreadCount}</span>}
+            {human ? <UserRound size={14} /> : <Bot size={14} />}
+          </div>
         </div>
-        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{message.mensagem || 'Mensagem sem texto'}</p>
-      </div>
+        <p className={`mt-1 truncate text-xs ${selected ? 'text-slate-300' : 'text-slate-500'}`}>{item.telefone || item.document_key}</p>
+        {urgency && <div className="mt-2"><Badge text={urgency.label} tone={urgency.tone} /></div>}
+        <p className={`mt-2 line-clamp-2 text-xs ${selected ? 'text-slate-100' : 'text-slate-600'}`}>{item.ultima_mensagem || 'Sem mensagem'}</p>
+      </button>
+    )
+  }
+
+function MessageRow({
+  message,
+  fallbackHumanName,
+  conversation,
+}: {
+  message: CrmMessage
+  fallbackHumanName?: string | null
+  conversation?: ConversationRow | null
+}) {
+      const isOutgoing = message.direction === 'outgoing'
+    const senderLabel = message.sender_type === 'cliente'
+      ? 'Cliente'
+      : message.sender_type === 'ia'
+        ? 'IA Clara'
+        : message.sender_name || fallbackHumanName || 'Humano'
+    const detailLabel = message.sender_type === 'cliente'
+      ? conversation?.telefone || conversation?.document_key || 'Canal de entrada'
+      : message.sender_type === 'ia'
+        ? conversation?.whatsapp_instance || 'Automacao'
+        : message.sender_name || fallbackHumanName || conversation?.agente_atual || 'Humano'
+  
+    return (
+      <div className={`flex ${isOutgoing ? 'justify-end' : 'justify-start'}`}>
+        <div className={`max-w-[78%] rounded-2xl px-4 py-3 shadow-sm ${isOutgoing ? 'bg-emerald-100 text-emerald-950' : 'bg-white text-slate-800'}`}>
+          <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <span>{senderLabel}</span>
+            <span>•</span>
+            <span>{detailLabel}</span>
+            <span>•</span>
+            <span>{formatDateTime(message.created_at)}</span>
+          </div>
+          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{message.mensagem || 'Mensagem sem texto'}</p>
+        </div>
     </div>
   )
 }
@@ -1745,13 +1895,14 @@ function InfoRow({ icon, label, value, mono = false }: { icon: React.ReactNode; 
   )
 }
 
-function Badge({ text, tone }: { text: string; tone: 'blue' | 'violet' | 'green' | 'amber' | 'slate' }) {
+function Badge({ text, tone }: { text: string; tone: 'blue' | 'violet' | 'green' | 'amber' | 'slate' | 'red' }) {
   const classes = {
     blue: 'bg-blue-100 text-blue-700',
     violet: 'bg-violet-100 text-violet-700',
     green: 'bg-green-100 text-green-700',
     amber: 'bg-amber-100 text-amber-700',
     slate: 'bg-slate-100 text-slate-700',
+    red: 'bg-red-100 text-red-700',
   }
 
   return <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${classes[tone]}`}>{text}</span>

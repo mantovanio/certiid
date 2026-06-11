@@ -12,6 +12,8 @@ import {
   UserRound,
   Columns3,
   List,
+  Send,
+  Loader2,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
@@ -60,6 +62,15 @@ interface AgentOption {
   id: string
   nome: string
   perfil: string
+}
+
+interface EvolutionIntegration {
+  id: string
+  name: string | null
+  status: string | null
+  base_url: string | null
+  api_token: string | null
+  instance_name: string | null
 }
 
 const STATUS_COLUMNS = [
@@ -136,6 +147,8 @@ export default function ChatInboxCRM() {
   const [humanFilter, setHumanFilter] = useState<'todos' | 'ia' | 'humano'>('todos')
   const [viewMode, setViewMode] = useState<'lista' | 'kanban'>('lista')
   const [selectedAgentId, setSelectedAgentId] = useState('')
+  const [humanMessage, setHumanMessage] = useState('')
+  const [sendingHumanMessage, setSendingHumanMessage] = useState(false)
 
   const selectedConversation = useMemo(
     () => conversations.find(item => item.id === selectedId) ?? null,
@@ -149,8 +162,10 @@ export default function ChatInboxCRM() {
   useEffect(() => {
     if (!selectedConversation) {
       setMessages([])
+      setHumanMessage('')
       return
     }
+    setHumanMessage('')
     void loadMessages(selectedConversation.id)
   }, [selectedConversation?.id])
 
@@ -230,9 +245,18 @@ export default function ChatInboxCRM() {
       .from('profiles')
       .select('id, nome, perfil')
       .eq('status', 'ativo')
+      .in('perfil', ['admin', 'usuario', 'vendedor', 'agente_registro'])
       .order('nome', { ascending: true })
 
-    setAgents((data ?? []) as AgentOption[])
+    const rows = ((data ?? []) as Partial<AgentOption>[])
+      .filter(item => Boolean(item.id) && Boolean(item.nome))
+      .map(item => ({
+        id: String(item.id),
+        nome: String(item.nome),
+        perfil: String(item.perfil ?? 'usuario'),
+      }))
+
+    setAgents(rows)
   }
 
   async function updateConversationStatus(status: string) {
@@ -283,8 +307,20 @@ export default function ChatInboxCRM() {
 
   async function assignConversation() {
     if (!selectedConversation || !selectedAgentId) return
-    const agent = agents.find(item => item.id === selectedAgentId)
-    if (!agent) return
+    const selectedById = agents.find(item => item.id === selectedAgentId)
+    const fallbackToCurrentProfile = profile?.id && selectedAgentId === profile.id
+      ? {
+          id: profile.id,
+          nome: profile.nome ?? 'Usuario atual',
+          perfil: profile.perfil ?? 'usuario',
+        }
+      : null
+    const agent = selectedById ?? fallbackToCurrentProfile
+
+    if (!agent?.id) {
+      setActionError('Nao foi possivel identificar o ID do agente selecionado. Recarregue a tela e tente novamente.')
+      return
+    }
 
     setActionLoading(true)
     setActionError(null)
@@ -330,6 +366,102 @@ export default function ChatInboxCRM() {
 
     await loadConversations(false)
     setActionLoading(false)
+  }
+
+  async function sendHumanReply() {
+    if (!selectedConversation) return
+    const text = humanMessage.trim()
+    if (!text) return
+
+    setSendingHumanMessage(true)
+    setActionError(null)
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (!accessToken) {
+        setActionError('Sessao expirada. Atualize a pagina e tente novamente.')
+        return
+      }
+
+      const { data: integrations, error: integrationError } = await supabase
+        .from('external_integrations')
+        .select('id, name, status, base_url, api_token, instance_name')
+        .eq('provider', 'evolution')
+        .eq('status', 'ativo')
+        .order('updated_at', { ascending: false })
+
+      if (integrationError) {
+        setActionError(`Nao foi possivel carregar a integracao Evolution: ${integrationError.message}`)
+        return
+      }
+
+      const rows = (integrations ?? []) as EvolutionIntegration[]
+      const integration = rows.find(item => item.instance_name === selectedConversation.whatsapp_instance) ?? rows[0]
+
+      if (!integration?.base_url || !integration?.api_token || !integration?.instance_name) {
+        setActionError('Nenhuma integracao Evolution ativa foi encontrada para essa conversa.')
+        return
+      }
+
+      const destinationNumber = selectedConversation.telefone || selectedConversation.document_key
+      if (!destinationNumber) {
+        setActionError('Nao foi possivel identificar o numero do contato para envio.')
+        return
+      }
+
+      const tempId = `temp-human-${Date.now()}`
+      const tempCreatedAt = new Date().toISOString()
+      setMessages(prev => [...prev, {
+        id: tempId,
+        conversation_id: selectedConversation.id,
+        document_key: selectedConversation.document_key,
+        direction: 'outgoing',
+        sender_type: 'humano',
+        mensagem: text,
+        created_at: tempCreatedAt,
+      }])
+      setHumanMessage('')
+
+      const response = await fetch('https://cvfrhfiaprdtwxxplngk.supabase.co/functions/v1/evolution-webhook', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          _action: 'send_message',
+          base_url: integration.base_url,
+          api_token: integration.api_token,
+          instance_name: integration.instance_name,
+          number: destinationNumber,
+          content: text,
+          lead_id: selectedConversation.crm_customer_id,
+        }),
+      })
+
+      const payload = await response.json() as { ok?: boolean; error?: string; messageId?: string }
+      if (!response.ok || !payload.ok) {
+        setMessages(prev => prev.filter(item => item.id !== tempId))
+        setHumanMessage(text)
+        setActionError(payload.error ?? 'Nao foi possivel enviar a mensagem humana.')
+        return
+      }
+
+      setMessages(prev => prev.map(item => item.id === tempId ? { ...item, id: payload.messageId ?? tempId } : item))
+      await loadConversations(false)
+    } catch (err) {
+      setActionError(`Falha no envio humano: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setSendingHumanMessage(false)
+    }
+  }
+
+  function handleHumanComposerKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void sendHumanReply()
+    }
   }
 
   const filteredConversations = useMemo(() => {
@@ -518,6 +650,38 @@ export default function ChatInboxCRM() {
                       </div>
                     )}
                   </div>
+
+                  {selectedConversation.atendimento_humano && (
+                    <div className="border-t border-slate-200 bg-white px-4 py-3">
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-700">Resposta humana</p>
+                          <p className="text-xs text-slate-500">Ao assumir a conversa, o envio manual fica disponivel aqui.</p>
+                        </div>
+                        <Badge text={selectedConversation.agente_atual || profile?.nome || 'Humano'} tone="green" />
+                      </div>
+                      <div className="flex items-end gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                        <textarea
+                          value={humanMessage}
+                          onChange={event => setHumanMessage(event.target.value)}
+                          onKeyDown={handleHumanComposerKeyDown}
+                          rows={2}
+                          placeholder="Digite a resposta do atendimento humano"
+                          disabled={sendingHumanMessage}
+                          className="min-h-[52px] flex-1 resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-sky-400 disabled:opacity-60"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void sendHumanReply()}
+                          disabled={sendingHumanMessage || !humanMessage.trim()}
+                          className="inline-flex h-11 items-center gap-2 rounded-xl bg-sky-600 px-4 text-sm font-medium text-white disabled:opacity-50"
+                        >
+                          {sendingHumanMessage ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                          Enviar
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <aside className="min-h-0 overflow-y-auto px-4 py-4">

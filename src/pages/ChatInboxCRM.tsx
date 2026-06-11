@@ -493,6 +493,13 @@ export default function ChatInboxCRM() {
     const rows = (data ?? []) as ConversationRow[]
     setConversations(rows)
     setSelectedId(current => {
+      // Abre direto a conversa vinda de outra página (ex: Renovações)
+      const deepPhone = sessionStorage.getItem('crm:open-chat-phone')
+      if (deepPhone) {
+        sessionStorage.removeItem('crm:open-chat-phone')
+        const match = rows.find(item => (item.document_key ?? '').replace(/\D/g, '').endsWith(deepPhone.replace(/\D/g, '')) || (item.telefone ?? '').replace(/\D/g, '').endsWith(deepPhone.replace(/\D/g, '')))
+        if (match) return match.id
+      }
       if (current && rows.some(item => item.id === current)) return current
       return rows[0]?.id ?? null
     })

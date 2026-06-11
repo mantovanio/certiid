@@ -12,8 +12,6 @@ import { queueEmailMessage, queueWhatsAppMessage, queueWhatsAppFollowUp, renderT
 import { loadActiveWhatsAppIntegration } from '@/lib/whatsappIntegration'
 import { useAuth } from '@/contexts/AuthContext'
 import { hasPerfil, isAdminProfile } from '@/lib/security'
-import ChatPanel, { type EvolutionCfg } from '@/components/ChatPanel'
-import type { ChatContact } from '@/types'
 import * as XLSX from 'xlsx'
 import type {
   AutomationRule, CommunicationTemplate, LinkProduto,
@@ -327,9 +325,7 @@ export default function Renovacoes() {
   const listaRef                          = useRef<RenovacaoV2[]>([])
   const autoKanbanRef                     = useRef(false)
 
-  // ── evolution chat flutuante ──────────────────────────────────
-  const [evolution, setEvolution]         = useState<EvolutionCfg | null>(null)
-  const [chatContact, setChatContact]     = useState<ChatContact | null>(null)
+  // ── chat flutuante removido — usa ChatInboxCRM via crm:navigate ──
 
   // ── toast ────────────────────────────────────────────────────
 
@@ -480,25 +476,11 @@ export default function Renovacoes() {
     setN8nWebhookUrl((data as { webhook_url: string | null } | null)?.webhook_url ?? null)
   }, [])
 
-  const fetchEvolutionConfig = useCallback(async () => {
-    try {
-      const data = await loadActiveWhatsAppIntegration()
-      if (!data) { logger.warn('Renovacoes', 'nenhuma integração WhatsApp ativa encontrada'); return }
-      if (!data.supportsEmbeddedChat) { logger.warn('Renovacoes', 'integração WhatsApp ativa sem chat embutido', data.engine); return }
-      if (data.base_url && data.api_token && data.instance_name) {
-        setEvolution({ base_url: data.base_url, api_token: data.api_token, instance_name: data.instance_name })
-      }
-    } catch (error) {
-      logger.error('Renovacoes', 'erro ao buscar integração WhatsApp', String(error))
-    }
-  }, [])
-
-  useEffect(() => { void fetchEvolutionConfig() }, [fetchEvolutionConfig])
 
   function openChat(r: RenovacaoV2) {
-    if (!evolution) { showMsg('Canal WhatsApp com chat embutido não configurado. Revise em Configurações → Integrações.', 'err'); return }
     if (!r.telefone) { showMsg('Cliente sem telefone para chat.', 'err'); return }
-    setChatContact({ id: r.id, nome: r.razao_social ?? r.cliente, telefone: r.telefone, id_conversa_chatwoot: null, evolution_remote_jid: null, evolution_instance: evolution.instance_name })
+    sessionStorage.setItem('crm:open-chat-phone', r.telefone.replace(/\D/g, ''))
+    window.dispatchEvent(new CustomEvent('crm:navigate', { detail: { page: 'chat' } }))
   }
 
   // ── template values (for rendering) ─────────────────────────
@@ -1876,13 +1858,6 @@ export default function Renovacoes() {
 
       </div>
 
-      {chatContact && evolution && (
-        <ChatPanel
-          contact={chatContact}
-          evolution={evolution}
-          onClose={() => setChatContact(null)}
-        />
-      )}
     </div>
   )
 }

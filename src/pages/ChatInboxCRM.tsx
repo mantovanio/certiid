@@ -224,6 +224,7 @@ export default function ChatInboxCRM() {
 
   const layoutRef = useRef<HTMLDivElement>(null)
   const detailRef = useRef<HTMLDivElement>(null)
+  const inboxListRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -941,31 +942,67 @@ export default function ChatInboxCRM() {
     }
   }
 
-  const filteredConversations = useMemo(() => {
+  const searchMatchedConversations = useMemo(() => {
     return conversations.filter(item => {
       const text = `${item.cliente_nome ?? ''} ${item.nome_crm ?? ''} ${item.telefone ?? ''} ${item.document_key ?? ''} ${item.ultima_mensagem ?? ''}`.toLowerCase()
-      const matchesSearch = !search.trim() || text.includes(search.trim().toLowerCase())
+      return !search.trim() || text.includes(search.trim().toLowerCase())
+    })
+  }, [conversations, search])
+
+  const filteredConversations = useMemo(() => {
+    return searchMatchedConversations.filter(item => {
       const matchesQueue = queueFilter === 'todas' || item.fila === queueFilter
       const matchesHuman = humanFilter === 'todos'
         || (humanFilter === 'humano' && (item.atendimento_humano || humanOverrideIds.includes(item.id)))
         || (humanFilter === 'ia' && !item.atendimento_humano && !humanOverrideIds.includes(item.id))
-      return matchesSearch && matchesQueue && matchesHuman
+      return matchesQueue && matchesHuman
     })
-  }, [conversations, search, queueFilter, humanFilter, humanOverrideIds])
+  }, [searchMatchedConversations, queueFilter, humanFilter, humanOverrideIds])
 
   const summary = useMemo(() => ({
-    total: filteredConversations.length,
-    atendimento: filteredConversations.filter(item => item.fila === 'atendimento').length,
-    renovacao: filteredConversations.filter(item => item.fila === 'renovacao').length,
-    humano: filteredConversations.filter(item => item.atendimento_humano || humanOverrideIds.includes(item.id)).length,
-  }), [filteredConversations, humanOverrideIds])
+      total: searchMatchedConversations.length,
+      atendimento: searchMatchedConversations.filter(item => item.fila === 'atendimento').length,
+      renovacao: searchMatchedConversations.filter(item => item.fila === 'renovacao').length,
+      humano: searchMatchedConversations.filter(item => item.atendimento_humano || humanOverrideIds.includes(item.id)).length,
+    }), [searchMatchedConversations, humanOverrideIds])
+
+  const activeShortcut = useMemo(() => ({
+    all: queueFilter === 'todas' && humanFilter === 'todos',
+    atendimento: queueFilter === 'atendimento' && humanFilter === 'todos',
+    renovacao: queueFilter === 'renovacao' && humanFilter === 'todos',
+    humano: queueFilter === 'todas' && humanFilter === 'humano',
+  }), [queueFilter, humanFilter])
 
   const groupedByStatus = useMemo(() => {
-    return STATUS_COLUMNS.map(column => ({
-      ...column,
-      items: filteredConversations.filter(item => item.kanban_status === column.key),
-    }))
-  }, [filteredConversations])
+      return STATUS_COLUMNS.map(column => ({
+        ...column,
+        items: filteredConversations.filter(item => item.kanban_status === column.key),
+      }))
+    }, [filteredConversations])
+
+  function applySummaryShortcut(target: 'all' | 'atendimento' | 'renovacao' | 'humano') {
+    const nextQueue: 'todas' | QueueType =
+      target === 'atendimento' ? 'atendimento' :
+      target === 'renovacao' ? 'renovacao' :
+      'todas'
+
+    const nextHuman: 'todos' | 'ia' | 'humano' = target === 'humano' ? 'humano' : 'todos'
+
+    setQueueFilter(nextQueue)
+    setHumanFilter(nextHuman)
+
+    const nextConversation = searchMatchedConversations.find(item => {
+      const matchesQueue = nextQueue === 'todas' || item.fila === nextQueue
+      const matchesHuman = nextHuman === 'todos'
+        || (nextHuman === 'humano' && (item.atendimento_humano || humanOverrideIds.includes(item.id)))
+      return matchesQueue && matchesHuman
+    })
+
+    setSelectedId(nextConversation?.id ?? null)
+    requestAnimationFrame(() => {
+      inboxListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-slate-50 text-slate-900">
@@ -992,10 +1029,10 @@ export default function ChatInboxCRM() {
         </div>
 
         <div className="mt-4 grid gap-3 md:grid-cols-4">
-          <SummaryCard label="Conversas visiveis" value={summary.total} />
-          <SummaryCard label="Fila atendimento" value={summary.atendimento} />
-          <SummaryCard label="Fila renovacao" value={summary.renovacao} />
-          <SummaryCard label="Atendimento humano" value={summary.humano} />
+          <SummaryCard label="Conversas visiveis" value={summary.total} active={activeShortcut.all} onClick={() => applySummaryShortcut('all')} />
+          <SummaryCard label="Fila atendimento" value={summary.atendimento} active={activeShortcut.atendimento} onClick={() => applySummaryShortcut('atendimento')} />
+          <SummaryCard label="Fila renovacao" value={summary.renovacao} active={activeShortcut.renovacao} onClick={() => applySummaryShortcut('renovacao')} />
+          <SummaryCard label="Atendimento humano" value={summary.humano} active={activeShortcut.humano} onClick={() => applySummaryShortcut('humano')} />
         </div>
 
         <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_180px_180px]">
@@ -1032,8 +1069,8 @@ export default function ChatInboxCRM() {
               <p className="text-xs text-slate-400">Lista viva de conversas com filtros e abertura imediata do chat.</p>
             </div>
 
-            <div className="h-[calc(100%-73px)] overflow-y-auto p-3">
-              <div className="space-y-3">
+              <div ref={inboxListRef} className="h-[calc(100%-73px)] overflow-y-auto p-3">
+                <div className="space-y-3">
                 {filteredConversations.map(item => (
                   <ConversationCard key={item.id} item={item} selected={item.id === selectedId} onClick={() => setSelectedId(item.id)} human={item.atendimento_humano || humanOverrideIds.includes(item.id)} />
                 ))}
@@ -1422,9 +1459,35 @@ export default function ChatInboxCRM() {
   )
 }
 
-function SummaryCard({ label, value }: { label: string; value: number }) {
+function SummaryCard({
+  label,
+  value,
+  active = false,
+  onClick,
+}: {
+  label: string
+  value: number
+  active?: boolean
+  onClick?: () => void
+}) {
+  const className = `rounded-2xl border px-4 py-3 text-left transition ${
+    active
+      ? 'border-sky-300 bg-sky-50 shadow-sm'
+      : 'border-slate-200 bg-slate-50 hover:border-slate-300 hover:bg-white'
+  }`
+
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className={className}>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+        <p className="mt-2 text-2xl font-bold text-slate-900">{value}</p>
+        <p className="mt-1 text-xs text-slate-400">Clique para filtrar os contatos</p>
+      </button>
+    )
+  }
+
   return (
-    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+    <div className={className}>
       <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
       <p className="mt-2 text-2xl font-bold text-slate-900">{value}</p>
     </div>

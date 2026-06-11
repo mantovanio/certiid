@@ -192,8 +192,9 @@ async function syncCrmInbox(input: {
   content?: string | null
   direction: 'incoming' | 'outgoing'
   senderType: 'cliente' | 'ia' | 'humano'
+  senderName?: string | null
 }) {
-  const { remoteJid, instance, pushName, content, direction, senderType } = input
+  const { remoteJid, instance, pushName, content, direction, senderType, senderName } = input
   const phone = jidToPhone(remoteJid)
   const documentKey = normalizePhone(phone) ?? phone
   if (!documentKey) return null
@@ -220,6 +221,7 @@ async function syncCrmInbox(input: {
       document_key: documentKey,
       direction,
       sender_type: senderType,
+      sender_name: senderType === 'humano' ? senderName ?? null : senderType === 'ia' ? 'IA Clara' : pushName ?? 'Cliente',
       mensagem: content ?? null,
       created_at: new Date().toISOString(),
     }])
@@ -355,6 +357,7 @@ async function actionSendMessage(p: Record<string, unknown>) {
   const number   = p.number        as string | undefined
   const text     = p.content       as string | undefined
   const leadId   = p.lead_id       as string | undefined
+  const senderName = p.sender_name as string | undefined
   const quotedId = p.quoted_message_id as string | undefined
   const quotedContent = p.quoted_content as string | undefined
 
@@ -413,6 +416,7 @@ async function actionSendMessage(p: Record<string, unknown>) {
       content: text,
       direction: 'outgoing',
       senderType: 'humano',
+      senderName,
     })
 
     return { ok: true, messageId: msgId, remoteJid }
@@ -431,6 +435,7 @@ async function actionSendAttachment(form: FormData) {
   const file     = form.get('file')           as File   | null
   const caption  = (form.get('caption')       as string | null) ?? ''
   const leadId   = form.get('lead_id')        as string | null
+  const senderName = form.get('sender_name')  as string | null
 
   if (!baseUrl || !apiKey || !instance || !number || !file) {
     return { ok: false, error: 'Parâmetros incompletos para envio de anexo' }
@@ -509,13 +514,14 @@ async function actionSendAttachment(form: FormData) {
         },
       }])
 
-      await syncCrmInbox({
-        remoteJid,
-        instance,
-        content: caption || file.name,
-        direction: 'outgoing',
-        senderType: 'humano',
-      })
+        await syncCrmInbox({
+          remoteJid,
+          instance,
+          content: caption || file.name,
+          direction: 'outgoing',
+          senderType: 'humano',
+          senderName,
+        })
 
       return { ok: true, messageId: msgId, remoteJid }
     }
@@ -582,13 +588,14 @@ async function actionSendAttachment(form: FormData) {
       },
     }])
 
-    await syncCrmInbox({
-      remoteJid,
-      instance,
-      content: caption || file.name,
-      direction: 'outgoing',
-      senderType: 'humano',
-    })
+      await syncCrmInbox({
+        remoteJid,
+        instance,
+        content: caption || file.name,
+        direction: 'outgoing',
+        senderType: 'humano',
+        senderName,
+      })
 
     return { ok: true, messageId: msgId, remoteJid }
   } catch (e) {

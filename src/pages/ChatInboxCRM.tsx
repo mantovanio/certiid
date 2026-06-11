@@ -60,6 +60,7 @@ interface CrmMessage {
   document_key: string
   direction: DirectionType
   sender_type: SenderType
+  sender_name?: string | null
   mensagem: string | null
   created_at: string
 }
@@ -192,8 +193,13 @@ export default function ChatInboxCRM() {
 
   const humanModeActive = useMemo(
     () => Boolean(selectedConversation && (selectedConversation.atendimento_humano || humanOverrideIds.includes(selectedConversation.id))),
-    [humanOverrideIds, selectedConversation],
-  )
+      [humanOverrideIds, selectedConversation],
+    )
+
+  const currentHumanAgentName = selectedConversation?.agente_atual
+    || selectedConversation?.agente_nome
+    || profile?.nome
+    || 'Humano'
 
   useEffect(() => {
     void bootstrap()
@@ -528,12 +534,14 @@ export default function ChatInboxCRM() {
 
       const tempId = `temp-human-${Date.now()}`
       const tempCreatedAt = new Date().toISOString()
+      const senderName = currentHumanAgentName
       setMessages(prev => [...prev, {
         id: tempId,
         conversation_id: selectedConversation.id,
         document_key: selectedConversation.document_key,
         direction: 'outgoing',
         sender_type: 'humano',
+        sender_name: senderName,
         mensagem: text,
         created_at: tempCreatedAt,
       }])
@@ -553,6 +561,7 @@ export default function ChatInboxCRM() {
           number: destinationNumber,
           content: text,
           lead_id: selectedConversation.crm_customer_id,
+          sender_name: senderName,
         }),
       })
 
@@ -589,6 +598,7 @@ export default function ChatInboxCRM() {
     form.append('instance_name', integration.instance_name ?? '')
     form.append('number', destinationNumber)
     form.append('lead_id', selectedConversation.crm_customer_id ?? '')
+    form.append('sender_name', currentHumanAgentName)
     form.append('file', blob, filename)
     form.append('caption', filename)
 
@@ -863,7 +873,11 @@ export default function ChatInboxCRM() {
                     ) : (
                       <div className="space-y-3">
                         {messages.map(message => (
-                          <MessageRow key={message.id} message={message} />
+                          <MessageRow
+                            key={message.id}
+                            message={message}
+                            fallbackHumanName={currentHumanAgentName}
+                          />
                         ))}
                       </div>
                     )}
@@ -1169,9 +1183,13 @@ function ConversationMiniCard({
   )
 }
 
-function MessageRow({ message }: { message: CrmMessage }) {
-  const isOutgoing = message.direction === 'outgoing'
-  const senderLabel = message.sender_type === 'cliente' ? 'Cliente' : message.sender_type === 'ia' ? 'IA Clara' : 'Humano'
+function MessageRow({ message, fallbackHumanName }: { message: CrmMessage; fallbackHumanName?: string | null }) {
+    const isOutgoing = message.direction === 'outgoing'
+  const senderLabel = message.sender_type === 'cliente'
+    ? 'Cliente'
+    : message.sender_type === 'ia'
+      ? 'IA Clara'
+      : message.sender_name || fallbackHumanName || 'Humano'
 
   return (
     <div className={`flex ${isOutgoing ? 'justify-end' : 'justify-start'}`}>

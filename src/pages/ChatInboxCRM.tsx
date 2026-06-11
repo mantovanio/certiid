@@ -78,6 +78,15 @@ interface EvolutionIntegration {
   base_url: string | null
   api_token: string | null
   instance_name: string | null
+  sender_name?: string | null
+}
+
+interface ManualConversationForm {
+  contactName: string
+  phone: string
+  queue: QueueType
+  integrationId: string
+  firstMessage: string
 }
 
 const EDGE_FN = 'https://cvfrhfiaprdtwxxplngk.supabase.co/functions/v1/evolution-webhook'
@@ -144,6 +153,36 @@ function queueLabel(fila: QueueType) {
   return fila === 'renovacao' ? 'Renovacao' : 'Atendimento'
 }
 
+function normalizePhone(value: string) {
+  const digits = value.replace(/\D/g, '')
+  if (!digits) return ''
+  if (digits.startsWith('55')) return digits
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`
+  return digits
+}
+
+function inferQueueFromIntegration(integration: Pick<EvolutionIntegration, 'name' | 'instance_name' | 'sender_name'>) {
+  const instance = (integration.instance_name ?? '').toLowerCase()
+  const label = `${integration.name ?? ''} ${integration.sender_name ?? ''}`.toLowerCase()
+  if (instance === 'renovacao' || instance === 'certiid') return 'renovacao'
+  if (instance === 'atendimento') return 'atendimento'
+  return label.includes('renov') ? 'renovacao' : 'atendimento'
+}
+
+function integrationDisplayName(integration: EvolutionIntegration) {
+  return integration.sender_name || integration.name || integration.instance_name || 'Instancia sem nome'
+}
+
+function createEmptyManualConversationForm(): ManualConversationForm {
+  return {
+    contactName: '',
+    phone: '',
+    queue: 'atendimento',
+    integrationId: '',
+    firstMessage: '',
+  }
+}
+
 export default function ChatInboxCRM() {
   const { profile } = useAuth()
   const [conversations, setConversations] = useState<ConversationRow[]>([])
@@ -165,6 +204,11 @@ export default function ChatInboxCRM() {
   const [draggedConversationId, setDraggedConversationId] = useState<string | null>(null)
   const [humanMessage, setHumanMessage] = useState('')
   const [sendingHumanMessage, setSendingHumanMessage] = useState(false)
+  const [manualConversationOpen, setManualConversationOpen] = useState(false)
+  const [manualConversationLoading, setManualConversationLoading] = useState(false)
+  const [manualConversationError, setManualConversationError] = useState<string | null>(null)
+  const [integrations, setIntegrations] = useState<EvolutionIntegration[]>([])
+  const [manualConversation, setManualConversation] = useState<ManualConversationForm>(createEmptyManualConversationForm)
   const [leftPanelWidth, setLeftPanelWidth] = useState(420)
   const [rightPanelWidth, setRightPanelWidth] = useState(330)
   const [isResizingLeft, setIsResizingLeft] = useState(false)
@@ -200,6 +244,27 @@ export default function ChatInboxCRM() {
     || selectedConversation?.agente_nome
     || profile?.nome
     || 'Humano'
+
+  const manualChannelOptions = useMemo(() => {
+    const preferredByQueue = new Map<QueueType, EvolutionIntegration>()
+
+    for (const integration of integrations) {
+      const queue = inferQueueFromIntegration(integration)
+      const current = preferredByQueue.get(queue)
+      const isPreferred = integration.instance_name?.toLowerCase() === queue
+      const currentPreferred = current?.instance_name?.toLowerCase() === queue
+
+      if (!current || (isPreferred && !currentPreferred)) {
+        preferredByQueue.set(queue, integration)
+      }
+    }
+
+    return Array.from(preferredByQueue.entries()).map(([queue, integration]) => ({
+      queue,
+      integration,
+      label: `${queueLabel(queue)} - ${integrationDisplayName(integration)}`,
+    }))
+  }, [integrations])
 
   useEffect(() => {
     void bootstrap()
@@ -341,17 +406,22 @@ export default function ChatInboxCRM() {
     setAgents(rows)
   }
 
-  async function resolveEvolutionIntegration(instanceName?: string | null) {
+  async function fetchEvolutionIntegrations() {
     const { data: integrations, error: integrationError } = await supabase
       .from('external_integrations')
-      .select('id, name, status, base_url, api_token, instance_name')
+      .select('id, name, status, base_url, api_token, instance_name, sender_name')
       .eq('provider', 'evolution')
       .eq('status', 'ativo')
       .order('updated_at', { ascending: false })
 
     if (integrationError) throw new Error(`Nao foi possivel carregar a integracao Evolution: ${integrationError.message}`)
 
-    const rows = (integrations ?? []) as EvolutionIntegration[]
+    return (integrations ?? []) as EvolutionIntegration[]
+  }
+
+  async function resolveEvolutionIntegration(instanceName?: string | null) {
+    const rows = await fetchEvolutionIntegrations()
+
     const integration = rows.find(item => item.instance_name === instanceName) ?? rows[0]
     if (!integration?.base_url || !integration?.api_token || !integration?.instance_name) {
       throw new Error('Nenhuma integracao Evolution ativa foi encontrada para essa conversa.')
@@ -381,6 +451,77 @@ export default function ChatInboxCRM() {
   function selectConversationFromKanban(conversationId: string) {
     setSelectedId(conversationId)
     closeKanban()
+  }
+
+  async function openManualConversationModal() {
+    setManualConversationLoading(true)
+    setManualConversationError(null)
+
+    try {
+      const rows = await fetchEvolutionIntegrations()
+      setIntegrations(rows)
+
+      if (rows.length === 0) {
+        throw new Error('Nenhuma integracao Evolution ativa foi encontrada para iniciar uma conversa manual.')
+      }
+
+      const defaultIntegration =
+        rows.find(item => item.instance_name?.toLowerCase() === 'atendimento')
+        ?? rows.find(item => item.instance_name?.toLowerCase() === 'renovacao')
+        ?? rows.find(item => item.instance_name?.toLowerCase() === 'certiid')
+        ?? rows[0]
+      setManualConversation({
+        contactName: '',
+        phone: '',
+        queue: inferQueueFromIntegration(defaultIntegration),
+        integrationId: defaultIntegration.id,
+        firstMessage: '',
+      })
+      setManualConversationOpen(true)
+    } catch (err) {
+      setManualConversationError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setManualConversationLoading(false)
+    }
+  }
+
+  function closeManualConversationModal() {
+    setManualConversationOpen(false)
+    setManualConversationError(null)
+    setManualConversation(createEmptyManualConversationForm())
+  }
+
+  async function activateConversationOwner(conversationId: string, agent: { id: string; nome: string }) {
+    const { error: deactivateError } = await supabase
+      .from('crm_chat_assignments')
+      .update({ ativo: false })
+      .eq('conversation_id', conversationId)
+      .eq('ativo', true)
+
+    if (deactivateError) throw new Error(`Nao foi possivel limpar a atribuicao anterior: ${deactivateError.message}`)
+
+    const { error: insertError } = await supabase
+      .from('crm_chat_assignments')
+      .insert([{
+        conversation_id: conversationId,
+        agente_id: agent.id,
+        agente_nome: agent.nome,
+        ativo: true,
+      }])
+
+    if (insertError) throw new Error(`Nao foi possivel atribuir o atendimento: ${insertError.message}`)
+
+    const { error: updateError } = await supabase
+      .from('crm_chat_conversations')
+      .update({
+        atendimento_humano: true,
+        agente_nome: agent.nome,
+      })
+      .eq('id', conversationId)
+
+    if (updateError) throw new Error(`A atribuicao foi criada, mas a conversa nao foi atualizada: ${updateError.message}`)
+
+    markConversationAsHuman(conversationId)
   }
 
   async function updateConversationStatus(status: string) {
@@ -457,46 +598,106 @@ export default function ChatInboxCRM() {
     setActionLoading(true)
     setActionError(null)
 
-    const { error: deactivateError } = await supabase
-      .from('crm_chat_assignments')
-      .update({ ativo: false })
-      .eq('conversation_id', selectedConversation.id)
-      .eq('ativo', true)
-
-    if (deactivateError) {
-      setActionError(`Nao foi possivel limpar a atribuicao anterior: ${deactivateError.message}`)
-      setActionLoading(false)
-      return
+    try {
+      await activateConversationOwner(selectedConversation.id, { id: agent.id, nome: agent.nome })
+      await loadConversations(false)
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
     }
 
-    const { error: insertError } = await supabase
-      .from('crm_chat_assignments')
-      .insert([{
-        conversation_id: selectedConversation.id,
-        agente_id: agent.id,
-        agente_nome: agent.nome,
-        ativo: true,
-      }])
-
-    if (insertError) {
-      setActionError(`Nao foi possivel atribuir o atendimento: ${insertError.message}`)
-      setActionLoading(false)
-      return
-    }
-
-    const { error: updateError } = await supabase
-      .from('crm_chat_conversations')
-      .update({
-        atendimento_humano: true,
-        agente_nome: agent.nome,
-      })
-      .eq('id', selectedConversation.id)
-
-    if (updateError) setActionError(`A atribuicao foi criada, mas a conversa nao foi atualizada: ${updateError.message}`)
-
-    markConversationAsHuman(selectedConversation.id)
-    await loadConversations(false)
     setActionLoading(false)
+  }
+
+  async function createManualConversation() {
+    const normalizedPhone = normalizePhone(manualConversation.phone)
+    const firstMessage = manualConversation.firstMessage.trim()
+    const contactName = manualConversation.contactName.trim()
+    const selectedChannel = manualChannelOptions.find(item => item.integration.id === manualConversation.integrationId)
+
+    if (!selectedChannel?.integration.instance_name || !selectedChannel.integration.base_url || !selectedChannel.integration.api_token) {
+      setManualConversationError('Selecione um canal valido para iniciar a conversa.')
+      return
+    }
+
+    if (!normalizedPhone) {
+      setManualConversationError('Informe um telefone valido com DDD.')
+      return
+    }
+
+    if (!firstMessage) {
+      setManualConversationError('Informe a primeira mensagem para iniciar a conversa.')
+      return
+    }
+
+    setManualConversationLoading(true)
+    setManualConversationError(null)
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (!accessToken) throw new Error('Sessao expirada. Atualize a pagina e tente novamente.')
+
+      const response = await fetch(EDGE_FN, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          _action: 'send_message',
+          base_url: selectedChannel.integration.base_url,
+          api_token: selectedChannel.integration.api_token,
+          instance_name: selectedChannel.integration.instance_name,
+          number: normalizedPhone,
+          content: firstMessage,
+          sender_name: profile?.nome ?? 'Humano',
+          contact_name: contactName || null,
+          queue_override: manualConversation.queue,
+        }),
+      })
+
+      const payload = await response.json() as { ok?: boolean; error?: string }
+      if (!response.ok || !payload.ok) throw new Error(payload.error ?? 'Nao foi possivel iniciar a conversa manual.')
+
+      const { data: createdRows, error: createdError } = await supabase
+        .from('crm_chat_admin_view')
+        .select('*')
+        .eq('document_key', normalizedPhone)
+        .eq('whatsapp_instance', selectedChannel.integration.instance_name)
+        .order('ultima_interacao_em', { ascending: false })
+        .limit(1)
+
+      if (createdError) throw new Error(`A conversa foi enviada, mas nao foi localizada no CRM: ${createdError.message}`)
+
+      const createdConversation = (createdRows?.[0] ?? null) as ConversationRow | null
+      if (!createdConversation?.id) throw new Error('A conversa foi enviada, mas ainda nao apareceu no CRM. Atualize e tente novamente.')
+
+      if (contactName) {
+        await supabase
+          .from('crm_chat_conversations')
+          .update({ cliente_nome: contactName, fila: manualConversation.queue })
+          .eq('id', createdConversation.id)
+
+        if (createdConversation.crm_customer_id) {
+          await supabase
+            .from('crm_customers')
+            .update({ nome: contactName, contato_status: 'conversando' })
+            .eq('id', createdConversation.crm_customer_id)
+        }
+      }
+
+      if (profile?.id && profile?.nome) {
+        await activateConversationOwner(createdConversation.id, { id: profile.id, nome: profile.nome })
+      }
+
+      await loadConversations(false)
+      setSelectedId(createdConversation.id)
+      closeManualConversationModal()
+    } catch (err) {
+      setManualConversationError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setManualConversationLoading(false)
+    }
   }
 
   function clearPendingFile() {
@@ -775,6 +976,9 @@ export default function ChatInboxCRM() {
             <p className="text-sm text-slate-500">Painel unificado do Kanban, filas de WhatsApp e historico de mensagens.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => void openManualConversationModal()} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50" disabled={manualConversationLoading}>
+              <MessageCircle size={15} /> Nova conversa
+            </button>
             <button type="button" onClick={() => void loadConversations(true)} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
               <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} /> Atualizar
             </button>
@@ -1049,6 +1253,108 @@ export default function ChatInboxCRM() {
               </div>
             )}
           </section>
+        </div>
+      )}
+
+      {manualConversationOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]">
+          <div className="w-full max-w-2xl rounded-[28px] border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Nova conversa manual</h3>
+                <p className="text-sm text-slate-500">Escolha o numero de saida, informe o contato e envie a primeira mensagem.</p>
+              </div>
+              <button type="button" onClick={closeManualConversationModal} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                <X size={15} /> Fechar
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-5">
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Nome do contato</span>
+                  <input
+                    value={manualConversation.contactName}
+                    onChange={event => setManualConversation(prev => ({ ...prev, contactName: event.target.value }))}
+                    placeholder="Ex.: Alexandre"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Telefone com DDD</span>
+                  <input
+                    value={manualConversation.phone}
+                    onChange={event => setManualConversation(prev => ({ ...prev, phone: event.target.value }))}
+                    placeholder="5511999999999"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
+                  />
+                </label>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Numero de saida</span>
+                  <select
+                    value={manualConversation.integrationId}
+                    onChange={event => {
+                      const next = manualChannelOptions.find(item => item.integration.id === event.target.value)
+                      setManualConversation(prev => ({
+                        ...prev,
+                        integrationId: event.target.value,
+                        queue: next?.queue ?? prev.queue,
+                      }))
+                    }}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
+                  >
+                    <option value="">Selecione um canal</option>
+                    {manualChannelOptions.map(option => (
+                      <option key={option.integration.id} value={option.integration.id}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Fila da conversa</span>
+                  <select
+                    value={manualConversation.queue}
+                    onChange={event => setManualConversation(prev => ({ ...prev, queue: event.target.value as QueueType }))}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
+                  >
+                    <option value="atendimento">Atendimento</option>
+                    <option value="renovacao">Renovacao</option>
+                  </select>
+                </label>
+              </div>
+
+              <label className="block space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Primeira mensagem</span>
+                <textarea
+                  value={manualConversation.firstMessage}
+                  onChange={event => setManualConversation(prev => ({ ...prev, firstMessage: event.target.value }))}
+                  rows={5}
+                  placeholder="Digite aqui a mensagem inicial para o contato."
+                  className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm outline-none focus:border-sky-400"
+                />
+              </label>
+
+              {manualConversationError && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                  {manualConversationError}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button type="button" onClick={closeManualConversationModal} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                  Cancelar
+                </button>
+                <button type="button" onClick={() => void createManualConversation()} disabled={manualConversationLoading} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
+                  {manualConversationLoading ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                  Iniciar conversa
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

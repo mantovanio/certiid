@@ -97,7 +97,11 @@ async function insertReturning(table: string, row: Record<string, unknown>) {
   return data[0] ?? null
 }
 
-function resolveQueue(instance: string | null | undefined, content: string | null | undefined) {
+function resolveQueue(instance: string | null | undefined, content: string | null | undefined, queueOverride?: string | null) {
+  if (queueOverride === 'renovacao' || queueOverride === 'atendimento') return queueOverride
+  const normalizedInstance = (instance ?? '').trim().toLowerCase()
+  if (normalizedInstance === 'renovacao' || normalizedInstance === 'certiid') return 'renovacao'
+  if (normalizedInstance === 'atendimento') return 'atendimento'
   const probe = `${instance ?? ''} ${content ?? ''}`.toLowerCase()
   return probe.includes('renov') ? 'renovacao' : 'atendimento'
 }
@@ -141,9 +145,10 @@ async function ensureCrmConversation(input: {
   pushName?: string | null
   content?: string | null
   direction: 'incoming' | 'outgoing'
+  queueOverride?: string | null
 }) {
-  const { documentKey, phone, customerId, instance, pushName, content, direction } = input
-  const queue = resolveQueue(instance, content)
+  const { documentKey, phone, customerId, instance, pushName, content, direction, queueOverride } = input
+  const queue = resolveQueue(instance, content, queueOverride)
   const existing = await dbSelect(
     'crm_chat_conversations',
     `document_key=eq.${encodeURIComponent(documentKey)}&order=ultima_interacao_em.desc&limit=1`,
@@ -193,8 +198,9 @@ async function syncCrmInbox(input: {
   direction: 'incoming' | 'outgoing'
   senderType: 'cliente' | 'ia' | 'humano'
   senderName?: string | null
+  queueOverride?: string | null
 }) {
-  const { remoteJid, instance, pushName, content, direction, senderType, senderName } = input
+  const { remoteJid, instance, pushName, content, direction, senderType, senderName, queueOverride } = input
   const phone = jidToPhone(remoteJid)
   const documentKey = normalizePhone(phone) ?? phone
   if (!documentKey) return null
@@ -213,6 +219,7 @@ async function syncCrmInbox(input: {
     pushName,
     content,
     direction,
+    queueOverride,
   })
 
   if (conversationId) {
@@ -358,6 +365,8 @@ async function actionSendMessage(p: Record<string, unknown>) {
   const text     = p.content       as string | undefined
   const leadId   = p.lead_id       as string | undefined
   const senderName = p.sender_name as string | undefined
+  const contactName = p.contact_name as string | undefined
+  const queueOverride = p.queue_override as string | undefined
   const quotedId = p.quoted_message_id as string | undefined
   const quotedContent = p.quoted_content as string | undefined
 
@@ -413,10 +422,12 @@ async function actionSendMessage(p: Record<string, unknown>) {
     await syncCrmInbox({
       remoteJid,
       instance,
+      pushName: contactName,
       content: text,
       direction: 'outgoing',
       senderType: 'humano',
       senderName,
+      queueOverride,
     })
 
     return { ok: true, messageId: msgId, remoteJid }

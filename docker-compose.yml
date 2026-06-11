@@ -1,18 +1,18 @@
 version: '3.8'
 
 services:
-  certifastcrm:
-    image: certifastcrm:latest
+  certiid:
+    image: certiid:latest
     deploy:
       replicas: 1
       restart_policy:
         condition: on-failure
       labels:
         - "traefik.enable=true"
-        - "traefik.http.routers.certifastcrm.rule=Host(`certifast.mantovan.com.br`)"
-        - "traefik.http.routers.certifastcrm.entrypoints=websecure"
-        - "traefik.http.routers.certifastcrm.tls.certresolver=letsencryptresolver"
-        - "traefik.http.services.certifastcrm.loadbalancer.server.port=80"
+        - "traefik.http.routers.certiid.rule=Host(`certiid.mantovan.com.br`)"
+        - "traefik.http.routers.certiid.entrypoints=websecure"
+        - "traefik.http.routers.certiid.tls.certresolver=letsencryptresolver"
+        - "traefik.http.services.certiid.loadbalancer.server.port=80"
         - "traefik.docker.network=minha_rede"
     networks:
       - minha_rede

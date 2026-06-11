@@ -86,6 +86,148 @@ async function ensureLeadForConversation(input: {
   return leadId
 }
 
+async function insertReturning(table: string, row: Record<string, unknown>) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: 'POST',
+    headers: { ...DB, 'Prefer': 'return=representation' },
+    body: JSON.stringify(row),
+  })
+  if (!res.ok) return null
+  const data = await res.json() as Record<string, unknown>[]
+  return data[0] ?? null
+}
+
+function resolveQueue(instance: string | null | undefined, content: string | null | undefined) {
+  const probe = `${instance ?? ''} ${content ?? ''}`.toLowerCase()
+  return probe.includes('renov') ? 'renovacao' : 'atendimento'
+}
+
+async function ensureCrmCustomer(input: {
+  documentKey: string
+  phone: string
+  pushName?: string | null
+}) {
+  const { documentKey, phone, pushName } = input
+  const existing = await dbSelect(
+    'crm_customers',
+    `document_key=eq.${encodeURIComponent(documentKey)}&limit=1`,
+    'id,document_key,nome,telefone_principal,contato_status',
+  )
+
+  const customerId = existing[0]?.id as string | undefined
+  if (customerId) {
+    await dbPatch('crm_customers', `id=eq.${customerId}`, {
+      nome: pushName ?? undefined,
+      telefone_principal: phone,
+      contato_status: 'conversando',
+    })
+    return customerId
+  }
+
+  const created = await insertReturning('crm_customers', {
+    document_key: documentKey,
+    nome: pushName ?? `+${phone}`,
+    telefone_principal: phone,
+    contato_status: 'conversando',
+  })
+  return created?.id ? String(created.id) : null
+}
+
+async function ensureCrmConversation(input: {
+  documentKey: string
+  phone: string
+  customerId?: string | null
+  instance?: string | null
+  pushName?: string | null
+  content?: string | null
+  direction: 'incoming' | 'outgoing'
+}) {
+  const { documentKey, phone, customerId, instance, pushName, content, direction } = input
+  const queue = resolveQueue(instance, content)
+  const existing = await dbSelect(
+    'crm_chat_conversations',
+    `document_key=eq.${encodeURIComponent(documentKey)}&order=ultima_interacao_em.desc&limit=1`,
+    'id,kanban_status',
+  )
+
+  const now = new Date().toISOString()
+  const conversationId = existing[0]?.id as string | undefined
+
+  if (conversationId) {
+    await dbPatch('crm_chat_conversations', `id=eq.${conversationId}`, {
+      crm_customer_id: customerId ?? undefined,
+      telefone: phone,
+      cliente_nome: pushName ?? undefined,
+      whatsapp_instance: instance ?? undefined,
+      numero_receptor: instance ?? undefined,
+      fila: queue,
+      ultima_mensagem: content ?? undefined,
+      ultima_mensagem_direcao: direction,
+      ultima_interacao_em: now,
+    })
+    return conversationId
+  }
+
+  const created = await insertReturning('crm_chat_conversations', {
+    document_key: documentKey,
+    crm_customer_id: customerId ?? null,
+    telefone: phone,
+    cliente_nome: pushName ?? `+${phone}`,
+    whatsapp_instance: instance ?? null,
+    numero_receptor: instance ?? null,
+    fila: queue,
+    kanban_status: direction === 'incoming' ? 'iniciou_conversa' : 'conversando',
+    atendimento_humano: false,
+    ultima_mensagem: content ?? null,
+    ultima_mensagem_direcao: direction,
+    ultima_interacao_em: now,
+  })
+  return created?.id ? String(created.id) : null
+}
+
+async function syncCrmInbox(input: {
+  remoteJid: string
+  instance?: string | null
+  pushName?: string | null
+  content?: string | null
+  direction: 'incoming' | 'outgoing'
+  senderType: 'cliente' | 'ia' | 'humano'
+}) {
+  const { remoteJid, instance, pushName, content, direction, senderType } = input
+  const phone = jidToPhone(remoteJid)
+  const documentKey = normalizePhone(phone) ?? phone
+  if (!documentKey) return null
+
+  const customerId = await ensureCrmCustomer({
+    documentKey,
+    phone: documentKey,
+    pushName,
+  })
+
+  const conversationId = await ensureCrmConversation({
+    documentKey,
+    phone: documentKey,
+    customerId,
+    instance,
+    pushName,
+    content,
+    direction,
+  })
+
+  if (conversationId) {
+    await dbInsert('crm_chat_messages', [{
+      conversation_id: conversationId,
+      document_key: documentKey,
+      direction,
+      sender_type: senderType,
+      mensagem: content ?? null,
+      created_at: new Date().toISOString(),
+    }])
+  }
+
+  return { conversationId, customerId, documentKey }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function normalizePhone(raw: string | undefined): string | undefined {
@@ -252,6 +394,14 @@ async function actionSendMessage(p: Record<string, unknown>) {
       },
     }])
 
+    await syncCrmInbox({
+      remoteJid,
+      instance,
+      content: text,
+      direction: 'outgoing',
+      senderType: 'humano',
+    })
+
     return { ok: true, messageId: msgId, remoteJid }
   } catch (e) {
     return { ok: false, error: String(e) }
@@ -275,11 +425,10 @@ async function actionSendAttachment(form: FormData) {
 
   const phone = normalizePhone(number) ?? number
   const mime  = normalizeMimeType(file.type)
-  const isAudio    = mime.startsWith('audio/')
-  const isImage    = mime.startsWith('image/')
-  const isVideo    = mime.startsWith('video/')
+  const isAudio = mime.startsWith('audio/')
+  const isImage = mime.startsWith('image/')
+  const isVideo = mime.startsWith('video/')
 
-  // Converte arquivo para base64
   const arrayBuffer = await file.arrayBuffer()
   const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
 
@@ -291,17 +440,9 @@ async function actionSendAttachment(form: FormData) {
       endpoint = `${baseUrl}/message/sendWhatsAppAudio/${instance}`
       const audioData = `data:${mime};base64,${base64}`
 
-      // A doc oficial pede url ou base64. Algumas instalações aceitam
-      // base64 puro; outras aceitam data URI ou wrapper audioMessage.
       const attempts: Record<string, unknown>[] = [
-        {
-          number: phone,
-          audio: base64,
-        },
-        {
-          number: phone,
-          audio: audioData,
-        },
+        { number: phone, audio: base64 },
+        { number: phone, audio: audioData },
         {
           number: phone,
           audioMessage: { audio: base64 },
@@ -314,10 +455,10 @@ async function actionSendAttachment(form: FormData) {
 
       for (const attemptBody of attempts) {
         const res = await fetch(endpoint, {
-          method:  'POST',
+          method: 'POST',
           headers: evolutionHeaders(apiKey),
-          body:    JSON.stringify(attemptBody),
-          signal:  AbortSignal.timeout(60000),
+          body: JSON.stringify(attemptBody),
+          signal: AbortSignal.timeout(60000),
         })
         if (res.ok) {
           audioRes = res
@@ -340,13 +481,14 @@ async function actionSendAttachment(form: FormData) {
       })
 
       await dbInsert('communication_events', [{
-        source:          'evolution',
-        event_type:      'message_sent',
-        external_id:     msgId ? String(msgId) : null,
+        source: 'evolution',
+        event_type: 'message_sent',
+        external_id: msgId ? String(msgId) : null,
         conversation_id: remoteJid,
-        lead_id:         leadId ?? ensuredLeadId ?? null,
+        lead_id: leadId ?? ensuredLeadId ?? null,
         payload: {
-          remoteJid, fromMe: true,
+          remoteJid,
+          fromMe: true,
           messageId: msgId,
           content: caption || file.name,
           messageType: 'audioMessage',
@@ -354,8 +496,18 @@ async function actionSendAttachment(form: FormData) {
         },
       }])
 
+      await syncCrmInbox({
+        remoteJid,
+        instance,
+        content: caption || file.name,
+        direction: 'outgoing',
+        senderType: 'humano',
+      })
+
       return { ok: true, messageId: msgId, remoteJid }
-    } else if (isImage || isVideo) {
+    }
+
+    if (isImage || isVideo) {
       const mediatype = isImage ? 'image' : 'video'
       endpoint = `${baseUrl}/message/sendMedia/${instance}`
       body = { number: phone, mediatype, mimetype: mime, caption, media: `data:${mime};base64,${base64}` }
@@ -365,15 +517,16 @@ async function actionSendAttachment(form: FormData) {
     }
 
     const res = await fetch(endpoint, {
-      method:  'POST',
+      method: 'POST',
       headers: evolutionHeaders(apiKey),
-      body:    JSON.stringify(body),
-      signal:  AbortSignal.timeout(60000),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60000),
     })
     if (!res.ok) {
       const errorText = await readResponseText(res)
       return { ok: false, error: errorText || `Evolution HTTP ${res.status}` }
     }
+
     const msg = await res.json() as Record<string, unknown>
     const msgId = (msg.key as Record<string, unknown>)?.id ?? null
     const remoteJid = phoneToJid(phone)
@@ -384,19 +537,28 @@ async function actionSendAttachment(form: FormData) {
     })
 
     await dbInsert('communication_events', [{
-      source:          'evolution',
-      event_type:      'message_sent',
-      external_id:     msgId ? String(msgId) : null,
+      source: 'evolution',
+      event_type: 'message_sent',
+      external_id: msgId ? String(msgId) : null,
       conversation_id: remoteJid,
-      lead_id:         leadId ?? ensuredLeadId ?? null,
+      lead_id: leadId ?? ensuredLeadId ?? null,
       payload: {
-        remoteJid, fromMe: true,
+        remoteJid,
+        fromMe: true,
         messageId: msgId,
         content: caption || file.name,
-        messageType: isAudio ? 'audioMessage' : isImage ? 'imageMessage' : 'documentMessage',
+        messageType: isImage ? 'imageMessage' : isVideo ? 'videoMessage' : 'documentMessage',
         instance,
       },
     }])
+
+    await syncCrmInbox({
+      remoteJid,
+      instance,
+      content: caption || file.name,
+      direction: 'outgoing',
+      senderType: 'humano',
+    })
 
     return { ok: true, messageId: msgId, remoteJid }
   } catch (e) {
@@ -493,6 +655,73 @@ async function actionGetMediaBase64(p: Record<string, unknown>) {
   }
 }
 
+// ── N8N: send message by instance name (sem auth JWT, usa secret compartilhado) ──
+
+async function actionSendMessageByInstance(p: Record<string, unknown>) {
+  const instanceName = p.instance_name as string | undefined
+  const number       = p.number        as string | undefined
+  const content      = p.content       as string | undefined
+  const leadId       = p.lead_id       as string | undefined
+
+  if (!instanceName || !number || !content) {
+    return { ok: false, error: 'instance_name, number e content são obrigatórios' }
+  }
+
+  const rows = await dbSelect(
+    'external_integrations',
+    `provider=eq.evolution&instance_name=eq.${encodeURIComponent(instanceName)}&status=eq.ativo`,
+    'base_url,api_token,instance_name',
+  )
+
+  const instance = rows[0]
+  if (!instance) {
+    return { ok: false, error: `Instância Evolution não encontrada ou inativa: ${instanceName}` }
+  }
+
+  const baseUrl = (instance.base_url as string | undefined)?.replace(/\/$/, '')
+  const apiKey  = instance.api_token as string | undefined
+
+  if (!baseUrl || !apiKey) {
+    return { ok: false, error: 'Credenciais da instância incompletas' }
+  }
+
+  const phone = normalizePhone(number) ?? number
+  try {
+    const res = await fetch(`${baseUrl}/message/sendText/${instanceName}`, {
+      method: 'POST',
+      headers: evolutionHeaders(apiKey),
+      body: JSON.stringify({ number: phone, text: content }),
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!res.ok) return { ok: false, error: `Evolution HTTP ${res.status}` }
+    const msg = await res.json() as Record<string, unknown>
+    const msgId = (msg.key as Record<string, unknown>)?.id ?? null
+
+    const remoteJid = phoneToJid(phone)
+    const ensuredLeadId = await ensureLeadForConversation({ remoteJid, instance: instanceName, content })
+    await dbInsert('communication_events', [{
+      source: 'evolution',
+      event_type: 'message_sent',
+      external_id: msgId ? String(msgId) : null,
+      conversation_id: remoteJid,
+      lead_id: leadId ?? ensuredLeadId ?? null,
+      payload: { remoteJid, fromMe: true, messageId: msgId, content, messageType: 'conversation', instance: instanceName },
+    }])
+
+    await syncCrmInbox({
+      remoteJid,
+      instance: instanceName,
+      content,
+      direction: 'outgoing',
+      senderType: 'ia',
+    })
+
+    return { ok: true, messageId: msgId, remoteJid }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
 // ── Proxy: list Evolution instances ──────────────────────────────────────────
 
 async function actionListInstances() {
@@ -579,6 +808,39 @@ async function processWebhook(payload: Record<string, unknown>) {
       },
     }])
 
+    if (!fromMe) {
+      await syncCrmInbox({
+        remoteJid,
+        instance,
+        pushName: pushName ?? null,
+        content,
+        direction: 'incoming',
+        senderType: 'cliente',
+      })
+
+      // Encaminha mensagens recebidas do lead para o N8N processar
+      const n8nUrl = Deno.env.get('N8N_INBOUND_WEBHOOK_URL')
+        ?? 'https://auto.mantovan.com.br/webhook/crm-certiid/inbound'
+      const phone = jidToPhone(remoteJid)
+      await fetch(n8nUrl, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          whatsapp_lead: phone,
+          mensagem:      content ?? '',
+          pushName:      pushName ?? null,
+          remoteJid,
+          messageType,
+          mediaUrl:      mediaUrl ?? null,
+          quoted:        quoted ?? null,
+          instance:      instance ?? null,
+          leadId:        leadId ?? null,
+          messageId:     msgId ?? null,
+        }),
+        signal: AbortSignal.timeout(10000),
+      }).catch(() => { /* ignora erro — não bloqueia resposta ao Evolution */ })
+    }
+
     return { ok: true }
   }
 
@@ -629,6 +891,16 @@ Deno.serve(async (req) => {
   try { payload = rawBody ? JSON.parse(rawBody) : {} }
   catch { return new Response('Invalid JSON', { status: 400, headers: CORS }) }
 
+  // ── N8N: ação interna autenticada por secret (sem JWT) ────────
+  if (payload._action === 'send_message_by_instance') {
+    const n8nSecret = Deno.env.get('N8N_SHARED_SECRET') ?? ''
+    const incoming  = req.headers.get('x-n8n-secret') ?? ''
+    if (!n8nSecret || incoming !== n8nSecret) {
+      return json({ ok: false, error: 'Unauthorized' }, 401)
+    }
+    return json(await actionSendMessageByInstance(payload))
+  }
+
   // ── Proxy actions (chamadas autenticadas do browser) ───────────
   if (payload._action) {
     const auth = await requireAuthenticatedUser(req)
@@ -658,3 +930,9 @@ Deno.serve(async (req) => {
   // ── Webhook da Evolution API (sem auth — IP/token via header) ──
   return json(await processWebhook(payload))
 })
+
+
+
+
+
+

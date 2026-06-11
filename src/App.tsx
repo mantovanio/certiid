@@ -6,7 +6,7 @@ import UpdatePassword from './pages/UpdatePassword'
 import Dashboard from './pages/Dashboard'
 import Comercial from './pages/Comercial'
 import Clientes from './pages/Clientes'
-import ChatAoVivo from './pages/ChatAoVivo'
+import ChatAoVivo from './pages/ChatInboxCRM'
 import Renovacoes from './pages/Renovacoes'
 import Financeiro from './pages/Financeiro'
 import Relatorios from './pages/Relatorios'
@@ -273,3 +273,5 @@ export default function App() {
     </AuthProvider>
   )
 }
+
+

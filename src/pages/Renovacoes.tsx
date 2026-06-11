@@ -479,8 +479,20 @@ export default function Renovacoes() {
 
   function openChat(r: RenovacaoV2) {
     if (!r.telefone) { showMsg('Cliente sem telefone para chat.', 'err'); return }
+    const tpl = getSelectedTpl('whatsapp')
+    const msgTemplate = renderTemplate(tpl?.body ?? WHATSAPP_TPL_DEFAULT, tplValues(r))
+    const contexto = JSON.stringify({
+      tipo_certificado: r.tipo_certificado,
+      data_vencimento: new Date(r.data_vencimento + 'T00:00:00').toLocaleDateString('pt-BR'),
+      dias_restantes: r.dias_restantes,
+      pedido: r.pedido ?? '',
+      protocolo: r.protocolo ?? '',
+      valor: r.valor != null ? `R$ ${r.valor.toFixed(2).replace('.', ',')}` : '',
+    })
     sessionStorage.setItem('crm:open-chat-phone', r.telefone.replace(/\D/g, ''))
     sessionStorage.setItem('crm:open-chat-nome', r.razao_social ?? r.cliente ?? '')
+    sessionStorage.setItem('crm:open-chat-msg', msgTemplate)
+    sessionStorage.setItem('crm:open-chat-contexto', contexto)
     window.dispatchEvent(new CustomEvent('crm:navigate', { detail: { page: 'chat' } }))
   }
 

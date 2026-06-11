@@ -246,6 +246,18 @@ export default function ChatInboxCRM() {
     sessionStorage.removeItem('crm:open-chat-nome')
     return nome
   })
+  const [deepLinkMsg, setDeepLinkMsg] = useState<string>(() => {
+    const msg = sessionStorage.getItem('crm:open-chat-msg') ?? ''
+    sessionStorage.removeItem('crm:open-chat-msg')
+    return msg
+  })
+  const [deepLinkContexto, setDeepLinkContexto] = useState<Record<string, string> | null>(() => {
+    try {
+      const raw = sessionStorage.getItem('crm:open-chat-contexto')
+      sessionStorage.removeItem('crm:open-chat-contexto')
+      return raw ? JSON.parse(raw) as Record<string, string> : null
+    } catch { return null }
+  })
   const [renovacoesCRM, setRenovacoesCRM] = useState<RenovacaoCRM[]>([])
   const [loading, setLoading] = useState(true)
   const [loadingMessages, setLoadingMessages] = useState(false)
@@ -414,21 +426,18 @@ export default function ChatInboxCRM() {
       setSelectedId(match.id)
     } else {
       // Sem conversa existente — abre Nova Conversa preenchida
-      setManualConversation(prev => ({
-        ...prev,
-        phone: deepLinkPhone,
-        contactName: deepLinkNome,
-      }))
       void openManualConversationModal().then(() => {
         setManualConversation(prev => ({
           ...prev,
           phone: deepLinkPhone,
           contactName: deepLinkNome,
+          firstMessage: deepLinkMsg || prev.firstMessage,
         }))
       })
     }
     setDeepLinkPhone(null)
     setDeepLinkNome('')
+    setDeepLinkMsg('')
   }, [conversations, deepLinkPhone, loading])
 
   useEffect(() => {
@@ -856,7 +865,15 @@ export default function ChatInboxCRM() {
       })
 
       const payload = await response.json() as { ok?: boolean; error?: string }
-      if (!response.ok || !payload.ok) throw new Error(payload.error ?? 'Nao foi possivel iniciar a conversa manual.')
+      if (!response.ok || !payload.ok) {
+        const rawError = payload.error ?? ''
+        const msg = rawError.includes('404') || rawError.includes('not found') || rawError.includes('invalid')
+          ? 'Numero nao encontrado no WhatsApp. Verifique se o numero esta correto e ativo.'
+          : rawError.includes('401') || rawError.includes('403')
+            ? 'Credenciais do canal invalidas. Verifique a integracao em Configuracoes.'
+            : rawError || 'Nao foi possivel iniciar a conversa manual.'
+        throw new Error(msg)
+      }
 
       const { data: createdRows, error: createdError } = await supabase
         .from('crm_chat_admin_view')
@@ -1710,6 +1727,16 @@ export default function ChatInboxCRM() {
                   </select>
                 </label>
               </div>
+
+              {deepLinkContexto && (
+                <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 space-y-1">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-500">Contexto da renovação</p>
+                  <p className="text-sm text-blue-800"><strong>{deepLinkContexto.tipo_certificado}</strong> — vence em {deepLinkContexto.data_vencimento} ({deepLinkContexto.dias_restantes} dias)</p>
+                  {deepLinkContexto.pedido && <p className="text-xs text-blue-700">Pedido: <span className="font-mono">{deepLinkContexto.pedido}</span></p>}
+                  {deepLinkContexto.protocolo && <p className="text-xs text-blue-700">Protocolo: <span className="font-mono">{deepLinkContexto.protocolo}</span></p>}
+                  {deepLinkContexto.valor && <p className="text-xs text-blue-700">Valor: {deepLinkContexto.valor}</p>}
+                </div>
+              )}
 
               <label className="block space-y-1">
                 <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Primeira mensagem</span>

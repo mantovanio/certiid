@@ -173,6 +173,12 @@ function integrationDisplayName(integration: EvolutionIntegration) {
   return integration.sender_name || integration.name || integration.instance_name || 'Instancia sem nome'
 }
 
+function integrationChannelLabel(integration: EvolutionIntegration) {
+  const queue = inferQueueFromIntegration(integration)
+  const instance = integration.instance_name ? ` (${integration.instance_name})` : ''
+  return `${queueLabel(queue)} - ${integrationDisplayName(integration)}${instance}`
+}
+
 function createEmptyManualConversationForm(): ManualConversationForm {
   return {
     contactName: '',
@@ -209,6 +215,7 @@ export default function ChatInboxCRM() {
   const [manualConversationError, setManualConversationError] = useState<string | null>(null)
   const [integrations, setIntegrations] = useState<EvolutionIntegration[]>([])
   const [manualConversation, setManualConversation] = useState<ManualConversationForm>(createEmptyManualConversationForm)
+  const [selectedReplyIntegrationId, setSelectedReplyIntegrationId] = useState('')
   const [leftPanelWidth, setLeftPanelWidth] = useState(420)
   const [rightPanelWidth, setRightPanelWidth] = useState(330)
   const [isResizingLeft, setIsResizingLeft] = useState(false)
@@ -248,6 +255,37 @@ export default function ChatInboxCRM() {
     || profile?.nome
     || 'Humano'
 
+  const displayMessages = useMemo(() => {
+    if (messages.length > 0) return messages
+    if (!selectedConversation?.ultima_mensagem) return []
+
+    const fallbackDirection = selectedConversation.ultima_mensagem_direcao ?? 'incoming'
+    const fallbackSenderType: SenderType =
+      fallbackDirection === 'incoming'
+        ? 'cliente'
+        : (selectedConversation.atendimento_humano || humanOverrideIds.includes(selectedConversation.id))
+          ? 'humano'
+          : 'ia'
+
+    const fallbackSenderName =
+      fallbackSenderType === 'humano'
+        ? currentHumanAgentName
+        : fallbackSenderType === 'ia'
+          ? 'IA Clara'
+          : selectedConversation.cliente_nome || selectedConversation.nome_crm || 'Cliente'
+
+    return [{
+      id: `fallback-${selectedConversation.id}-${selectedConversation.ultima_interacao_em}`,
+      conversation_id: selectedConversation.id,
+      document_key: selectedConversation.document_key,
+      direction: fallbackDirection,
+      sender_type: fallbackSenderType,
+      sender_name: fallbackSenderName,
+      mensagem: selectedConversation.ultima_mensagem,
+      created_at: selectedConversation.ultima_interacao_em,
+    }]
+  }, [messages, selectedConversation, currentHumanAgentName, humanOverrideIds])
+
   const manualChannelOptions = useMemo(() => {
     const preferredByQueue = new Map<QueueType, EvolutionIntegration>()
 
@@ -269,6 +307,22 @@ export default function ChatInboxCRM() {
     }))
   }, [integrations])
 
+  const replyChannelOptions = useMemo(() => (
+    integrations
+      .filter(item => Boolean(item.id) && Boolean(item.instance_name) && Boolean(item.base_url) && Boolean(item.api_token))
+      .map(integration => ({
+        id: integration.id,
+        queue: inferQueueFromIntegration(integration),
+        integration,
+        label: integrationChannelLabel(integration),
+      }))
+  ), [integrations])
+
+  const selectedReplyIntegration = useMemo(
+    () => replyChannelOptions.find(item => item.id === selectedReplyIntegrationId)?.integration ?? null,
+    [replyChannelOptions, selectedReplyIntegrationId],
+  )
+
   useEffect(() => {
     void bootstrap()
   }, [])
@@ -278,6 +332,7 @@ export default function ChatInboxCRM() {
       setMessages([])
       setHumanMessage('')
       setShowEmoji(false)
+      setSelectedReplyIntegrationId('')
       return
     }
 
@@ -287,12 +342,25 @@ export default function ChatInboxCRM() {
   }, [selectedConversation?.id])
 
   useEffect(() => {
+    if (!selectedConversation || replyChannelOptions.length === 0) return
+
+    const currentSelectionStillValid = replyChannelOptions.some(item => item.id === selectedReplyIntegrationId)
+    if (currentSelectionStillValid) return
+
+    const exactMatch = replyChannelOptions.find(item => item.integration.instance_name === selectedConversation.whatsapp_instance)
+    const sameQueue = replyChannelOptions.find(item => item.queue === selectedConversation.fila)
+    const nextDefault = exactMatch ?? sameQueue ?? replyChannelOptions[0]
+
+    if (nextDefault) setSelectedReplyIntegrationId(nextDefault.id)
+  }, [selectedConversation?.id, selectedConversation?.whatsapp_instance, selectedConversation?.fila, replyChannelOptions, selectedReplyIntegrationId])
+
+  useEffect(() => {
     if (!selectedConversation || loadingMessages) return
 
     requestAnimationFrame(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
     })
-  }, [selectedConversation?.id, messages, loadingMessages])
+  }, [selectedConversation?.id, displayMessages, loadingMessages])
 
   useEffect(() => {
     const channel = supabase
@@ -360,7 +428,13 @@ export default function ChatInboxCRM() {
   async function bootstrap() {
     setLoading(true)
     setError(null)
-    await Promise.all([loadConversations(false), loadAgents()])
+    await Promise.all([
+      loadConversations(false),
+      loadAgents(),
+      fetchEvolutionIntegrations()
+        .then(rows => setIntegrations(rows))
+        .catch(() => setIntegrations([])),
+    ])
     setLoading(false)
   }
 
@@ -740,7 +814,10 @@ export default function ChatInboxCRM() {
       const accessToken = sessionData.session?.access_token
       if (!accessToken) throw new Error('Sessao expirada. Atualize a pagina e tente novamente.')
 
-      const integration = await resolveEvolutionIntegration(selectedConversation.whatsapp_instance)
+      const integration = selectedReplyIntegration ?? await resolveEvolutionIntegration(selectedConversation.whatsapp_instance)
+      if (!integration?.instance_name || !integration.base_url || !integration.api_token) {
+        throw new Error('Selecione um canal de saida valido para responder essa conversa.')
+      }
       const destinationNumber = selectedConversation.telefone || selectedConversation.document_key
       if (!destinationNumber) throw new Error('Nao foi possivel identificar o numero do contato para envio.')
 
@@ -797,7 +874,10 @@ export default function ChatInboxCRM() {
     const accessToken = sessionData.session?.access_token
     if (!accessToken) return { ok: false, error: 'Sessao expirada. Atualize a pagina e tente novamente.' }
 
-    const integration = await resolveEvolutionIntegration(selectedConversation.whatsapp_instance)
+    const integration = selectedReplyIntegration ?? await resolveEvolutionIntegration(selectedConversation.whatsapp_instance)
+    if (!integration?.instance_name || !integration.base_url || !integration.api_token) {
+      return { ok: false, error: 'Selecione um canal de saida valido para enviar esse anexo.' }
+    }
     const destinationNumber = selectedConversation.telefone || selectedConversation.document_key
     if (!destinationNumber) return { ok: false, error: 'Nao foi possivel identificar o numero do contato.' }
 
@@ -1119,11 +1199,11 @@ export default function ChatInboxCRM() {
                     <div ref={messagesViewportRef} className="min-h-0 flex-1 overflow-y-auto bg-slate-50 px-4 py-4">
                       {loadingMessages ? (
                         <div className="text-sm text-slate-400">Carregando mensagens...</div>
-                      ) : messages.length === 0 ? (
+                      ) : displayMessages.length === 0 ? (
                         <EmptyState text="Ainda nao existem mensagens gravadas para esta conversa." />
                       ) : (
                         <div className="space-y-3">
-                          {messages.map(message => (
+                          {displayMessages.map(message => (
                             <MessageRow
                               key={message.id}
                               message={message}
@@ -1135,17 +1215,42 @@ export default function ChatInboxCRM() {
                       )}
                     </div>
 
-                  {humanModeActive && (
-                    <div className="relative shrink-0 border-t border-slate-200 bg-white px-4 py-3">
-                      <div className="mb-2 flex items-center justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-700">Resposta humana</p>
-                          <p className="text-xs text-slate-500">Barra fixa com anexo, colagem de imagem, emoji e audio.</p>
+                    {humanModeActive && (
+                      <div className="relative shrink-0 border-t border-slate-200 bg-white px-4 py-3">
+                        <div className="mb-2 flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-700">Resposta humana</p>
+                            <p className="text-xs text-slate-500">Barra fixa com anexo, colagem de imagem, emoji e audio.</p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge text={`Origem: ${selectedConversation.whatsapp_instance || 'Nao definida'}`} tone="blue" />
+                            <Badge text={selectedConversation.agente_atual || profile?.nome || 'Humano'} tone="green" />
+                          </div>
                         </div>
-                        <Badge text={selectedConversation.agente_atual || profile?.nome || 'Humano'} tone="green" />
-                      </div>
 
-                      {pendingFile && (
+                        <div className="mb-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_220px]">
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Canal de resposta</p>
+                            <p className="mt-1 text-sm text-slate-700">
+                              {selectedReplyIntegration ? integrationChannelLabel(selectedReplyIntegration) : 'Selecione o numero de saida'}
+                            </p>
+                          </div>
+                          <label className="space-y-1">
+                            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Responder por</span>
+                            <select
+                              value={selectedReplyIntegrationId}
+                              onChange={event => setSelectedReplyIntegrationId(event.target.value)}
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
+                            >
+                              <option value="">Selecione um canal</option>
+                              {replyChannelOptions.map(option => (
+                                <option key={option.id} value={option.id}>{option.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+
+                        {pendingFile && (
                         <div className="mb-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
                           {pendingPreview ? (
                             <img src={pendingPreview} alt="Preview" className="h-14 w-14 rounded-xl object-cover" />

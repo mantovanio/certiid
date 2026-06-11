@@ -17,15 +17,37 @@ CRM interno para gestão de clientes, atendimento via WhatsApp, emissão de cert
 - Frontend → SSH na VPS → `bash /opt/certiid/deploy.sh`
 - Edge Functions → Supabase CLI (todas as funções listadas em `.github/workflows/deploy.yml`)
 
-**Manual na VPS**:
+**Manual na VPS** (SSH direto — mais rápido):
+
+```bash
+ssh root@147.79.111.76 "bash /opt/certiid/deploy.sh"
+```
+
+Ou no servidor diretamente:
+
 ```bash
 bash /opt/certiid/deploy.sh
 ```
 
-**Manual Edge Functions** (do diretório do projeto):
+**Manual Edge Functions** (do diretório local do projeto):
+
 ```bash
-npx supabase functions deploy <nome-da-funcao> --project-ref cvfrhfiaprdtwxxplngk
+npx supabase login   # só na primeira vez
+npx supabase functions deploy evolution-webhook --project-ref cvfrhfiaprdtwxxplngk
+npx supabase functions deploy <outra-funcao>    --project-ref cvfrhfiaprdtwxxplngk
 ```
+
+**Deploy completo local** (frontend + todas as Edge Functions):
+
+```bash
+ssh root@147.79.111.76 "bash /opt/certiid/deploy.sh"
+npx supabase functions deploy evolution-webhook --project-ref cvfrhfiaprdtwxxplngk
+```
+
+**Se o GitHub Actions falhar no deploy da VPS** (`Permission denied (publickey)`):
+- Verifique o secret `VPS_SSH_KEY` em: GitHub → repositório → Settings → Secrets → Actions
+- A chave deve ser a privada do par autorizado em `root@147.79.111.76`
+- Para gerar: `ssh-keygen -t ed25519` no servidor → copiar `~/.ssh/id_ed25519` como secret
 
 **Supabase project ref**: `cvfrhfiaprdtwxxplngk`
 

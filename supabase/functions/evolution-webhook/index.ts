@@ -223,15 +223,31 @@ async function syncCrmInbox(input: {
   })
 
   if (conversationId) {
-    await dbInsert('crm_chat_messages', [{
-      conversation_id: conversationId,
-      document_key: documentKey,
-      direction,
-      sender_type: senderType,
-      sender_name: senderType === 'humano' ? senderName ?? null : senderType === 'ia' ? 'IA Clara' : pushName ?? 'Cliente',
-      mensagem: content ?? null,
-      created_at: new Date().toISOString(),
-    }])
+    const latestRows = await dbSelect(
+      'crm_chat_messages',
+      `conversation_id=eq.${encodeURIComponent(conversationId)}&direction=eq.${encodeURIComponent(direction)}&sender_type=eq.${encodeURIComponent(senderType)}&order=created_at.desc&limit=1`,
+      'id,mensagem,created_at',
+    )
+
+    const latest = latestRows[0]
+    const latestContent = typeof latest?.mensagem === 'string' ? latest.mensagem : null
+    const latestCreatedAt = typeof latest?.created_at === 'string' ? latest.created_at : null
+    const now = Date.now()
+    const latestAgeMs = latestCreatedAt ? Math.abs(now - new Date(latestCreatedAt).getTime()) : Number.POSITIVE_INFINITY
+    const normalizedContent = content ?? null
+    const isDuplicateRecentMessage = latestContent === normalizedContent && latestAgeMs < 15000
+
+    if (!isDuplicateRecentMessage) {
+      await dbInsert('crm_chat_messages', [{
+        conversation_id: conversationId,
+        document_key: documentKey,
+        direction,
+        sender_type: senderType,
+        sender_name: senderType === 'humano' ? senderName ?? null : senderType === 'ia' ? 'IA Clara' : pushName ?? 'Cliente',
+        mensagem: normalizedContent,
+        created_at: new Date().toISOString(),
+      }])
+    }
   }
 
   return { conversationId, customerId, documentKey }
@@ -255,6 +271,12 @@ function phoneToJid(phone: string): string {
 
 function jidToPhone(jid: string): string {
   return jid.replace('@s.whatsapp.net', '').replace('@g.us', '')
+}
+
+function inferOutgoingSenderType(instance: string | null | undefined): 'ia' | 'humano' {
+  const normalizedInstance = (instance ?? '').trim().toLowerCase()
+  if (normalizedInstance === 'renovacao' || normalizedInstance === 'certiid') return 'ia'
+  return 'humano'
 }
 
 function extractQuoted(message: Record<string, unknown>) {
@@ -392,11 +414,15 @@ async function actionSendMessage(p: Record<string, unknown>) {
       }),
       signal:  AbortSignal.timeout(15000),
     })
-    if (!res.ok) return { ok: false, error: `Evolution HTTP ${res.status}` }
+    if (!res.ok) {
+      const errBody = await readResponseText(res)
+      const isNotOnWA = errBody.toLowerCase().includes('not registered') || errBody.toLowerCase().includes('not in whatsapp') || errBody.toLowerCase().includes('invalid phone') || errBody.toLowerCase().includes('bad number') || res.status === 400
+      if (isNotOnWA) return { ok: false, error: `Numero ${phone} nao encontrado no WhatsApp. Verifique se o numero esta correto e tem WhatsApp ativo.` }
+      return { ok: false, error: `Erro ao enviar (HTTP ${res.status}): ${errBody || 'sem detalhes'}` }
+    }
     const msg = await res.json() as Record<string, unknown>
     const msgId = (msg.key as Record<string, unknown>)?.id ?? msg.id ?? null
 
-    // Registra mensagem enviada no histórico local
     const remoteJid = phoneToJid(phone)
     const ensuredLeadId = await ensureLeadForConversation({
       remoteJid,
@@ -525,14 +551,14 @@ async function actionSendAttachment(form: FormData) {
         },
       }])
 
-        await syncCrmInbox({
-          remoteJid,
-          instance,
-          content: caption || file.name,
-          direction: 'outgoing',
-          senderType: 'humano',
-          senderName,
-        })
+      await syncCrmInbox({
+        remoteJid,
+        instance,
+        content: caption || file.name,
+        direction: 'outgoing',
+        senderType: 'humano',
+        senderName,
+      })
 
       return { ok: true, messageId: msgId, remoteJid }
     }
@@ -599,14 +625,14 @@ async function actionSendAttachment(form: FormData) {
       },
     }])
 
-      await syncCrmInbox({
-        remoteJid,
-        instance,
-        content: caption || file.name,
-        direction: 'outgoing',
-        senderType: 'humano',
-        senderName,
-      })
+    await syncCrmInbox({
+      remoteJid,
+      instance,
+      content: caption || file.name,
+      direction: 'outgoing',
+      senderType: 'humano',
+      senderName,
+    })
 
     return { ok: true, messageId: msgId, remoteJid }
   } catch (e) {
@@ -614,7 +640,7 @@ async function actionSendAttachment(form: FormData) {
   }
 }
 
-// ── Proxy: init chat (resolve JID, salva no lead, retorna histórico) ──────────
+// ── Proxy: init chat ──────────────────────────────────────────────────────────
 
 async function actionInitChat(p: Record<string, unknown>) {
   const phone    = p.phone    as string | undefined
@@ -628,7 +654,6 @@ async function actionInitChat(p: Record<string, unknown>) {
 
   const remoteJid = `${digits}@s.whatsapp.net`
 
-  // Salva JID e instância no lead
   if (leadId) {
     await dbPatch('leads_contabilidade', `id=eq.${leadId}`, {
       evolution_remote_jid: remoteJid,
@@ -636,7 +661,6 @@ async function actionInitChat(p: Record<string, unknown>) {
     })
   }
 
-  // Busca histórico de mensagens do Supabase
   const events = await dbSelect(
     'communication_events',
     `conversation_id=eq.${encodeURIComponent(remoteJid)}&source=eq.evolution&order=created_at.asc&limit=100`,
@@ -646,7 +670,7 @@ async function actionInitChat(p: Record<string, unknown>) {
   return { ok: true, remoteJid, messages: events }
 }
 
-// ── Proxy: get messages from local DB ────────────────────────────────────────
+// ── Proxy: get messages ───────────────────────────────────────────────────────
 
 async function actionGetMessages(p: Record<string, unknown>) {
   const remoteJid = p.remote_jid as string | undefined
@@ -661,7 +685,7 @@ async function actionGetMessages(p: Record<string, unknown>) {
   return { ok: true, messages: events }
 }
 
-// ── Proxy: get media base64 from Evolution ───────────────────────────────────
+// ── Proxy: get media base64 ───────────────────────────────────────────────────
 
 async function actionGetMediaBase64(p: Record<string, unknown>) {
   const baseUrl      = (p.base_url      as string | undefined)?.replace(/\/$/, '')
@@ -703,7 +727,7 @@ async function actionGetMediaBase64(p: Record<string, unknown>) {
   }
 }
 
-// ── N8N: send message by instance name (sem auth JWT, usa secret compartilhado) ──
+// ── N8N: send message by instance name ───────────────────────────────────────
 
 async function actionSendMessageByInstance(p: Record<string, unknown>) {
   const instanceName = p.instance_name as string | undefined
@@ -777,7 +801,6 @@ async function actionListInstances() {
     'external_integrations',
     'provider=eq.evolution&select=id,name,status,base_url,api_token,instance_name,last_test_at,last_error',
   )
-  // Não retorna api_token ao browser por segurança
   return {
     ok: true,
     instances: rows.map(r => ({
@@ -823,7 +846,6 @@ async function processWebhook(payload: Record<string, unknown>) {
 
     if (!remoteJid) return { ok: true, skipped: true }
 
-    // Ignora mensagens de grupos
     if (remoteJid.endsWith('@g.us')) return { ok: true, skipped: true, reason: 'group' }
 
     const { content, messageType, mediaUrl, quoted } = extractContent(message)
@@ -836,7 +858,6 @@ async function processWebhook(payload: Record<string, unknown>) {
       content,
     })
 
-    // Salva evento
     await dbInsert('communication_events', [{
       source:          'evolution',
       event_type:      eventType,
@@ -866,27 +887,43 @@ async function processWebhook(payload: Record<string, unknown>) {
         senderType: 'cliente',
       })
 
-      // Encaminha mensagens recebidas do lead para o N8N processar
-      const n8nUrl = Deno.env.get('N8N_INBOUND_WEBHOOK_URL')
-        ?? 'https://auto.mantovan.com.br/webhook/crm-certiid/inbound'
-      const phone = jidToPhone(remoteJid)
-      await fetch(n8nUrl, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          whatsapp_lead: phone,
-          mensagem:      content ?? '',
-          pushName:      pushName ?? null,
-          remoteJid,
-          messageType,
-          mediaUrl:      mediaUrl ?? null,
-          quoted:        quoted ?? null,
-          instance:      instance ?? null,
-          leadId:        leadId ?? null,
-          messageId:     msgId ?? null,
-        }),
-        signal: AbortSignal.timeout(10000),
-      }).catch(() => { /* ignora erro — não bloqueia resposta ao Evolution */ })
+      // Encaminha para N8N apenas instâncias com automação Clara (renovacao/certiid)
+      // A instância atendimento é atendimento humano — não deve acionar a IA
+      const normalizedInstance = (instance ?? '').toLowerCase()
+      const shouldForwardToN8N = normalizedInstance === 'renovacao' || normalizedInstance === 'certiid'
+
+      if (shouldForwardToN8N) {
+        const n8nUrl = Deno.env.get('N8N_INBOUND_WEBHOOK_URL')
+          ?? 'https://auto.mantovan.com.br/webhook/crm-certiid/inbound'
+        const phone = jidToPhone(remoteJid)
+        await fetch(n8nUrl, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            whatsapp_lead: phone,
+            mensagem:      content ?? '',
+            pushName:      pushName ?? null,
+            remoteJid,
+            messageType,
+            mediaUrl:      mediaUrl ?? null,
+            quoted:        quoted ?? null,
+            instance:      instance ?? null,
+            leadId:        leadId ?? null,
+            messageId:     msgId ?? null,
+          }),
+          signal: AbortSignal.timeout(10000),
+        }).catch(() => { /* ignora erro — não bloqueia resposta ao Evolution */ })
+      }
+    } else {
+      await syncCrmInbox({
+        remoteJid,
+        instance,
+        pushName: pushName ?? null,
+        content,
+        direction: 'outgoing',
+        senderType: inferOutgoingSenderType(instance),
+        senderName: inferOutgoingSenderType(instance) === 'humano' ? (instance ?? 'Humano') : null,
+      })
     }
 
     return { ok: true }
@@ -965,22 +1002,27 @@ Deno.serve(async (req) => {
     }
   }
 
-  const webhookSecret = Deno.env.get('EVOLUTION_WEBHOOK_SECRET') ?? ''
-  const webhookOk = await verifyWebhookRequest(req, {
-    secret: webhookSecret,
-    rawBody,
-    tokenHeaders: ['x-webhook-token', 'authorization'],
-    signatureHeaders: ['x-signature'],
-    queryParams: ['token', 'signature'],
-  })
+  // Extrai o token recebido (query param ou header)
+  const url = new URL(req.url)
+  const incomingToken =
+    url.searchParams.get('token')
+    ?? url.searchParams.get('signature')
+    ?? req.headers.get('x-webhook-token')
+    ?? (req.headers.get('authorization') ?? '').replace(/^[Bb]earer\s+/, '')
+    ?? ''
+
+  if (!incomingToken) return unauthorizedWebhookResponse(req)
+
+  // Aceita se o token bater com QUALQUER secret configurado
+  const knownSecrets = [
+    Deno.env.get('EVOLUTION_WEBHOOK_SECRET'),
+    Deno.env.get('WEBHOOK_SECRET_ATENDIMENTO'),
+    Deno.env.get('WEBHOOK_SECRET_RENOVACAO'),
+    Deno.env.get('WEBHOOK_SECRET_CERTIID'),
+  ].filter((s): s is string => Boolean(s))
+
+  const webhookOk = knownSecrets.some(secret => secret === incomingToken)
   if (!webhookOk) return unauthorizedWebhookResponse(req)
 
-  // ── Webhook da Evolution API (sem auth — IP/token via header) ──
   return json(await processWebhook(payload))
 })
-
-
-
-
-
-

@@ -425,14 +425,10 @@ export default function ChatInboxCRM() {
     if (match) {
       setSelectedId(match.id)
     } else {
-      // Sem conversa existente — abre Nova Conversa preenchida
-      void openManualConversationModal().then(() => {
-        setManualConversation(prev => ({
-          ...prev,
-          phone: deepLinkPhone,
-          contactName: deepLinkNome,
-          firstMessage: deepLinkMsg || prev.firstMessage,
-        }))
+      void openManualConversationModal({
+        phone: deepLinkPhone,
+        contactName: deepLinkNome,
+        firstMessage: deepLinkMsg,
       })
     }
     setDeepLinkPhone(null)
@@ -661,7 +657,7 @@ export default function ChatInboxCRM() {
     closeKanban()
   }
 
-  async function openManualConversationModal() {
+  async function openManualConversationModal(prefill?: { phone?: string; contactName?: string; firstMessage?: string }) {
     setManualConversationLoading(true)
     setManualConversationError(null)
 
@@ -674,16 +670,16 @@ export default function ChatInboxCRM() {
       }
 
       const defaultIntegration =
-        rows.find(item => item.instance_name?.toLowerCase() === 'atendimento')
-        ?? rows.find(item => item.instance_name?.toLowerCase() === 'renovacao')
+        rows.find(item => item.instance_name?.toLowerCase() === 'renovacao')
         ?? rows.find(item => item.instance_name?.toLowerCase() === 'certiid')
+        ?? rows.find(item => item.instance_name?.toLowerCase() === 'atendimento')
         ?? rows[0]
       setManualConversation({
-        contactName: '',
-        phone: '',
+        contactName: prefill?.contactName ?? '',
+        phone: prefill?.phone ?? '',
         queue: inferQueueFromIntegration(defaultIntegration),
         integrationId: defaultIntegration.id,
-        firstMessage: '',
+        firstMessage: prefill?.firstMessage ?? '',
       })
       setManualConversationOpen(true)
     } catch (err) {

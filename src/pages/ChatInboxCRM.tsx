@@ -101,6 +101,8 @@ const STATUS_COLUMNS = [
   { key: 'perdido', label: 'Perdido', tone: 'zinc' },
 ] as const
 
+const CLOSED_KANBAN_STATUSES = new Set(['cliente', 'perdido', 'cancelou_agendamento'])
+
 const TONE_STYLES: Record<string, string> = {
   amber: 'border-amber-200 bg-amber-50',
   blue: 'border-blue-200 bg-blue-50',
@@ -147,6 +149,10 @@ function formatRecTime(seconds: number) {
 function statusLabel(status: string) {
   const found = STATUS_COLUMNS.find(item => item.key === status)
   return found ? found.label : status.replace(/_/g, ' ')
+}
+
+function isClosedConversationStatus(status: string | null | undefined) {
+  return Boolean(status && CLOSED_KANBAN_STATUSES.has(status))
 }
 
 function queueLabel(fila: QueueType) {
@@ -204,6 +210,7 @@ export default function ChatInboxCRM() {
   const [search, setSearch] = useState('')
   const [queueFilter, setQueueFilter] = useState<'todas' | QueueType>('todas')
   const [humanFilter, setHumanFilter] = useState<'todos' | 'ia' | 'humano'>('todos')
+  const [showClosedConversations, setShowClosedConversations] = useState(false)
   const [viewMode, setViewMode] = useState<'lista' | 'kanban'>('lista')
   const [kanbanOpen, setKanbanOpen] = useState(false)
   const [selectedAgentId, setSelectedAgentId] = useState('')
@@ -1039,22 +1046,26 @@ export default function ChatInboxCRM() {
     })
   }, [conversations, search])
 
+  const operationalConversations = useMemo(() => (
+    searchMatchedConversations.filter(item => showClosedConversations || !isClosedConversationStatus(item.kanban_status))
+  ), [searchMatchedConversations, showClosedConversations])
+
   const filteredConversations = useMemo(() => {
-    return searchMatchedConversations.filter(item => {
+    return operationalConversations.filter(item => {
       const matchesQueue = queueFilter === 'todas' || item.fila === queueFilter
       const matchesHuman = humanFilter === 'todos'
         || (humanFilter === 'humano' && (item.atendimento_humano || humanOverrideIds.includes(item.id)))
         || (humanFilter === 'ia' && !item.atendimento_humano && !humanOverrideIds.includes(item.id))
       return matchesQueue && matchesHuman
     })
-  }, [searchMatchedConversations, queueFilter, humanFilter, humanOverrideIds])
+  }, [operationalConversations, queueFilter, humanFilter, humanOverrideIds])
 
   const summary = useMemo(() => ({
-      total: searchMatchedConversations.length,
-      atendimento: searchMatchedConversations.filter(item => item.fila === 'atendimento').length,
-      renovacao: searchMatchedConversations.filter(item => item.fila === 'renovacao').length,
-      humano: searchMatchedConversations.filter(item => item.atendimento_humano || humanOverrideIds.includes(item.id)).length,
-    }), [searchMatchedConversations, humanOverrideIds])
+      total: operationalConversations.length,
+      atendimento: operationalConversations.filter(item => item.fila === 'atendimento').length,
+      renovacao: operationalConversations.filter(item => item.fila === 'renovacao').length,
+      humano: operationalConversations.filter(item => item.atendimento_humano || humanOverrideIds.includes(item.id)).length,
+    }), [operationalConversations, humanOverrideIds])
 
   const activeShortcut = useMemo(() => ({
     all: queueFilter === 'todas' && humanFilter === 'todos',
@@ -1069,6 +1080,17 @@ export default function ChatInboxCRM() {
         items: filteredConversations.filter(item => item.kanban_status === column.key),
       }))
     }, [filteredConversations])
+
+  useEffect(() => {
+    if (filteredConversations.length === 0) {
+      if (selectedId) setSelectedId(null)
+      return
+    }
+
+    if (!selectedId || !filteredConversations.some(item => item.id === selectedId)) {
+      setSelectedId(filteredConversations[0]?.id ?? null)
+    }
+  }, [filteredConversations, selectedId])
 
   function applySummaryShortcut(target: 'all' | 'atendimento' | 'renovacao' | 'humano') {
     const nextQueue: 'todas' | QueueType =
@@ -1125,7 +1147,7 @@ export default function ChatInboxCRM() {
           <SummaryCard label="Atendimento humano" value={summary.humano} active={activeShortcut.humano} onClick={() => applySummaryShortcut('humano')} />
         </div>
 
-        <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_180px_180px]">
+        <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_180px_180px_180px]">
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
             <Search size={16} className="text-slate-400" />
             <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar por nome, telefone, documento ou mensagem" className="w-full bg-transparent text-sm outline-none" />
@@ -1142,6 +1164,18 @@ export default function ChatInboxCRM() {
             <option value="ia">So IA</option>
             <option value="humano">So humano</option>
           </select>
+
+          <button
+            type="button"
+            onClick={() => setShowClosedConversations(prev => !prev)}
+            className={`rounded-2xl border px-3 py-2 text-sm font-medium transition ${
+              showClosedConversations
+                ? 'border-sky-300 bg-sky-50 text-sky-700'
+                : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            {showClosedConversations ? 'Ocultar encerradas' : 'Mostrar encerradas'}
+          </button>
         </div>
       </div>
 

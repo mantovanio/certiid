@@ -299,6 +299,19 @@ function normalizeMimeType(mime: string | null | undefined) {
   return (mime ?? '').replace(/\s+/g, '')
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer)
+  const chunkSize = 0x8000
+  let binary = ''
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize)
+    binary += String.fromCharCode(...chunk)
+  }
+
+  return btoa(binary)
+}
+
 async function readResponseText(res: Response) {
   try {
     return await res.text()
@@ -430,11 +443,11 @@ async function actionSendAttachment(form: FormData) {
   const isVideo = mime.startsWith('video/')
 
   const arrayBuffer = await file.arrayBuffer()
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
+  const base64 = arrayBufferToBase64(arrayBuffer)
+  const dataUrl = `data:${mime};base64,${base64}`
 
   try {
     let endpoint: string
-    let body: Record<string, unknown>
 
     if (isAudio) {
       endpoint = `${baseUrl}/message/sendWhatsAppAudio/${instance}`
@@ -507,27 +520,44 @@ async function actionSendAttachment(form: FormData) {
       return { ok: true, messageId: msgId, remoteJid }
     }
 
-    if (isImage || isVideo) {
-      const mediatype = isImage ? 'image' : 'video'
-      endpoint = `${baseUrl}/message/sendMedia/${instance}`
-      body = { number: phone, mediatype, mimetype: mime, caption, media: `data:${mime};base64,${base64}` }
-    } else {
-      endpoint = `${baseUrl}/message/sendMedia/${instance}`
-      body = { number: phone, mediatype: 'document', mimetype: mime, caption: file.name, fileName: file.name, media: `data:${mime};base64,${base64}` }
+    endpoint = `${baseUrl}/message/sendMedia/${instance}`
+    const mediaType = isImage ? 'image' : isVideo ? 'video' : 'document'
+    const fileLabel = caption || file.name
+
+    const attempts: Record<string, unknown>[] = isImage || isVideo
+      ? [
+          { number: phone, mediatype: mediaType, mimetype: mime, caption: fileLabel, media: dataUrl },
+          { number: phone, mediatype: mediaType, mimetype: mime, caption: fileLabel, media: base64 },
+          { number: phone, mediatype: mediaType, mimetype: mime, caption: fileLabel, base64 },
+        ]
+      : [
+          { number: phone, mediatype: 'document', mimetype: mime, caption: fileLabel, fileName: file.name, media: dataUrl },
+          { number: phone, mediatype: 'document', mimetype: mime, caption: fileLabel, fileName: file.name, media: base64 },
+          { number: phone, mediatype: 'document', mimetype: mime, caption: fileLabel, fileName: file.name, base64 },
+        ]
+
+    let mediaRes: Response | null = null
+    let mediaErrorText = ''
+
+    for (const attemptBody of attempts) {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: evolutionHeaders(apiKey),
+        body: JSON.stringify(attemptBody),
+        signal: AbortSignal.timeout(60000),
+      })
+      if (res.ok) {
+        mediaRes = res
+        break
+      }
+      mediaErrorText = await readResponseText(res)
     }
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: evolutionHeaders(apiKey),
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60000),
-    })
-    if (!res.ok) {
-      const errorText = await readResponseText(res)
-      return { ok: false, error: errorText || `Evolution HTTP ${res.status}` }
+    if (!mediaRes) {
+      return { ok: false, error: mediaErrorText || 'Falha ao enviar anexo para a Evolution API' }
     }
 
-    const msg = await res.json() as Record<string, unknown>
+    const msg = await mediaRes.json() as Record<string, unknown>
     const msgId = (msg.key as Record<string, unknown>)?.id ?? null
     const remoteJid = phoneToJid(phone)
     const ensuredLeadId = await ensureLeadForConversation({

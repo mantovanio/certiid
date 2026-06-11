@@ -161,6 +161,7 @@ export default function ChatInboxCRM() {
   const [viewMode, setViewMode] = useState<'lista' | 'kanban'>('lista')
   const [kanbanOpen, setKanbanOpen] = useState(false)
   const [selectedAgentId, setSelectedAgentId] = useState('')
+  const [draggedConversationId, setDraggedConversationId] = useState<string | null>(null)
   const [humanMessage, setHumanMessage] = useState('')
   const [sendingHumanMessage, setSendingHumanMessage] = useState(false)
   const [leftPanelWidth, setLeftPanelWidth] = useState(420)
@@ -390,6 +391,20 @@ export default function ChatInboxCRM() {
     setActionLoading(false)
   }
 
+  async function updateConversationStatusById(conversationId: string, status: string) {
+    const { error: queryError } = await supabase
+      .from('crm_chat_conversations')
+      .update({ kanban_status: status })
+      .eq('id', conversationId)
+
+    if (queryError) {
+      setActionError(`Nao foi possivel mover o card no Kanban: ${queryError.message}`)
+      return
+    }
+
+    await loadConversations(false)
+  }
+
   async function toggleHumanMode(nextValue: boolean) {
     if (!selectedConversation) return
     setActionLoading(true)
@@ -566,7 +581,7 @@ export default function ChatInboxCRM() {
     if (!destinationNumber) return { ok: false, error: 'Nao foi possivel identificar o numero do contato.' }
 
     const finalMimeType = mimeType || file.type || 'application/octet-stream'
-    const blob = mimeType && !(file instanceof File) ? new Blob([file], { type: finalMimeType }) : file
+    const blob = file
     const form = new FormData()
     form.append('_action', 'send_attachment')
     form.append('base_url', integration.base_url ?? '')
@@ -618,9 +633,24 @@ export default function ChatInboxCRM() {
 
   async function startRecording() {
     try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Seu navegador nao expoe getUserMedia para capturar audio.')
+      }
+
+      if (typeof MediaRecorder === 'undefined') {
+        throw new Error('Seu navegador nao suporta gravacao de audio via MediaRecorder.')
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mimeType = MediaRecorder.isTypeSupported('audio/ogg;codecs=opus') ? 'audio/ogg;codecs=opus' : 'audio/webm;codecs=opus'
-      const recorder = new MediaRecorder(stream, { mimeType })
+      const supportedMimeType = [
+        'audio/webm;codecs=opus',
+        'audio/ogg;codecs=opus',
+        'audio/mp4',
+        'audio/webm',
+        'audio/ogg',
+      ].find(type => MediaRecorder.isTypeSupported(type))
+
+      const recorder = supportedMimeType ? new MediaRecorder(stream, { mimeType: supportedMimeType }) : new MediaRecorder(stream)
       mediaRecorderRef.current = recorder
       audioChunksRef.current = []
       recorder.ondataavailable = event => {
@@ -628,7 +658,7 @@ export default function ChatInboxCRM() {
       }
       recorder.onstop = () => {
         stream.getTracks().forEach(track => track.stop())
-        const blob = new Blob(audioChunksRef.current, { type: mimeType })
+        const blob = new Blob(audioChunksRef.current, { type: supportedMimeType ?? recorder.mimeType ?? 'audio/webm' })
         setAudioBlob(blob)
         setAudioUrl(URL.createObjectURL(blob))
         setRecState('preview')
@@ -637,8 +667,8 @@ export default function ChatInboxCRM() {
       setRecState('recording')
       setRecSecs(0)
       recTimerRef.current = setInterval(() => setRecSecs(current => current + 1), 1000)
-    } catch {
-      setActionError('Nao foi possivel acessar o microfone. Verifique a permissao do navegador.')
+    } catch (err) {
+      setActionError(`Nao foi possivel acessar o microfone: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -1024,7 +1054,18 @@ export default function ChatInboxCRM() {
             <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden p-4">
               <div className="flex h-full gap-3" style={{ minWidth: `${STATUS_COLUMNS.length * 290}px` }}>
                 {groupedByStatus.map(column => (
-                  <div key={column.key} className={`flex min-h-0 w-[280px] flex-col rounded-2xl border ${TONE_STYLES[column.tone]}`}>
+                  <div
+                    key={column.key}
+                    className={`flex min-h-0 w-[280px] flex-col rounded-2xl border ${TONE_STYLES[column.tone]}`}
+                    onDragOver={event => event.preventDefault()}
+                    onDrop={event => {
+                      event.preventDefault()
+                      const droppedId = event.dataTransfer.getData('text/plain') || draggedConversationId
+                      if (!droppedId) return
+                      setDraggedConversationId(null)
+                      void updateConversationStatusById(droppedId, column.key)
+                    }}
+                  >
                     <div className="flex items-center justify-between border-b border-black/5 px-3 py-3">
                       <span className="text-sm font-semibold">{column.label}</span>
                       <span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-slate-600">{column.items.length}</span>
@@ -1032,7 +1073,20 @@ export default function ChatInboxCRM() {
                     <div className="min-h-0 flex-1 overflow-y-auto p-2">
                       <div className="space-y-2">
                         {column.items.map(item => (
-                          <ConversationMiniCard key={item.id} item={item} selected={item.id === selectedId} onClick={() => selectConversationFromKanban(item.id)} human={item.atendimento_humano || humanOverrideIds.includes(item.id)} />
+                          <ConversationMiniCard
+                            key={item.id}
+                            item={item}
+                            selected={item.id === selectedId}
+                            onClick={() => selectConversationFromKanban(item.id)}
+                            human={item.atendimento_humano || humanOverrideIds.includes(item.id)}
+                            draggable
+                            onDragStart={event => {
+                              setDraggedConversationId(item.id)
+                              event.dataTransfer.setData('text/plain', item.id)
+                              event.dataTransfer.effectAllowed = 'move'
+                            }}
+                            onDragEnd={() => setDraggedConversationId(null)}
+                          />
                         ))}
                         {column.items.length === 0 && <EmptyState text="Sem conversas" compact />}
                       </div>
@@ -1079,9 +1133,32 @@ function ConversationCard({ item, selected, onClick, human }: { item: Conversati
   )
 }
 
-function ConversationMiniCard({ item, selected, onClick, human }: { item: ConversationRow; selected: boolean; onClick: () => void; human: boolean }) {
+function ConversationMiniCard({
+  item,
+  selected,
+  onClick,
+  human,
+  draggable = false,
+  onDragStart,
+  onDragEnd,
+}: {
+  item: ConversationRow
+  selected: boolean
+  onClick: () => void
+  human: boolean
+  draggable?: boolean
+  onDragStart?: (event: React.DragEvent<HTMLButtonElement>) => void
+  onDragEnd?: () => void
+}) {
   return (
-    <button type="button" onClick={onClick} className={`w-full rounded-xl border px-3 py-3 text-left ${selected ? 'border-slate-900 bg-slate-900 text-white' : 'border-white/70 bg-white hover:border-slate-300'}`}>
+    <button
+      type="button"
+      onClick={onClick}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      className={`w-full rounded-xl border px-3 py-3 text-left ${selected ? 'border-slate-900 bg-slate-900 text-white' : 'border-white/70 bg-white hover:border-slate-300'}`}
+    >
       <div className="flex items-center justify-between gap-2">
         <p className="truncate text-sm font-semibold">{item.cliente_nome || item.nome_crm || 'Sem nome'}</p>
         {human ? <UserRound size={14} /> : <Bot size={14} />}

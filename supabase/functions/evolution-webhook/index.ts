@@ -794,6 +794,58 @@ async function actionSendMessageByInstance(p: Record<string, unknown>) {
   }
 }
 
+// ── Processa fila communication_outbox ───────────────────────────────────────
+
+async function actionProcessOutbox(p: Record<string, unknown>) {
+  const batchSize = Math.min(Number(p.batch_size ?? 30), 50)
+  const dryRun = p.dry_run === true
+
+  const rows = await dbSelect(
+    'communication_outbox',
+    `status=eq.queued&provider=eq.evolution&channel=eq.whatsapp&order=created_at.asc&limit=${batchSize}`,
+    'id,to_address,body,payload',
+  )
+
+  if (rows.length === 0) return { ok: true, sent: 0, failed: 0, message: 'Nenhuma mensagem na fila.' }
+
+  let sent = 0
+  let failed = 0
+  const errors: string[] = []
+
+  for (const row of rows) {
+    const id = row.id as string
+    const phone = (row.to_address as string | undefined)?.replace(/\D/g, '') ?? ''
+    const body = row.body as string | undefined
+    const payload = row.payload as Record<string, unknown> | undefined
+    const instanceName = payload?.instance_name as string | undefined
+
+    if (!phone || !body || !instanceName) {
+      await dbPatch('communication_outbox', `id=eq.${id}`, { status: 'error', sent_at: new Date().toISOString() })
+      failed++
+      errors.push(`${id}: dados incompletos`)
+      continue
+    }
+
+    if (dryRun) { sent++; continue }
+
+    const result = await actionSendMessageByInstance({ instance_name: instanceName, number: phone, content: body })
+
+    if (result.ok) {
+      await dbPatch('communication_outbox', `id=eq.${id}`, { status: 'sent', sent_at: new Date().toISOString() })
+      sent++
+    } else {
+      await dbPatch('communication_outbox', `id=eq.${id}`, { status: 'error', sent_at: new Date().toISOString() })
+      failed++
+      errors.push(`${phone}: ${result.error}`)
+    }
+
+    // Pequena pausa para não sobrecarregar a Evolution API
+    await new Promise(resolve => setTimeout(resolve, 300))
+  }
+
+  return { ok: true, sent, failed, errors: errors.slice(0, 10), remaining: rows.length - sent - failed }
+}
+
 // ── Proxy: list Evolution instances ──────────────────────────────────────────
 
 async function actionListInstances() {

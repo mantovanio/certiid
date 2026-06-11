@@ -8,8 +8,37 @@ import {
 import { cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
-import { queueEmailMessage, queueWhatsAppMessage, queueWhatsAppFollowUp, renderTemplate } from '@/lib/communication'
+import { queueEmailMessage, renderTemplate } from '@/lib/communication'
 import { loadActiveWhatsAppIntegration } from '@/lib/whatsappIntegration'
+
+const EDGE_FN = 'https://cvfrhfiaprdtwxxplngk.supabase.co/functions/v1/evolution-webhook'
+
+async function sendWhatsAppDirect(phone: string, body: string, accessToken: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const integration = await loadActiveWhatsAppIntegration()
+    if (!integration?.base_url || !integration?.api_token || !integration?.instance_name) {
+      return { ok: false, error: 'Integracao WhatsApp nao configurada. Verifique em Configuracoes.' }
+    }
+    const res = await fetch(EDGE_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+      body: JSON.stringify({
+        _action: 'send_message',
+        base_url: integration.base_url,
+        api_token: integration.api_token,
+        instance_name: integration.instance_name,
+        number: phone,
+        content: body,
+        queue_override: 'renovacao',
+      }),
+    })
+    const payload = await res.json() as { ok?: boolean; error?: string }
+    if (!res.ok || !payload.ok) return { ok: false, error: payload.error ?? 'Falha no envio' }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
 import { useAuth } from '@/contexts/AuthContext'
 import { hasPerfil, isAdminProfile } from '@/lib/security'
 import * as XLSX from 'xlsx'
@@ -582,15 +611,18 @@ export default function Renovacoes() {
     setSendingId(r.id)
     const tpl = getSelectedTpl('whatsapp')
     const body = renderTemplate(tpl?.body ?? WHATSAPP_TPL_DEFAULT, tplValues(r))
-    const { error } = await queueWhatsAppMessage({ to: r.telefone, body, payload: { renovacao_id: r.id, tipo: 'renovacao' } })
-    if (error) { setSendingId(null); showMsg('Erro WhatsApp: ' + error, 'err'); return }
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) { setSendingId(null); showMsg('Sessao expirada. Atualize a pagina.', 'err'); return }
+    const result = await sendWhatsAppDirect(r.telefone, body, accessToken)
+    if (!result.ok) { setSendingId(null); showMsg('Erro WhatsApp: ' + result.error, 'err'); return }
     await atualizarStatus(r.id, 'contatado')
     const agora = new Date().toISOString()
     await supabase.from('renovacoes').update({ ultimo_lembrete: agora }).eq('id', r.id)
     setLista(prev => prev.map(x => x.id === r.id ? { ...x, ultimo_lembrete: agora } : x))
     await criarLeadKanban(r)
-    void queueWhatsAppFollowUp({ to: r.telefone, body, renovacaoId: r.id })
     setSendingId(null)
+    showMsg('WhatsApp enviado com sucesso!')
   }
 
   async function enviarEmail(r: RenovacaoV2) {
@@ -633,15 +665,27 @@ export default function Renovacoes() {
     if (!alvos.length) { showMsg('Nenhum selecionado com telefone.', 'err'); return }
     const tpl = getSelectedTpl('whatsapp')
     setBulkSending(true)
-    const base = Date.now()
-    await Promise.all(alvos.map((r, i) => queueWhatsAppMessage({
-      to: r.telefone!,
-      body: renderTemplate(tpl?.body ?? WHATSAPP_TPL_DEFAULT, tplValues(r)),
-      payload: { renovacao_id: r.id, tipo: 'renovacao_lote' },
-      scheduledFor: new Date(base + i * 3000).toISOString(),
-    })))
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) { setBulkSending(false); showMsg('Sessao expirada. Atualize a pagina.', 'err'); return }
+    let enviados = 0
+    let erros = 0
+    for (const r of alvos) {
+      const body = renderTemplate(tpl?.body ?? WHATSAPP_TPL_DEFAULT, tplValues(r))
+      const result = await sendWhatsAppDirect(r.telefone!, body, accessToken)
+      if (result.ok) {
+        enviados++
+        await atualizarStatus(r.id, 'contatado')
+        await supabase.from('renovacoes').update({ ultimo_lembrete: new Date().toISOString() }).eq('id', r.id)
+      } else {
+        erros++
+        logger.warn('Renovacoes', `Erro envio WA para ${r.telefone}: ${result.error}`)
+      }
+      // Pausa entre envios para não sobrecarregar a Evolution
+      await new Promise(resolve => setTimeout(resolve, 1500))
+    }
     setBulkSending(false)
-    showMsg(`${alvos.length} WhatsApps enfileirados (espaçados 3s cada).`)
+    showMsg(`${enviados} enviados${erros > 0 ? `, ${erros} com erro` : ''}.`)
   }
 
   async function bulkEnviarEmail() {
@@ -695,17 +739,27 @@ export default function Renovacoes() {
     if (!alvos.length) { showMsg('Nenhum cliente elegível com telefone.', 'err'); return }
     const tpl = getSelectedTpl('whatsapp')
     setSendingId('massa')
-    const base = Date.now()
-    const results = await Promise.all(alvos.map((r, i) => queueWhatsAppMessage({
-      to: r.telefone!, body: renderTemplate(tpl?.body ?? WHATSAPP_TPL_DEFAULT, tplValues(r)),
-      payload: { renovacao_id: r.id, tipo: 'renovacao_massa' },
-      scheduledFor: new Date(base + i * 3000).toISOString(),
-    })))
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) { setSendingId(null); showMsg('Sessao expirada. Atualize a pagina.', 'err'); return }
+    let enviados = 0
+    let falhas = 0
+    for (const r of alvos) {
+      const body = renderTemplate(tpl?.body ?? WHATSAPP_TPL_DEFAULT, tplValues(r))
+      const result = await sendWhatsAppDirect(r.telefone!, body, accessToken)
+      if (result.ok) {
+        enviados++
+        await atualizarStatus(r.id, 'contatado')
+        await supabase.from('renovacoes').update({ ultimo_lembrete: new Date().toISOString() }).eq('id', r.id)
+      } else {
+        falhas++
+      }
+      await new Promise(resolve => setTimeout(resolve, 1500))
+    }
     setSendingId(null)
-    const falhas = results.filter(r => r.error).length
-    const tempoTotal = Math.ceil((alvos.length * 3) / 60)
+    const tempoTotal = Math.ceil((alvos.length * 1.5) / 60)
     showMsg(
-      falhas > 0 ? `${falhas} mensagens falharam.` : `${alvos.length} WhatsApps enfileirados (~${tempoTotal} min para enviar todos).`,
+      falhas > 0 ? `${enviados} enviados, ${falhas} falharam.` : `${enviados} WhatsApps enviados (~${tempoTotal} min).`,
       falhas > 0 ? 'err' : 'ok'
     )
   }

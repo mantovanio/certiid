@@ -462,6 +462,7 @@ export default function ChatInboxCRM() {
   const [integrations, setIntegrations] = useState<EvolutionIntegration[]>([])
   const [manualConversation, setManualConversation] = useState<ManualConversationForm>(createEmptyManualConversationForm)
   const [selectedReplyIntegrationId, setSelectedReplyIntegrationId] = useState('')
+  const [selectedReplyIntegrationConversationId, setSelectedReplyIntegrationConversationId] = useState<string | null>(null)
   const [leftPanelWidth, setLeftPanelWidth] = useState(420)
   const [rightPanelWidth, setRightPanelWidth] = useState(330)
   const [isResizingLeft, setIsResizingLeft] = useState(false)
@@ -584,6 +585,11 @@ export default function ChatInboxCRM() {
     [replyChannelOptions, selectedReplyIntegrationId],
   )
 
+  const selectedReplyChannelLabel = useMemo(() => {
+    if (!selectedReplyIntegration) return 'Selecione o canal de envio'
+    return integrationChannelLabel(selectedReplyIntegration)
+  }, [selectedReplyIntegration])
+
   useEffect(() => {
     void bootstrap()
   }, [])
@@ -638,6 +644,7 @@ export default function ChatInboxCRM() {
       setHumanMessage('')
       setShowEmoji(false)
       setSelectedReplyIntegrationId('')
+      setSelectedReplyIntegrationConversationId(null)
       setContactEdit({
         name: '',
         phone: '',
@@ -683,16 +690,20 @@ export default function ChatInboxCRM() {
   useEffect(() => {
     if (!selectedConversation || replyChannelOptions.length === 0) return
 
-    const currentSelectionStillValid = replyChannelOptions.some(item => item.id === selectedReplyIntegrationId)
-    if (currentSelectionStillValid) return
+    const currentSelectionBelongsToConversation = selectedReplyIntegrationConversationId === selectedConversation.id
+      && replyChannelOptions.some(item => item.id === selectedReplyIntegrationId)
+    if (currentSelectionBelongsToConversation) return
 
     const targetInstance = selectedConversation.whatsapp_instance?.trim().toLowerCase()
     const exactMatch = replyChannelOptions.find(item => item.integration.instance_name?.trim().toLowerCase() === targetInstance)
     const sameQueue = replyChannelOptions.find(item => item.queue === selectedConversation.fila)
     const nextDefault = exactMatch ?? sameQueue ?? replyChannelOptions[0]
 
-    if (nextDefault) setSelectedReplyIntegrationId(nextDefault.id)
-  }, [selectedConversation?.id, selectedConversation?.whatsapp_instance, selectedConversation?.fila, replyChannelOptions, selectedReplyIntegrationId])
+    if (nextDefault) {
+      setSelectedReplyIntegrationId(nextDefault.id)
+      setSelectedReplyIntegrationConversationId(selectedConversation.id)
+    }
+  }, [selectedConversation?.id, selectedConversation?.whatsapp_instance, selectedConversation?.fila, replyChannelOptions, selectedReplyIntegrationConversationId, selectedReplyIntegrationId])
 
   useEffect(() => {
     if (!selectedConversation || loadingMessages) return
@@ -2042,14 +2053,20 @@ export default function ChatInboxCRM() {
                           <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
                             <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Canal de resposta</p>
                             <p className="mt-1 text-sm text-slate-700">
-                              {selectedReplyIntegration ? integrationChannelLabel(selectedReplyIntegration) : 'Selecione o numero de saida'}
+                              {selectedReplyChannelLabel}
+                            </p>
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              Este canal fica preso a conversa aberta para evitar envio no numero errado.
                             </p>
                           </div>
                           <label className="space-y-1">
                             <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Responder por</span>
                             <select
                               value={selectedReplyIntegrationId}
-                              onChange={event => setSelectedReplyIntegrationId(event.target.value)}
+                              onChange={event => {
+                                setSelectedReplyIntegrationId(event.target.value)
+                                setSelectedReplyIntegrationConversationId(selectedConversation.id)
+                              }}
                               className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
                             >
                               <option value="">Selecione um canal</option>
@@ -2058,6 +2075,37 @@ export default function ChatInboxCRM() {
                               ))}
                             </select>
                           </label>
+                        </div>
+
+                        <div className="mb-3 grid gap-2 md:grid-cols-2">
+                          {replyChannelOptions.map(option => {
+                            const active = option.id === selectedReplyIntegrationId
+                            return (
+                              <button
+                                key={option.id}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedReplyIntegrationId(option.id)
+                                  setSelectedReplyIntegrationConversationId(selectedConversation.id)
+                                }}
+                                className={`rounded-2xl border px-3 py-3 text-left transition ${
+                                  active
+                                    ? 'border-sky-300 bg-sky-50 text-sky-800 shadow-sm'
+                                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-sm font-semibold">{option.label}</span>
+                                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${active ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-500'}`}>
+                                    {active ? 'Ativo' : 'Escolher'}
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-[11px] text-slate-500">
+                                  Número de envio atual para esta conversa.
+                                </p>
+                              </button>
+                            )
+                          })}
                         </div>
 
                         {pendingFile && (

@@ -15,6 +15,7 @@ import {
   Send,
   Smile,
   StopCircle,
+  Save,
   User,
   UserCheck,
   UserRound,
@@ -59,6 +60,7 @@ interface CrmMessage {
   id: string
   conversation_id: string
   document_key: string
+  external_message_id?: string | null
   direction: DirectionType
   sender_type: SenderType
   sender_name?: string | null
@@ -115,6 +117,14 @@ interface ManualConversationForm {
   firstMessage: string
 }
 
+interface ContactEditForm {
+  name: string
+  phone: string
+  email: string
+  status: string
+  observations: string
+}
+
 const EDGE_FN = getEdgeFunctionUrl('evolution-webhook')
 const CHAT_ATTACHMENT_BUCKET = 'chat-lead-documentos'
 
@@ -122,7 +132,6 @@ const STATUS_COLUMNS = [
   { key: 'iniciou_conversa', label: 'Iniciou Conversa', tone: 'amber' },
   { key: 'conversando', label: 'Conversando', tone: 'blue' },
   { key: 'agendado', label: 'Agendado', tone: 'green' },
-  { key: 'cliente', label: 'Cliente', tone: 'violet' },
   { key: 'follow_up', label: 'Follow Up', tone: 'orange' },
   { key: 'cancelou_agendamento', label: 'Cancelou', tone: 'red' },
   { key: 'perdido', label: 'Perdido', tone: 'zinc' },
@@ -134,7 +143,21 @@ const STATUS_OPTIONS = [
   { key: 'arquivado', label: 'Arquivado', tone: 'slate' },
 ] as const
 
-const CLOSED_KANBAN_STATUSES = new Set(['cliente', 'perdido', 'cancelou_agendamento', 'resolvido', 'arquivado'])
+const CLOSED_KANBAN_STATUSES = new Set([
+  'perdido',
+  'cancelou_agendamento',
+  'resolvido',
+  'resolvida',
+  'resolved',
+  'arquivado',
+  'arquivada',
+  'finalizado',
+  'finalizada',
+  'encerrado',
+  'encerrada',
+  'closed',
+  'archived',
+])
 
 const STATUS_LABELS: Record<string, string> = Object.fromEntries(
   STATUS_OPTIONS.map(item => [item.key, item.label]),
@@ -194,6 +217,11 @@ function statusLabel(status: string) {
   return STATUS_LABELS[status] ?? status.replace(/_/g, ' ')
 }
 
+function normalizeKanbanStatus(status: string | null | undefined) {
+  if (status === 'cliente') return 'conversando'
+  return status ?? ''
+}
+
 function isClosedConversationStatus(status: string | null | undefined) {
   return Boolean(status && CLOSED_KANBAN_STATUSES.has(status))
 }
@@ -243,6 +271,32 @@ function normalizePhone(value: string) {
   if (digits.startsWith('55')) return digits
   if (digits.length === 10 || digits.length === 11) return `55${digits}`
   return digits
+}
+
+function normalizeDigits(value: string | null | undefined) {
+  return (value ?? '').replace(/\D/g, '')
+}
+
+function phoneMatchesQuery(item: ConversationRow, queryDigits: string) {
+  if (!queryDigits) return false
+  const candidates = [
+    item.telefone ?? '',
+    item.document_key ?? '',
+    item.cliente_nome ?? '',
+    item.nome_crm ?? '',
+  ]
+
+  return candidates.some(candidate => {
+    const digits = normalizeDigits(candidate)
+    return Boolean(
+      digits
+      && (
+        digits === queryDigits
+        || digits.endsWith(queryDigits)
+        || queryDigits.endsWith(digits)
+      ),
+    )
+  })
 }
 
 function inferQueueFromIntegration(integration: Pick<EvolutionIntegration, 'name' | 'instance_name' | 'sender_name'>) {
@@ -301,11 +355,16 @@ function parseEvolutionEventMessages(events: EvolutionEventRow[]): CrmMessage[] 
       const mediaUrl = (payload.mediaUrl as string | undefined)
         ?? (data?.mediaUrl as string | undefined)
         ?? null
+      const externalMessageId = (payload.messageId as string | undefined)
+        ?? (payload.externalId as string | undefined)
+        ?? (data?.messageId as string | undefined)
+        ?? null
 
       return {
-        id: String(event.id),
+        id: externalMessageId ? `evo-${externalMessageId}` : String(event.id),
         conversation_id: String(payload.conversationId ?? payload.remoteJid ?? payload.chatId ?? ''),
         document_key: String(payload.documentKey ?? payload.remoteJid ?? payload.contact ?? ''),
+        external_message_id: externalMessageId,
         direction: (fromMe ? 'outgoing' : 'incoming') as DirectionType,
         sender_type: senderType,
         sender_name: (payload.pushName as string | undefined) ?? (data?.pushName as string | undefined) ?? null,
@@ -321,23 +380,29 @@ function parseEvolutionEventMessages(events: EvolutionEventRow[]): CrmMessage[] 
 
 function mergeConversationMessages(messages: CrmMessage[]) {
   const ordered = [...messages].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-  const seen = new Set<string>()
+  const seenExternalIds = new Set<string>()
+  const seenSignatures = new Set<string>()
   const result: CrmMessage[] = []
 
   for (const message of ordered) {
     const content = (message.mensagem ?? '').trim().replace(/\s+/g, ' ')
-    const bucket = Math.floor(new Date(message.created_at).getTime() / 30000)
+    const externalId = message.external_message_id?.trim() || (message.id.startsWith('evo-') ? message.id.slice(4) : '')
+    if (externalId) {
+      if (seenExternalIds.has(externalId)) continue
+      seenExternalIds.add(externalId)
+    }
+
     const signature = [
       message.direction,
       message.sender_type,
       message.mime_type ?? '',
       message.file_name ?? '',
       content.toLowerCase(),
-      bucket,
+      message.created_at.slice(0, 16),
     ].join('|')
 
-    if (seen.has(signature)) continue
-    seen.add(signature)
+    if (seenSignatures.has(signature)) continue
+    seenSignatures.add(signature)
     result.push(message)
   }
 
@@ -409,6 +474,15 @@ export default function ChatInboxCRM() {
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [recSecs, setRecSecs] = useState(0)
+  const [contactEdit, setContactEdit] = useState<ContactEditForm>({
+    name: '',
+    phone: '',
+    email: '',
+    status: '',
+    observations: '',
+  })
+  const [contactEditSaving, setContactEditSaving] = useState(false)
+  const [contactEditError, setContactEditError] = useState<string | null>(null)
 
   const layoutRef = useRef<HTMLDivElement>(null)
   const detailRef = useRef<HTMLDivElement>(null)
@@ -425,6 +499,7 @@ export default function ChatInboxCRM() {
   const lastConversationSnapshotRef = useRef('')
   const lastMessageSnapshotRef = useRef('')
   const pendingMessageReloadRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingConversationReloadRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const selectedConversation = useMemo(
     () => conversations.find(item => item.id === selectedId) ?? null,
@@ -563,6 +638,13 @@ export default function ChatInboxCRM() {
       setHumanMessage('')
       setShowEmoji(false)
       setSelectedReplyIntegrationId('')
+      setContactEdit({
+        name: '',
+        phone: '',
+        email: '',
+        status: '',
+        observations: '',
+      })
       return
     }
 
@@ -576,6 +658,27 @@ export default function ChatInboxCRM() {
     setShowEmoji(false)
     void loadMessages(selectedConversation.id)
   }, [selectedConversation?.id])
+
+  useEffect(() => {
+    if (!selectedConversation) return
+    setContactEdit({
+      name: selectedConversation.nome_crm || selectedConversation.cliente_nome || '',
+      phone: selectedConversation.telefone || selectedConversation.document_key || '',
+      email: selectedConversation.email_principal || '',
+      status: selectedConversation.contato_status || '',
+      observations: selectedConversation.observacoes || '',
+    })
+    setContactEditError(null)
+  }, [
+    selectedConversation?.id,
+    selectedConversation?.cliente_nome,
+    selectedConversation?.contato_status,
+    selectedConversation?.document_key,
+    selectedConversation?.email_principal,
+    selectedConversation?.nome_crm,
+    selectedConversation?.observacoes,
+    selectedConversation?.telefone,
+  ])
 
   useEffect(() => {
     if (!selectedConversation || replyChannelOptions.length === 0) return
@@ -613,7 +716,10 @@ export default function ChatInboxCRM() {
     const channel = supabase
       .channel('crm-chat-admin-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_chat_conversations' }, () => {
-        void loadConversations(false)
+        if (pendingConversationReloadRef.current) clearTimeout(pendingConversationReloadRef.current)
+        pendingConversationReloadRef.current = setTimeout(() => {
+          void loadConversations(false)
+        }, 180)
       })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_chat_messages' }, payload => {
           const nextRow = (payload.new ?? {}) as Record<string, unknown>
@@ -650,6 +756,7 @@ export default function ChatInboxCRM() {
       .subscribe()
 
     return () => {
+      if (pendingConversationReloadRef.current) clearTimeout(pendingConversationReloadRef.current)
       if (pendingMessageReloadRef.current) clearTimeout(pendingMessageReloadRef.current)
       void supabase.removeChannel(channel)
     }
@@ -780,7 +887,7 @@ export default function ChatInboxCRM() {
     const [crmResult, evolutionResult] = await Promise.all([
       supabase
         .from('crm_chat_messages')
-        .select('*')
+        .select('id, conversation_id, document_key, external_message_id, direction, sender_type, sender_name, mensagem, mime_type, file_name, media_url, created_at')
         .or(documentKey
           ? `conversation_id.eq.${conversationId},document_key.eq.${documentKey}`
           : `conversation_id.eq.${conversationId}`)
@@ -1059,6 +1166,7 @@ export default function ChatInboxCRM() {
 
   async function createManualConversation() {
     const normalizedPhone = normalizePhone(manualConversation.phone)
+    const rawDigits = manualConversation.phone.replace(/\D/g, '')
     const firstMessage = manualConversation.firstMessage.trim()
     const contactName = manualConversation.contactName.trim()
     const selectedChannel = manualChannelOptions.find(item => item.integration.id === manualConversation.integrationId)
@@ -1070,6 +1178,16 @@ export default function ChatInboxCRM() {
 
     if (!normalizedPhone) {
       setManualConversationError('Informe um telefone valido com DDD.')
+      return
+    }
+
+    if (rawDigits.startsWith('55') && rawDigits.length === 12) {
+      setManualConversationError('Esse numero parece incompleto para WhatsApp. Para celular no Brasil, use 55 + DDD + 9 dígitos. Exemplo: 5511999999999.')
+      return
+    }
+
+    if (rawDigits.length < 12) {
+      setManualConversationError('Esse numero esta curto demais para WhatsApp. Confira o DDD e o 9 do celular antes de enviar.')
       return
     }
 
@@ -1165,8 +1283,176 @@ export default function ChatInboxCRM() {
 
   function focusComposer() {
     requestAnimationFrame(() => {
-      composerRef.current?.focus()
+      requestAnimationFrame(() => {
+        composerRef.current?.focus()
+      })
     })
+  }
+
+  function normalizeContactPhone(value: string) {
+    return value.replace(/\D/g, '')
+  }
+
+  function buildContactVCardBlob(contact: ContactEditForm) {
+    const fullName = contact.name.trim() || selectedConversation?.cliente_nome || selectedConversation?.nome_crm || 'Contato'
+    const phoneDigits = normalizeContactPhone(contact.phone || selectedConversation?.telefone || selectedConversation?.document_key || '')
+    const email = contact.email.trim()
+    const vcard = [
+      'BEGIN:VCARD',
+      'VERSION:3.0',
+      `FN:${fullName}`,
+      phoneDigits ? `TEL;TYPE=CELL:+${phoneDigits}` : null,
+      email ? `EMAIL;TYPE=INTERNET:${email}` : null,
+      'END:VCARD',
+    ].filter(Boolean).join('\r\n')
+
+    return new Blob([vcard], { type: 'text/vcard;charset=utf-8' })
+  }
+
+  async function saveContactDetails() {
+    if (!selectedConversation) return
+    const customerId = selectedConversation.crm_customer_id
+    if (!customerId && !selectedConversation.document_key) {
+      setContactEditError('Nao foi possivel identificar o contato para salvar.')
+      return
+    }
+
+    setContactEditSaving(true)
+    setContactEditError(null)
+
+    const cleanedName = contactEdit.name.trim()
+    const cleanedPhone = contactEdit.phone.trim()
+    const cleanedEmail = contactEdit.email.trim()
+    const cleanedStatus = contactEdit.status.trim()
+    const cleanedObs = contactEdit.observations.trim()
+    const resolvedName = cleanedName || selectedConversation.cliente_nome || selectedConversation.nome_crm || null
+    const resolvedPhone = cleanedPhone || selectedConversation.telefone || selectedConversation.document_key || null
+    const resolvedEmail = cleanedEmail || null
+    const resolvedStatus = cleanedStatus || null
+    const resolvedObs = cleanedObs || null
+
+    try {
+      if (customerId) {
+        const { error } = await supabase
+          .from('crm_customers')
+          .update({
+            nome: resolvedName,
+            telefone_principal: resolvedPhone,
+            email_principal: resolvedEmail,
+            contato_status: resolvedStatus,
+            observacoes: resolvedObs,
+          })
+          .eq('id', customerId)
+
+        if (error) throw new Error(error.message)
+      }
+
+      const conversationUpdate: Record<string, string | null> = {
+        cliente_nome: resolvedName,
+        telefone: resolvedPhone,
+      }
+
+      const { error: convError } = await supabase
+        .from('crm_chat_conversations')
+        .update(conversationUpdate)
+        .eq('id', selectedConversation.id)
+
+      if (convError) throw new Error(convError.message)
+
+      const historyText = [
+        'Dados do contato atualizados no painel',
+        resolvedName ? `Nome: ${resolvedName}` : null,
+        resolvedPhone ? `Telefone: ${resolvedPhone}` : null,
+        resolvedEmail ? `Email: ${resolvedEmail}` : null,
+        resolvedStatus ? `Status CRM: ${resolvedStatus}` : null,
+        resolvedObs ? `Observacoes: ${resolvedObs}` : null,
+      ].filter(Boolean).join(' | ')
+
+      await supabase.from('communication_events').insert([{
+        source: 'crm',
+        event_type: 'contact_updated',
+        conversation_id: selectedConversation.id,
+        contact: normalizeContactPhone(resolvedPhone ?? selectedConversation.telefone ?? selectedConversation.document_key),
+        payload: {
+          conversation_id: selectedConversation.id,
+          customer_id: customerId,
+          nome: resolvedName,
+          telefone: resolvedPhone,
+          email: resolvedEmail,
+          status: resolvedStatus,
+          observacoes: resolvedObs,
+          historico: historyText,
+        },
+      }])
+
+      await loadConversations(false)
+      setContactEdit(prev => ({
+        ...prev,
+        name: resolvedName || '',
+        phone: resolvedPhone || '',
+        email: resolvedEmail || '',
+        status: resolvedStatus || '',
+        observations: resolvedObs || '',
+      }))
+    } catch (err) {
+      setContactEditError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setContactEditSaving(false)
+    }
+  }
+
+  async function sendContactCard() {
+    if (!selectedConversation) return
+    setSendingHumanMessage(true)
+    setActionError(null)
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (!accessToken) throw new Error('Sessao expirada. Atualize a pagina e tente novamente.')
+
+      const cardBlob = buildContactVCardBlob(contactEdit)
+      const contactName = contactEdit.name.trim() || selectedConversation.cliente_nome || selectedConversation.nome_crm || 'Contato'
+      const phoneDigits = normalizeContactPhone(contactEdit.phone || selectedConversation.telefone || selectedConversation.document_key || '')
+      const filename = `${contactName.replace(/[^\p{L}\p{N}]+/gu, '_') || 'contato'}.vcf`
+      const result = await sendHumanAttachment(cardBlob, filename, 'text/vcard')
+      if (!result.ok) throw new Error(result.error ?? 'Nao foi possivel enviar o contato.')
+
+      await supabase.from('communication_events').insert([{
+        source: 'crm',
+        event_type: 'contact_shared',
+        conversation_id: selectedConversation.id,
+        contact: phoneDigits || null,
+        payload: {
+          nome: contactName,
+          telefone: phoneDigits || null,
+          email: contactEdit.email.trim() || null,
+          file_name: filename,
+        },
+      }])
+    } catch (err) {
+      setActionError(`Falha ao enviar contato: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setSendingHumanMessage(false)
+      focusComposer()
+    }
+  }
+
+  function describeMicrophoneError(err: unknown) {
+    if (!(err instanceof Error)) return 'Nao foi possivel acessar o microfone.'
+    const code = (err as Error & { name?: string }).name ?? ''
+    if (code === 'NotAllowedError' || code === 'PermissionDeniedError') {
+      return 'O navegador bloqueou o microfone. Abra as permissoes do site e permita o acesso ao microfone.'
+    }
+    if (code === 'NotFoundError' || code === 'DevicesNotFoundError') {
+      return 'Nenhum microfone foi encontrado neste computador. Conecte um microfone ou verifique o dispositivo padrao.'
+    }
+    if (code === 'NotReadableError' || code === 'TrackStartError') {
+      return 'O microfone esta ocupado ou indisponivel. Feche outros apps que estejam usando o audio e tente novamente.'
+    }
+    if (code === 'SecurityError') {
+      return 'O navegador bloqueou o uso do microfone neste contexto. Confirme que o site esta em HTTPS e recarregue a pagina.'
+    }
+    return err.message || 'Nao foi possivel acessar o microfone.'
   }
 
   function discardAudio() {
@@ -1353,6 +1639,10 @@ export default function ChatInboxCRM() {
 
   async function startRecording() {
     try {
+      if (!window.isSecureContext) {
+        throw new Error('O navegador exige HTTPS para liberar o microfone.')
+      }
+
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error('Seu navegador nao expoe getUserMedia para capturar audio.')
       }
@@ -1388,7 +1678,7 @@ export default function ChatInboxCRM() {
       setRecSecs(0)
       recTimerRef.current = setInterval(() => setRecSecs(current => current + 1), 1000)
     } catch (err) {
-      setActionError(`Nao foi possivel acessar o microfone: ${err instanceof Error ? err.message : String(err)}`)
+      setActionError(`Nao foi possivel acessar o microfone: ${describeMicrophoneError(err)}`)
     }
   }
 
@@ -1452,14 +1742,18 @@ export default function ChatInboxCRM() {
   }
 
   const searchMatchedConversations = useMemo(() => {
+    const query = search.trim().toLowerCase()
+    const queryDigits = normalizeDigits(search)
     return conversations.filter(item => {
       const text = `${item.cliente_nome ?? ''} ${item.nome_crm ?? ''} ${item.telefone ?? ''} ${item.document_key ?? ''} ${item.ultima_mensagem ?? ''}`.toLowerCase()
-      return !search.trim() || text.includes(search.trim().toLowerCase())
+      if (!query) return true
+      if (queryDigits) return text.includes(query) || phoneMatchesQuery(item, queryDigits)
+      return text.includes(query)
     })
   }, [conversations, search])
 
   const activeConversations = useMemo(() => (
-    searchMatchedConversations.filter(item => !isClosedConversationStatus(item.kanban_status))
+    searchMatchedConversations.filter(item => !isClosedConversationStatus(normalizeKanbanStatus(item.kanban_status)))
   ), [searchMatchedConversations])
 
   const closedConversations = useMemo(() => (
@@ -1483,8 +1777,10 @@ export default function ChatInboxCRM() {
   ), [closedConversations, queueFilter, humanFilter, humanOverrideIds])
 
   const visibleConversations = useMemo(() => (
-    showClosedConversations ? [...filteredConversations, ...filteredClosedConversations] : filteredConversations
-  ), [filteredConversations, filteredClosedConversations, showClosedConversations])
+    search.trim() || showClosedConversations
+      ? [...filteredConversations, ...filteredClosedConversations]
+      : filteredConversations
+  ), [filteredConversations, filteredClosedConversations, search, showClosedConversations])
 
   const summary = useMemo(() => ({
       total: activeConversations.length,
@@ -1508,7 +1804,7 @@ export default function ChatInboxCRM() {
   const groupedByStatus = useMemo(() => {
       return STATUS_COLUMNS.map(column => ({
         ...column,
-        items: filteredConversations.filter(item => item.kanban_status === column.key),
+        items: filteredConversations.filter(item => normalizeKanbanStatus(item.kanban_status) === column.key),
       }))
     }, [filteredConversations])
 
@@ -1693,7 +1989,7 @@ export default function ChatInboxCRM() {
                       </div>
                       <div className="flex flex-wrap gap-2 text-xs">
                         <Badge text={queueLabel(selectedConversation.fila)} tone={selectedConversation.fila === 'renovacao' ? 'violet' : 'blue'} />
-                        <Badge text={statusLabel(selectedConversation.kanban_status)} tone="slate" />
+                        <Badge text={statusLabel(normalizeKanbanStatus(selectedConversation.kanban_status) || selectedConversation.kanban_status)} tone="slate" />
                         <Badge text={humanModeActive ? 'Humano' : 'IA'} tone={humanModeActive ? 'green' : 'amber'} />
                       </div>
                     </div>
@@ -1865,7 +2161,89 @@ export default function ChatInboxCRM() {
 
                 <aside className="min-h-0 shrink-0 overflow-y-auto px-4 py-4" style={{ width: `${rightPanelWidth}px` }}>
                   <div className="space-y-4">
-                    <PanelBlock title="Resumo do CRM">
+                    <PanelBlock title="Contato e histórico">
+                      <div className="space-y-3">
+                        <label className="block space-y-1">
+                          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Nome</span>
+                          <input
+                            value={contactEdit.name}
+                            onChange={event => setContactEdit(prev => ({ ...prev, name: event.target.value }))}
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
+                            placeholder="Nome do contato"
+                          />
+                        </label>
+
+                        <label className="block space-y-1">
+                          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Telefone</span>
+                          <input
+                            value={contactEdit.phone}
+                            onChange={event => setContactEdit(prev => ({ ...prev, phone: event.target.value }))}
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
+                            placeholder="5511999999999"
+                          />
+                        </label>
+
+                        <label className="block space-y-1">
+                          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Email</span>
+                          <input
+                            value={contactEdit.email}
+                            onChange={event => setContactEdit(prev => ({ ...prev, email: event.target.value }))}
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
+                            placeholder="email@dominio.com"
+                          />
+                        </label>
+
+                        <label className="block space-y-1">
+                          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Status CRM</span>
+                          <input
+                            value={contactEdit.status}
+                            onChange={event => setContactEdit(prev => ({ ...prev, status: event.target.value }))}
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
+                            placeholder="conversando"
+                          />
+                        </label>
+
+                        <label className="block space-y-1">
+                          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Observações</span>
+                          <textarea
+                            value={contactEdit.observations}
+                            onChange={event => setContactEdit(prev => ({ ...prev, observations: event.target.value }))}
+                            rows={4}
+                            className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
+                            placeholder="Observações e histórico do contato"
+                          />
+                        </label>
+
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <button
+                            type="button"
+                            onClick={() => void saveContactDetails()}
+                            disabled={contactEditSaving || !selectedConversation}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-sky-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                          >
+                            {contactEditSaving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+                            Salvar contato
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void sendContactCard()}
+                            disabled={sendingHumanMessage || !selectedConversation}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 disabled:opacity-50"
+                          >
+                            <UserRound size={15} />
+                            Enviar contato
+                          </button>
+                        </div>
+
+                        {contactEditError && (
+                          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                            {contactEditError}
+                          </div>
+                        )}
+                      </div>
+                    </PanelBlock>
+
+                    <PanelBlock title="Resumo operacional">
                       <InfoRow icon={<User size={14} />} label="Cliente" value={selectedConversation.nome_crm || selectedConversation.cliente_nome || 'Nao informado'} />
                       <InfoRow icon={<Phone size={14} />} label="Telefone" value={selectedConversation.telefone || selectedConversation.document_key} mono />
                       <InfoRow icon={<Mail size={14} />} label="Email" value={selectedConversation.email_principal || 'Nao informado'} />
@@ -1899,7 +2277,7 @@ export default function ChatInboxCRM() {
 
                     <PanelBlock title="Controles do atendimento">
                       <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Etapa do Kanban</label>
-                      <select value={selectedConversation.kanban_status} onChange={event => void updateConversationStatus(event.target.value)} disabled={actionLoading} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none">
+                      <select value={normalizeKanbanStatus(selectedConversation.kanban_status)} onChange={event => void updateConversationStatus(event.target.value)} disabled={actionLoading} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none">
                         {STATUS_OPTIONS.map(column => (
                           <option key={column.key} value={column.key}>{column.label}</option>
                         ))}

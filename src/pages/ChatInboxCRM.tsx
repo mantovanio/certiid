@@ -20,7 +20,8 @@ import {
   UserRound,
   X,
 } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { getEdgeFunctionUrl, supabase } from '@/lib/supabase'
+import { logger } from '@/lib/logger'
 import { useAuth } from '@/contexts/AuthContext'
 
 type QueueType = 'atendimento' | 'renovacao'
@@ -106,7 +107,8 @@ interface ManualConversationForm {
   firstMessage: string
 }
 
-const EDGE_FN = 'https://api.certiid.mantovan.com.br/functions/v1/evolution-webhook'
+const EDGE_FN = getEdgeFunctionUrl('evolution-webhook')
+const CHAT_ATTACHMENT_BUCKET = 'chat-lead-documentos'
 
 const STATUS_COLUMNS = [
   { key: 'iniciou_conversa', label: 'Iniciou Conversa', tone: 'amber' },
@@ -261,6 +263,10 @@ function createEmptyManualConversationForm(): ManualConversationForm {
     integrationId: '',
     firstMessage: '',
   }
+}
+
+function safeAttachmentName(name: string) {
+  return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w.\- ]+/g, '').trim() || `arquivo-${Date.now()}`
 }
 
 export default function ChatInboxCRM() {
@@ -1070,6 +1076,7 @@ export default function ChatInboxCRM() {
 
     const finalMimeType = mimeType || file.type || 'application/octet-stream'
     const blob = file
+    const backupPath = `crm-chat/${selectedConversation.document_key}/${Date.now()}-${safeAttachmentName(filename)}`
     const tempId = `temp-attachment-${Date.now()}`
     const tempMediaUrl = typeof URL !== 'undefined' && file instanceof Blob ? URL.createObjectURL(file) : null
     setMessages(prev => [...prev, {
@@ -1085,6 +1092,21 @@ export default function ChatInboxCRM() {
       media_url: tempMediaUrl,
       created_at: new Date().toISOString(),
     }])
+
+    try {
+      const { error: storageError } = await supabase.storage
+        .from(CHAT_ATTACHMENT_BUCKET)
+        .upload(backupPath, blob, {
+          contentType: finalMimeType,
+          upsert: false,
+        })
+
+      if (storageError) {
+        logger.warn('ChatInboxCRM', 'falha ao salvar anexo no bucket', storageError.message)
+      }
+    } catch (err) {
+      logger.warn('ChatInboxCRM', 'falha inesperada ao salvar anexo no bucket', String(err))
+    }
 
     const form = new FormData()
     form.append('_action', 'send_attachment')

@@ -29,6 +29,14 @@ async function dbPatch(table: string, filter: string, body: unknown) {
   })
 }
 
+async function dbSelect(table: string, filter: string, select = '*') {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${filter}&select=${select}`, {
+    headers: DB,
+  })
+  if (!res.ok) return []
+  return res.json() as Promise<Record<string, unknown>[]>
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function normalizePhone(raw: string | undefined): string | undefined {
@@ -38,6 +46,12 @@ function normalizePhone(raw: string | undefined): string | undefined {
   if (digits.startsWith('55') && digits.length >= 12) return `+${digits}`
   if (digits.length === 10 || digits.length === 11) return `+55${digits}`
   return `+${digits}`
+}
+
+function normalizeDigits(raw: string | undefined): string | undefined {
+  if (!raw) return undefined
+  const digits = raw.replace(/\D/g, '')
+  return digits || undefined
 }
 
 function tsToISO(ts: unknown): string | null {
@@ -79,6 +93,200 @@ function buildLead(conv: Record<string, unknown>, isNew: boolean) {
     }
   }
   return base
+}
+
+function extractChatwootSender(data: Record<string, unknown>) {
+  const meta = data.meta as Record<string, unknown> | undefined
+  const sender = (meta?.sender as Record<string, unknown> | undefined)
+    ?? (data.sender as Record<string, unknown> | undefined)
+    ?? (data.contact as Record<string, unknown> | undefined)
+    ?? null
+
+  const phone = normalizePhone(
+    (sender?.phone_number as string | undefined)
+      ?? (sender?.phone as string | undefined)
+      ?? (data.phone_number as string | undefined)
+      ?? (data.contact_phone as string | undefined)
+      ?? undefined,
+  )
+
+  const name = (sender?.name as string | undefined)
+    ?? (data.sender_name as string | undefined)
+    ?? (data.contact_name as string | undefined)
+    ?? null
+
+  return {
+    name,
+    phone,
+    documentKey: normalizeDigits(phone) ?? normalizeDigits((sender?.phone_number as string | undefined) ?? undefined) ?? null,
+    inboxId: data.inbox_id ? String(data.inbox_id) : null,
+  }
+}
+
+async function ensureCrmCustomerFromChatwoot(input: {
+  documentKey: string
+  phone: string
+  name?: string | null
+}) {
+  const { documentKey, phone, name } = input
+  const existing = await dbSelect(
+    'crm_customers',
+    `document_key=eq.${encodeURIComponent(documentKey)}&limit=1`,
+    'id,document_key',
+  )
+
+  const customerId = existing[0]?.id as string | undefined
+  if (customerId) {
+    await dbPatch('crm_customers', `id=eq.${customerId}`, {
+      nome: name ?? undefined,
+      telefone_principal: phone,
+      contato_status: 'conversando',
+    })
+    return customerId
+  }
+
+  const createdRes = await fetch(`${SUPABASE_URL}/rest/v1/crm_customers`, {
+    method: 'POST',
+    headers: { ...DB, 'Prefer': 'return=representation' },
+    body: JSON.stringify({
+      document_key: documentKey,
+      nome: name ?? `+${phone}`,
+      telefone_principal: phone,
+      contato_status: 'conversando',
+    }),
+  })
+  if (!createdRes.ok) return null
+  const created = await createdRes.json() as Record<string, unknown>[]
+  return created[0]?.id ? String(created[0].id) : null
+}
+
+async function ensureCrmConversationFromChatwoot(input: {
+  documentKey: string
+  phone: string
+  customerId?: string | null
+  name?: string | null
+  content?: string | null
+  direction: 'incoming' | 'outgoing'
+  status?: string | null
+  inboxId?: string | null
+}) {
+  const { documentKey, phone, customerId, name, content, direction, status, inboxId } = input
+  const existing = await dbSelect(
+    'crm_chat_conversations',
+    `document_key=eq.${encodeURIComponent(documentKey)}&order=ultima_interacao_em.desc&limit=1`,
+    'id',
+  )
+
+  const now = new Date().toISOString()
+  const conversationId = existing[0]?.id as string | undefined
+  const base = {
+    crm_customer_id: customerId ?? null,
+    telefone: phone,
+    cliente_nome: name ?? undefined,
+    whatsapp_instance: inboxId ?? 'chatwoot',
+    numero_receptor: inboxId ?? 'chatwoot',
+    fila: 'atendimento',
+    ultima_mensagem: content ?? undefined,
+    ultima_mensagem_direcao: direction,
+    ultima_interacao_em: now,
+  }
+
+  if (conversationId) {
+    await dbPatch('crm_chat_conversations', `id=eq.${conversationId}`, base)
+    return conversationId
+  }
+
+  const createdRes = await fetch(`${SUPABASE_URL}/rest/v1/crm_chat_conversations`, {
+    method: 'POST',
+    headers: { ...DB, 'Prefer': 'return=representation' },
+    body: JSON.stringify({
+      document_key: documentKey,
+      crm_customer_id: customerId ?? null,
+      telefone: phone,
+      cliente_nome: name ?? `+${phone}`,
+      whatsapp_instance: inboxId ?? 'chatwoot',
+      numero_receptor: inboxId ?? 'chatwoot',
+      fila: 'atendimento',
+      kanban_status: STATUS_MAP[status ?? 'open'] ?? (direction === 'incoming' ? 'iniciou_conversa' : 'conversando'),
+      atendimento_humano: direction === 'outgoing',
+      ultima_mensagem: content ?? null,
+      ultima_mensagem_direcao: direction,
+      ultima_interacao_em: now,
+    }),
+  })
+  if (!createdRes.ok) return null
+  const created = await createdRes.json() as Record<string, unknown>[]
+  return created[0]?.id ? String(created[0].id) : null
+}
+
+async function syncCrmInboxFromChatwoot(input: {
+  data: Record<string, unknown>
+  direction: 'incoming' | 'outgoing'
+  content?: string | null
+  mimeType?: string | null
+  fileName?: string | null
+  mediaUrl?: string | null
+}) {
+  const { data, direction, content, mimeType, fileName, mediaUrl } = input
+  const sender = extractChatwootSender(data)
+  if (!sender.documentKey || !sender.phone) return null
+
+  const customerId = await ensureCrmCustomerFromChatwoot({
+    documentKey: sender.documentKey,
+    phone: sender.phone,
+    name: sender.name,
+  })
+
+  const conversationId = await ensureCrmConversationFromChatwoot({
+    documentKey: sender.documentKey,
+    phone: sender.phone,
+    customerId,
+    name: sender.name,
+    content,
+    direction,
+    status: data.status as string | null | undefined,
+    inboxId: sender.inboxId,
+  })
+
+  if (!conversationId) return null
+
+  const latestRows = await dbSelect(
+    'crm_chat_messages',
+    `conversation_id=eq.${encodeURIComponent(conversationId)}&direction=eq.${encodeURIComponent(direction)}&order=created_at.desc&limit=1`,
+    'id,mensagem,created_at,mime_type,file_name',
+  )
+  const latest = latestRows[0]
+  const latestContent = typeof latest?.mensagem === 'string' ? latest.mensagem : null
+  const latestCreatedAt = typeof latest?.created_at === 'string' ? latest.created_at : null
+  const now = Date.now()
+  const latestAgeMs = latestCreatedAt ? Math.abs(now - new Date(latestCreatedAt).getTime()) : Number.POSITIVE_INFINITY
+  const normalizedContent = content ?? null
+  const isDuplicateRecentMessage =
+    latestContent === normalizedContent &&
+    (latest?.mime_type ?? null) === (mimeType ?? null) &&
+    (latest?.file_name ?? null) === (fileName ?? null) &&
+    latestAgeMs < 15000
+
+  if (!isDuplicateRecentMessage && (normalizedContent || mimeType || fileName || mediaUrl)) {
+    await fetch(`${SUPABASE_URL}/rest/v1/crm_chat_messages`, {
+      method: 'POST',
+      headers: { ...DB, 'Prefer': 'return=minimal' },
+      body: JSON.stringify([{
+        conversation_id: conversationId,
+        document_key: sender.documentKey,
+        direction,
+        sender_type: direction === 'incoming' ? 'cliente' : 'humano',
+        sender_name: sender.name ?? (direction === 'incoming' ? 'Cliente' : 'Atendente'),
+        mensagem: normalizedContent,
+        mime_type: mimeType ?? null,
+        file_name: fileName ?? null,
+        media_url: mediaUrl ?? null,
+        created_at: new Date().toISOString(),
+      }]),
+    })
+  }
+
+  return { conversationId, customerId, documentKey: sender.documentKey }
 }
 
 // ── Proxy: test Chatwoot connection ───────────────────────────────────────────
@@ -436,6 +644,11 @@ Deno.serve(async (req) => {
   // Nova conversa → salva tudo incluindo inicio_atendimento e resumo_conversa
   if (event === 'conversation_created') {
     await dbUpsert('leads_contabilidade', [buildLead(data, true)])
+    await syncCrmInboxFromChatwoot({
+      data,
+      direction: 'incoming',
+      content: firstMessage(data),
+    })
   }
 
   // Conversa atualizada → atualiza só status, contato e ultima_mensagem
@@ -450,14 +663,39 @@ Deno.serve(async (req) => {
         ultima_mensagem: tsToISO(data.last_activity_at),
       },
     )
+
+    await syncCrmInboxFromChatwoot({
+      data,
+      direction: 'incoming',
+      content: firstMessage(data) ?? (data.last_message as string | undefined) ?? null,
+    })
   }
 
   // Nova mensagem do contato
   if (event === 'message_created') {
     const msg = data as Record<string, unknown>
-    if (msg.message_type === 0 && msg.conversation_id) {
+    const messageType = Number(msg.message_type ?? -1)
+    const attachments = (msg.attachments as Array<Record<string, unknown>> | undefined) ?? []
+    const firstAttachment = attachments[0] ?? null
+    const content = (msg.content as string | undefined) ?? null
+    const attachmentContent = content || (firstAttachment?.file_name as string | undefined) || null
+    const mediaUrl = (firstAttachment?.download_url as string | undefined)
+      ?? (firstAttachment?.data_url as string | undefined)
+      ?? null
+    const mimeType = (firstAttachment?.file_type as string | undefined) ?? null
+    const fileName = (firstAttachment?.file_name as string | undefined) ?? null
+
+    await syncCrmInboxFromChatwoot({
+      data,
+      direction: messageType === 1 ? 'outgoing' : 'incoming',
+      content: attachmentContent,
+      mimeType,
+      fileName,
+      mediaUrl,
+    })
+
+    if (messageType === 0 && msg.conversation_id) {
       const convId  = String(msg.conversation_id)
-      const content = (msg.content as string | undefined) ?? null
 
       await dbPatch('leads_contabilidade', `id_conversa_chatwoot=eq.${convId}`,
         { ultima_mensagem: new Date().toISOString() })

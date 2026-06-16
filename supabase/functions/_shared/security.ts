@@ -1,11 +1,58 @@
 // @ts-nocheck — Deno runtime shared helpers
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
-export const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
-export const SERVICE_KEY = Deno.env.get('SUPABASE_SECRET_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+// Em edge-runtime self-hosted v1.58.4, envVarsObj não propaga para Deno.env nos workers.
+// Fallback: lê /home/deno/functions/.env diretamente do disco.
+const ENV_FILE_PATH = '/home/deno/functions/.env'
+
+let _fileEnvCache: Record<string, string> | undefined
+
+function parseEnvFile(): Record<string, string> {
+  if (_fileEnvCache) return _fileEnvCache
+  try {
+    const content = Deno.readTextFileSync(ENV_FILE_PATH)
+    const vars: Record<string, string> = {}
+    for (const line of content.split('\n')) {
+      const t = line.trim()
+      if (!t || t.startsWith('#')) continue
+      const eqIdx = t.indexOf('=')
+      if (eqIdx === -1) continue
+      const key = t.slice(0, eqIdx).trim()
+      const value = t.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, '')
+      vars[key] = value
+    }
+    _fileEnvCache = vars
+    return vars
+  } catch {
+    _fileEnvCache = {}
+    return {}
+  }
+}
+
+// Fallbacks para self-hosted: workers do edge-runtime não recebem Deno.env via envVarsObj.
+// A URL interna é sempre http://kong:8000 no self-hosted, a chave é a service role key do deploy.
+const _SELF_HOSTED_URL = 'http://kong:8000'
+const _SELF_HOSTED_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3ODEyNzQxMTcsImV4cCI6MjA5NjYzNDExN30.BF9vv-7EijAdX7ZOGTjXmWq-JH0d72CwBuX7Cey8wCI'
+
+function getEnv(key: string): string {
+  return Deno.env.get(key) || parseEnvFile()[key] || ''
+}
+
+export function getSupabaseUrl(): string {
+  return getEnv('SUPABASE_URL') || _SELF_HOSTED_URL
+}
+export function getServiceKey(): string {
+  return getEnv('SUPABASE_SECRET_KEY') || getEnv('SUPABASE_SERVICE_ROLE_KEY') || _SELF_HOSTED_KEY
+}
+
+// Mantidos por compatibilidade
+export const SUPABASE_URL = getSupabaseUrl()
+export const SERVICE_KEY = getServiceKey()
 
 const DEFAULT_ALLOWED_ORIGINS = [
   'https://certiid.mantovan.com.br',
+  'https://certiid.com.br',
+  'https://www.certiid.com.br',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'http://localhost:4173',
@@ -33,8 +80,27 @@ export function corsHeaders(req?: Request) {
 
 export const CORS = corsHeaders()
 
-export const adminDb = createClient(SUPABASE_URL, SERVICE_KEY, {
-  auth: { autoRefreshToken: false, persistSession: false },
+// adminDb com lazy init via Proxy — cria o cliente Supabase apenas no primeiro uso,
+// quando as env vars já estão disponíveis no worker.
+let _adminDbInstance: ReturnType<typeof createClient> | undefined
+
+function getAdminDbInstance() {
+  if (!_adminDbInstance) {
+    const url = getSupabaseUrl()
+    const key = getServiceKey()
+    _adminDbInstance = createClient(url, key, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+  }
+  return _adminDbInstance
+}
+
+export const adminDb = new Proxy({} as ReturnType<typeof createClient>, {
+  get(_target, prop) {
+    const instance = getAdminDbInstance()
+    const value = (instance as any)[prop]
+    return typeof value === 'function' ? value.bind(instance) : value
+  },
 })
 
 export function json(body: unknown, status = 200, req?: Request) {

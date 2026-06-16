@@ -279,7 +279,7 @@ function safeAttachmentName(name: string) {
 
 function parseEvolutionEventMessages(events: EvolutionEventRow[]): CrmMessage[] {
   return events
-    .filter(event => event.source === 'evolution')
+    .filter(event => event.source === 'evolution' || event.source === 'chatwoot')
     .map(event => {
       const payload = event.payload ?? {}
       const data = (payload.data as Record<string, unknown> | undefined) ?? undefined
@@ -512,14 +512,6 @@ export default function ChatInboxCRM() {
   useEffect(() => {
     void bootstrap()
   }, [])
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      void loadConversations(false)
-    }, 3500)
-
-    return () => clearInterval(interval)
-  }, [selectedConversation?.id])
 
   useEffect(() => {
     if (!selectedConversation) { setRenovacoesCRM([]); return }
@@ -796,7 +788,7 @@ export default function ChatInboxCRM() {
       supabase
         .from('communication_events')
         .select('id, event_type, payload, created_at, source')
-        .eq('source', 'evolution')
+        .in('source', ['evolution', 'chatwoot'])
         .or([
           `conversation_id.eq.${conversationId}`,
           documentKey ? `conversation_id.eq.${documentKey}` : null,
@@ -1171,6 +1163,12 @@ export default function ChatInboxCRM() {
     setPendingPreview(null)
   }
 
+  function focusComposer() {
+    requestAnimationFrame(() => {
+      composerRef.current?.focus()
+    })
+  }
+
   function discardAudio() {
     if (recTimerRef.current) clearInterval(recTimerRef.current)
     mediaRecorderRef.current?.stream?.getTracks().forEach(track => track.stop())
@@ -1245,6 +1243,7 @@ export default function ChatInboxCRM() {
       setActionError(`Falha no envio humano: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setSendingHumanMessage(false)
+      focusComposer()
     }
   }
 
@@ -1324,6 +1323,7 @@ export default function ChatInboxCRM() {
     await loadConversations(false)
     await loadMessages(selectedConversation.id, { background: true })
     if (tempMediaUrl) URL.revokeObjectURL(tempMediaUrl)
+    focusComposer()
     return { ok: true }
   }
 
@@ -1410,6 +1410,7 @@ export default function ChatInboxCRM() {
       setActionError(`Falha ao enviar audio: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setSendingHumanMessage(false)
+      focusComposer()
     }
   }
 

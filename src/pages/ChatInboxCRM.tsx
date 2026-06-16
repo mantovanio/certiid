@@ -103,7 +103,7 @@ interface ManualConversationForm {
   firstMessage: string
 }
 
-const EDGE_FN = 'https://cvfrhfiaprdtwxxplngk.supabase.co/functions/v1/evolution-webhook'
+const EDGE_FN = 'https://api.certiid.mantovan.com.br/functions/v1/evolution-webhook'
 
 const STATUS_COLUMNS = [
   { key: 'iniciou_conversa', label: 'Iniciou Conversa', tone: 'amber' },
@@ -392,6 +392,17 @@ export default function ChatInboxCRM() {
   useEffect(() => {
     void bootstrap()
   }, [])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void loadConversations(false)
+      if (selectedConversation) {
+        void loadMessages(selectedConversation.id)
+      }
+    }, 3500)
+
+    return () => clearInterval(interval)
+  }, [selectedConversation?.id])
 
   useEffect(() => {
     if (!selectedConversation) { setRenovacoesCRM([]); return }
@@ -2038,3 +2049,4 @@ function EmptyState({ text, compact = false }: { text: string; compact?: boolean
     </div>
   )
 }
+

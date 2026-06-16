@@ -161,6 +161,11 @@ export default function ChatAoVivo() {
   useEffect(() => {
     void loadAll()
     void loadEvolution()
+    const interval = setInterval(() => {
+      void loadLeads()
+      void loadColumns()
+    }, 4000)
+
     const channel = supabase
       .channel('chat-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_contabilidade' }, payload => {
@@ -204,6 +209,7 @@ export default function ChatAoVivo() {
       .subscribe()
 
     return () => {
+      clearInterval(interval)
       supabase.removeChannel(channel)
       supabase.removeChannel(columnsChannel)
       supabase.removeChannel(eventsChannel)

@@ -115,7 +115,17 @@ const STATUS_COLUMNS = [
   { key: 'perdido', label: 'Perdido', tone: 'zinc' },
 ] as const
 
-const CLOSED_KANBAN_STATUSES = new Set(['cliente', 'perdido', 'cancelou_agendamento'])
+const STATUS_OPTIONS = [
+  ...STATUS_COLUMNS,
+  { key: 'resolvido', label: 'Resolvido', tone: 'green' },
+  { key: 'arquivado', label: 'Arquivado', tone: 'slate' },
+] as const
+
+const CLOSED_KANBAN_STATUSES = new Set(['cliente', 'perdido', 'cancelou_agendamento', 'resolvido', 'arquivado'])
+
+const STATUS_LABELS: Record<string, string> = Object.fromEntries(
+  STATUS_OPTIONS.map(item => [item.key, item.label]),
+)
 
 const TONE_STYLES: Record<string, string> = {
   amber: 'border-amber-200 bg-amber-50',
@@ -168,8 +178,7 @@ function formatRecTime(seconds: number) {
 }
 
 function statusLabel(status: string) {
-  const found = STATUS_COLUMNS.find(item => item.key === status)
-  return found ? found.label : status.replace(/_/g, ' ')
+  return STATUS_LABELS[status] ?? status.replace(/_/g, ' ')
 }
 
 function isClosedConversationStatus(status: string | null | undefined) {
@@ -743,17 +752,27 @@ export default function ChatInboxCRM() {
     if (!selectedConversation) return
     setActionLoading(true)
     setActionError(null)
+    const shouldExitView = isClosedConversationStatus(status)
+    const currentConversationId = selectedConversation.id
     const { error: queryError } = await supabase
       .from('crm_chat_conversations')
       .update({ kanban_status: status })
-      .eq('id', selectedConversation.id)
+      .eq('id', currentConversationId)
 
-    if (queryError) setActionError(`Nao foi possivel atualizar a etapa: ${queryError.message}`)
-    else await loadConversations(false)
+    if (queryError) {
+      setActionError(`Nao foi possivel atualizar a etapa: ${queryError.message}`)
+    } else {
+      await loadConversations(false)
+      if (shouldExitView) {
+        const nextConversation = activeConversations.find(item => item.id !== currentConversationId) ?? null
+        setSelectedId(nextConversation?.id ?? null)
+      }
+    }
     setActionLoading(false)
   }
 
   async function updateConversationStatusById(conversationId: string, status: string) {
+    const shouldExitView = isClosedConversationStatus(status) && conversationId === selectedId
     const { error: queryError } = await supabase
       .from('crm_chat_conversations')
       .update({ kanban_status: status })
@@ -765,6 +784,10 @@ export default function ChatInboxCRM() {
     }
 
     await loadConversations(false)
+    if (shouldExitView) {
+      const nextConversation = activeConversations.find(item => item.id !== conversationId) ?? null
+      setSelectedId(nextConversation?.id ?? null)
+    }
   }
 
   async function toggleHumanMode(nextValue: boolean) {
@@ -1617,10 +1640,33 @@ export default function ChatInboxCRM() {
                     <PanelBlock title="Controles do atendimento">
                       <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Etapa do Kanban</label>
                       <select value={selectedConversation.kanban_status} onChange={event => void updateConversationStatus(event.target.value)} disabled={actionLoading} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none">
-                        {STATUS_COLUMNS.map(column => (
+                        {STATUS_OPTIONS.map(column => (
                           <option key={column.key} value={column.key}>{column.label}</option>
                         ))}
                       </select>
+
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                        <button
+                          type="button"
+                          disabled={actionLoading}
+                          onClick={() => void updateConversationStatus('resolvido')}
+                          className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700 disabled:opacity-50"
+                        >
+                          Resolver e sair
+                        </button>
+                        <button
+                          type="button"
+                          disabled={actionLoading}
+                          onClick={() => void updateConversationStatus('arquivado')}
+                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 disabled:opacity-50"
+                        >
+                          Arquivar e sair
+                        </button>
+                      </div>
+
+                      <p className="mt-2 text-[11px] text-slate-500">
+                        Ao resolver ou arquivar, a conversa sai da lista principal e continua acessivel em encerradas.
+                      </p>
 
                       <div className="mt-3 flex flex-wrap gap-2">
                         <button type="button" disabled={actionLoading || humanModeActive} onClick={() => void toggleHumanMode(true)} className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">

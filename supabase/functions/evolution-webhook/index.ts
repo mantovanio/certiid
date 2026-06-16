@@ -501,13 +501,15 @@ async function actionSendMessage(p: Record<string, unknown>) {
   }
 
   const phone = normalizePhone(number) ?? number
+  const settings = await loadCrmChatSettings()
+  const signedText = settings.sign_outgoing_messages ? signOutgoingContent(text, senderName) : text
 
   try {
     const remoteJid = phoneToJid(phone)
     const ensuredLeadId = await ensureLeadForConversation({
       remoteJid,
       instance,
-      content: text,
+      content: signedText,
     })
 
     const res = await fetch(`${baseUrl}/message/sendText/${instance}`, {
@@ -515,7 +517,7 @@ async function actionSendMessage(p: Record<string, unknown>) {
       headers: evolutionHeaders(apiKey),
       body:    JSON.stringify({
         number: phone,
-        text,
+        text: signedText,
         ...(quotedId ? {
           quoted: {
             key: { id: quotedId },
@@ -542,7 +544,7 @@ async function actionSendMessage(p: Record<string, unknown>) {
       payload: {
         remoteJid, fromMe: true,
         messageId: msgId,
-        content: text,
+        content: signedText,
         messageType: 'conversation',
         mimeType: null,
         fileName: null,
@@ -556,7 +558,7 @@ async function actionSendMessage(p: Record<string, unknown>) {
       remoteJid,
       instance,
       pushName: contactName,
-      content: text,
+      content: signedText,
       direction: 'outgoing',
       senderType: 'humano',
       senderName,
@@ -593,6 +595,8 @@ async function actionSendAttachment(form: FormData) {
   const isAudio = mime.startsWith('audio/')
   const isImage = mime.startsWith('image/')
   const isVideo = mime.startsWith('video/')
+  const settings = await loadCrmChatSettings()
+  const signedCaption = settings.sign_outgoing_messages ? signOutgoingContent(caption, senderName) : caption
 
   const arrayBuffer = await file.arrayBuffer()
   const base64 = arrayBufferToBase64(arrayBuffer)
@@ -603,7 +607,7 @@ async function actionSendAttachment(form: FormData) {
     const ensuredLeadId = await ensureLeadForConversation({
       remoteJid,
       instance,
-      content: caption || file.name,
+      content: signedCaption || file.name,
     })
 
     let endpoint: string
@@ -656,7 +660,7 @@ async function actionSendAttachment(form: FormData) {
           remoteJid,
           fromMe: true,
           messageId: msgId,
-          content: caption || file.name,
+          content: signedCaption || file.name,
           messageType: 'audioMessage',
           mimeType: mime,
           fileName: file.name,
@@ -668,7 +672,7 @@ async function actionSendAttachment(form: FormData) {
       const crmSync = await syncCrmInbox({
         remoteJid,
         instance,
-        content: caption || file.name,
+        content: signedCaption || file.name,
         direction: 'outgoing',
         senderType: 'humano',
         senderName,
@@ -730,7 +734,7 @@ async function actionSendAttachment(form: FormData) {
         remoteJid,
         fromMe: true,
         messageId: msgId,
-        content: caption || file.name,
+        content: signedCaption || file.name,
         messageType: isImage ? 'imageMessage' : isVideo ? 'videoMessage' : 'documentMessage',
         mimeType: mime,
         fileName: file.name,
@@ -742,7 +746,7 @@ async function actionSendAttachment(form: FormData) {
     const crmSync = await syncCrmInbox({
       remoteJid,
       instance,
-      content: caption || file.name,
+      content: signedCaption || file.name,
       direction: 'outgoing',
       senderType: 'humano',
       senderName,

@@ -1,11 +1,28 @@
 // @ts-nocheck — Deno runtime (Supabase Edge Functions)
-import { CORS, SERVICE_KEY, SUPABASE_URL, requireAuthenticatedUser, unauthorizedWebhookResponse, verifyWebhookRequest } from '../_shared/security.ts'
+import { CORS, SERVICE_KEY, SUPABASE_URL, getEnv, requireAuthenticatedUser, unauthorizedWebhookResponse, verifyWebhookRequest } from '../_shared/security.ts'
 
 const DB = {
   'apikey':        SERVICE_KEY,
   'Authorization': `Bearer ${SERVICE_KEY}`,
   'Content-Type':  'application/json',
 }
+
+const CLOSED_KANBAN_STATUSES = new Set([
+  'cliente',
+  'perdido',
+  'cancelou_agendamento',
+  'resolvido',
+  'resolvida',
+  'resolved',
+  'arquivado',
+  'arquivada',
+  'finalizado',
+  'finalizada',
+  'encerrado',
+  'encerrada',
+  'closed',
+  'archived',
+])
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
@@ -157,6 +174,10 @@ async function ensureCrmConversation(input: {
 
   const now = new Date().toISOString()
   const conversationId = existing[0]?.id as string | undefined
+  const existingStatus = existing[0]?.kanban_status as string | undefined
+  const reopenStatus = direction === 'incoming' && existingStatus && CLOSED_KANBAN_STATUSES.has(existingStatus)
+    ? 'conversando'
+    : undefined
 
   if (conversationId) {
     await dbPatch('crm_chat_conversations', `id=eq.${conversationId}`, {
@@ -166,6 +187,8 @@ async function ensureCrmConversation(input: {
       whatsapp_instance: instance ?? undefined,
       numero_receptor: instance ?? undefined,
       fila: queue,
+      kanban_status: reopenStatus ?? undefined,
+      atendimento_humano: direction === 'incoming' ? false : undefined,
       ultima_mensagem: content ?? undefined,
       ultima_mensagem_direcao: direction,
       ultima_interacao_em: now,
@@ -195,6 +218,7 @@ async function syncCrmInbox(input: {
   instance?: string | null
   pushName?: string | null
   content?: string | null
+  externalMessageId?: string | null
   direction: 'incoming' | 'outgoing'
   senderType: 'cliente' | 'ia' | 'humano'
   senderName?: string | null
@@ -203,7 +227,7 @@ async function syncCrmInbox(input: {
   mimeType?: string | null
   fileName?: string | null
 }) {
-  const { remoteJid, instance, pushName, content, direction, senderType, senderName, queueOverride, mediaUrl, mimeType, fileName } = input
+  const { remoteJid, instance, pushName, content, externalMessageId, direction, senderType, senderName, queueOverride, mediaUrl, mimeType, fileName } = input
   const phone = jidToPhone(remoteJid)
   const documentKey = normalizePhone(phone) ?? phone
   if (!documentKey) return null
@@ -228,22 +252,23 @@ async function syncCrmInbox(input: {
   if (conversationId) {
     const latestRows = await dbSelect(
       'crm_chat_messages',
-      `conversation_id=eq.${encodeURIComponent(conversationId)}&direction=eq.${encodeURIComponent(direction)}&sender_type=eq.${encodeURIComponent(senderType)}&order=created_at.desc&limit=1`,
-      'id,mensagem,created_at',
+      externalMessageId
+        ? `conversation_id=eq.${encodeURIComponent(conversationId)}&external_message_id=eq.${encodeURIComponent(externalMessageId)}&limit=1`
+        : `conversation_id=eq.${encodeURIComponent(conversationId)}&direction=eq.${encodeURIComponent(direction)}&sender_type=eq.${encodeURIComponent(senderType)}&order=created_at.desc&limit=1`,
+      'id,mensagem,created_at,external_message_id',
     )
 
     const latest = latestRows[0]
     const latestContent = typeof latest?.mensagem === 'string' ? latest.mensagem : null
     const latestCreatedAt = typeof latest?.created_at === 'string' ? latest.created_at : null
-    const now = Date.now()
-    const latestAgeMs = latestCreatedAt ? Math.abs(now - new Date(latestCreatedAt).getTime()) : Number.POSITIVE_INFINITY
     const normalizedContent = content ?? null
-    const isDuplicateRecentMessage = latestContent === normalizedContent && latestAgeMs < 15000
+    const isDuplicateRecentMessage = Boolean(externalMessageId && latest?.external_message_id === externalMessageId)
 
     if (!isDuplicateRecentMessage) {
       await dbInsert('crm_chat_messages', [{
         conversation_id: conversationId,
         document_key: documentKey,
+        external_message_id: externalMessageId ?? null,
         direction,
         sender_type: senderType,
         sender_name: senderType === 'humano' ? senderName ?? null : senderType === 'ia' ? 'IA Clara' : pushName ?? 'Cliente',
@@ -283,6 +308,13 @@ function inferOutgoingSenderType(instance: string | null | undefined): 'ia' | 'h
   const normalizedInstance = (instance ?? '').trim().toLowerCase()
   if (normalizedInstance === 'renovacao' || normalizedInstance === 'certiid') return 'ia'
   return 'humano'
+}
+
+function signOutgoingContent(content: string, senderName?: string | null) {
+  const name = (senderName ?? '').trim()
+  if (!name) return content
+  if (content.trimEnd().endsWith(`— ${name}`)) return content
+  return `${content}\n\n— ${name}`
 }
 
 function extractQuoted(message: Record<string, unknown>) {
@@ -811,6 +843,7 @@ async function actionSendMessageByInstance(p: Record<string, unknown>) {
   const number       = p.number        as string | undefined
   const content      = p.content       as string | undefined
   const leadId       = p.lead_id       as string | undefined
+  const senderName   = (p.sender_name as string | undefined)?.trim() || null
 
   if (!instanceName || !number || !content) {
     return { ok: false, error: 'instance_name, number e content são obrigatórios' }
@@ -835,11 +868,12 @@ async function actionSendMessageByInstance(p: Record<string, unknown>) {
   }
 
   const phone = normalizePhone(number) ?? number
+  const signedContent = signOutgoingContent(content, senderName)
   try {
     const res = await fetch(`${baseUrl}/message/sendText/${instanceName}`, {
       method: 'POST',
       headers: evolutionHeaders(apiKey),
-      body: JSON.stringify({ number: phone, text: content }),
+      body: JSON.stringify({ number: phone, text: signedContent }),
       signal: AbortSignal.timeout(15000),
     })
     if (!res.ok) return { ok: false, error: `Evolution HTTP ${res.status}` }
@@ -854,15 +888,16 @@ async function actionSendMessageByInstance(p: Record<string, unknown>) {
       external_id: msgId ? String(msgId) : null,
       conversation_id: remoteJid,
       lead_id: leadId ?? ensuredLeadId ?? null,
-      payload: { remoteJid, fromMe: true, messageId: msgId, content, messageType: 'conversation', instance: instanceName },
+      payload: { remoteJid, fromMe: true, messageId: msgId, content: signedContent, messageType: 'conversation', instance: instanceName, senderName },
     }])
 
     await syncCrmInbox({
       remoteJid,
       instance: instanceName,
-      content,
+      content: signedContent,
       direction: 'outgoing',
       senderType: 'ia',
+      senderName,
     })
 
     return { ok: true, messageId: msgId, remoteJid }
@@ -1014,6 +1049,7 @@ async function processWebhook(payload: Record<string, unknown>) {
         instance,
         pushName: pushName ?? null,
         content,
+        externalMessageId: msgId ?? null,
         direction: 'incoming',
         senderType: 'cliente',
         mediaUrl,
@@ -1054,6 +1090,7 @@ async function processWebhook(payload: Record<string, unknown>) {
         instance,
         pushName: pushName ?? null,
         content,
+        externalMessageId: msgId ?? null,
         direction: 'outgoing',
         senderType: inferOutgoingSenderType(instance),
         senderName: inferOutgoingSenderType(instance) === 'humano' ? (instance ?? 'Humano') : null,
@@ -1115,7 +1152,7 @@ Deno.serve(async (req) => {
 
   // ── N8N: ação interna autenticada por secret (sem JWT) ────────
   if (payload._action === 'send_message_by_instance') {
-    const n8nSecret = Deno.env.get('N8N_SHARED_SECRET') ?? ''
+    const n8nSecret = getEnv('N8N_SHARED_SECRET')
     const incoming  = req.headers.get('x-n8n-secret') ?? ''
     if (!n8nSecret || incoming !== n8nSecret) {
       return json({ ok: false, error: 'Unauthorized' }, 401)
@@ -1152,10 +1189,10 @@ Deno.serve(async (req) => {
 
   // Aceita se o token bater com QUALQUER secret configurado
   const knownSecrets = [
-    Deno.env.get('EVOLUTION_WEBHOOK_SECRET'),
-    Deno.env.get('WEBHOOK_SECRET_ATENDIMENTO'),
-    Deno.env.get('WEBHOOK_SECRET_RENOVACAO'),
-    Deno.env.get('WEBHOOK_SECRET_CERTIID'),
+    getEnv('EVOLUTION_WEBHOOK_SECRET'),
+    getEnv('WEBHOOK_SECRET_ATENDIMENTO'),
+    getEnv('WEBHOOK_SECRET_RENOVACAO'),
+    getEnv('WEBHOOK_SECRET_CERTIID'),
   ].filter((s): s is string => Boolean(s))
 
   const webhookOk = knownSecrets.some(secret => secret === incomingToken)

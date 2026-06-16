@@ -463,6 +463,13 @@ async function actionSendMessage(p: Record<string, unknown>) {
   const phone = normalizePhone(number) ?? number
 
   try {
+    const remoteJid = phoneToJid(phone)
+    const ensuredLeadId = await ensureLeadForConversation({
+      remoteJid,
+      instance,
+      content: text,
+    })
+
     const res = await fetch(`${baseUrl}/message/sendText/${instance}`, {
       method:  'POST',
       headers: evolutionHeaders(apiKey),
@@ -486,13 +493,6 @@ async function actionSendMessage(p: Record<string, unknown>) {
     }
     const msg = await res.json() as Record<string, unknown>
     const msgId = (msg.key as Record<string, unknown>)?.id ?? msg.id ?? null
-
-    const remoteJid = phoneToJid(phone)
-    const ensuredLeadId = await ensureLeadForConversation({
-      remoteJid,
-      instance,
-      content: text,
-    })
     await dbInsert('communication_events', [{
       source:          'evolution',
       event_type:      'message_sent',
@@ -512,7 +512,7 @@ async function actionSendMessage(p: Record<string, unknown>) {
       },
     }])
 
-    await syncCrmInbox({
+    const crmSync = await syncCrmInbox({
       remoteJid,
       instance,
       pushName: contactName,
@@ -526,7 +526,7 @@ async function actionSendMessage(p: Record<string, unknown>) {
       fileName: null,
     })
 
-    return { ok: true, messageId: msgId, remoteJid }
+    return { ok: true, messageId: msgId, remoteJid, conversationId: crmSync?.conversationId ?? null }
   } catch (e) {
     return { ok: false, error: String(e) }
   }
@@ -559,6 +559,13 @@ async function actionSendAttachment(form: FormData) {
   const dataUrl = `data:${mime};base64,${base64}`
 
   try {
+    const remoteJid = phoneToJid(phone)
+    const ensuredLeadId = await ensureLeadForConversation({
+      remoteJid,
+      instance,
+      content: caption || file.name,
+    })
+
     let endpoint: string
 
     if (isAudio) {
@@ -598,12 +605,6 @@ async function actionSendAttachment(form: FormData) {
 
       const msg = await audioRes.json() as Record<string, unknown>
       const msgId = (msg.key as Record<string, unknown>)?.id ?? null
-      const remoteJid = phoneToJid(phone)
-      const ensuredLeadId = await ensureLeadForConversation({
-        remoteJid,
-        instance,
-        content: caption || file.name,
-      })
 
       await dbInsert('communication_events', [{
         source: 'evolution',
@@ -624,7 +625,7 @@ async function actionSendAttachment(form: FormData) {
         },
       }])
 
-      await syncCrmInbox({
+      const crmSync = await syncCrmInbox({
         remoteJid,
         instance,
         content: caption || file.name,
@@ -636,7 +637,7 @@ async function actionSendAttachment(form: FormData) {
         fileName: file.name,
       })
 
-      return { ok: true, messageId: msgId, remoteJid }
+      return { ok: true, messageId: msgId, remoteJid, conversationId: crmSync?.conversationId ?? null }
     }
 
     endpoint = `${baseUrl}/message/sendMedia/${instance}`
@@ -678,12 +679,6 @@ async function actionSendAttachment(form: FormData) {
 
     const msg = await mediaRes.json() as Record<string, unknown>
     const msgId = (msg.key as Record<string, unknown>)?.id ?? null
-    const remoteJid = phoneToJid(phone)
-    const ensuredLeadId = await ensureLeadForConversation({
-      remoteJid,
-      instance,
-      content: caption || file.name,
-    })
 
     await dbInsert('communication_events', [{
       source: 'evolution',
@@ -704,7 +699,7 @@ async function actionSendAttachment(form: FormData) {
       },
     }])
 
-    await syncCrmInbox({
+    const crmSync = await syncCrmInbox({
       remoteJid,
       instance,
       content: caption || file.name,
@@ -716,7 +711,7 @@ async function actionSendAttachment(form: FormData) {
       fileName: file.name,
     })
 
-    return { ok: true, messageId: msgId, remoteJid }
+    return { ok: true, messageId: msgId, remoteJid, conversationId: crmSync?.conversationId ?? null }
   } catch (e) {
     return { ok: false, error: String(e) }
   }

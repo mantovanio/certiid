@@ -17,6 +17,9 @@ export interface EvolutionCfg {
   instance_name: string
 }
 
+type DirectionType = 'incoming' | 'outgoing'
+type SenderType = 'cliente' | 'ia' | 'humano'
+
 // ── Internal types ─────────────────────────────────────────────
 
 interface Message {
@@ -36,6 +39,20 @@ interface Message {
     messageId: string
     content: string
   } | null
+}
+
+interface CrmChatMessageRow {
+  id: string
+  conversation_id: string
+  document_key: string
+  direction: DirectionType
+  sender_type: SenderType
+  sender_name?: string | null
+  mensagem: string | null
+  mime_type?: string | null
+  file_name?: string | null
+  media_url?: string | null
+  created_at: string
 }
 
 interface Props {
@@ -272,6 +289,63 @@ function parseEvolutionEvents(events: Record<string, unknown>[]): Message[] {
       } as Message
     })
     .filter((m): m is Message => m !== null)
+}
+
+function parseCrmChatMessages(events: CrmChatMessageRow[]): Message[] {
+  return events.map(row => {
+    const isOutgoing = row.direction === 'outgoing'
+    const mimeType = row.mime_type ?? null
+    const fileName = row.file_name ?? null
+    const messageType = isImageMime(mimeType)
+      ? 'imageMessage'
+      : isAudioMime(mimeType)
+        ? 'audioMessage'
+        : isVideoMime(mimeType)
+          ? 'videoMessage'
+          : isDocumentMime(mimeType)
+            ? 'documentMessage'
+            : 'conversation'
+
+    return {
+      id: row.id,
+      content: row.mensagem ?? null,
+      fromMe: isOutgoing,
+      created_at: row.created_at,
+      source: 'crm_ledger',
+      eventType: isOutgoing ? 'message_sent' : 'message_received',
+      pushName: row.sender_name ?? null,
+      messageType,
+      mimeType,
+      fileName,
+      mediaUrl: row.media_url ?? null,
+      quoted: null,
+    }
+  })
+}
+
+function dedupeConversationMessages(messages: Message[]) {
+  const ordered = [...messages].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+  const result: Message[] = []
+  const seen = new Set<string>()
+
+  for (const message of ordered) {
+    const content = (message.content ?? '').trim().replace(/\s+/g, ' ')
+    const bucket = Math.floor(new Date(message.created_at).getTime() / 30000)
+    const signature = [
+      message.fromMe ? '1' : '0',
+      message.messageType ?? 'conversation',
+      message.mimeType ?? '',
+      message.fileName ?? '',
+      content.toLowerCase(),
+      bucket,
+    ].join('|')
+
+    if (seen.has(signature)) continue
+    seen.add(signature)
+    result.push(message)
+  }
+
+  return result
 }
 
 async function fetchMediaObjectUrl(evolution: EvolutionCfg, messageId: string, convertToMp4 = false) {
@@ -549,7 +623,11 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
       }
       jid = data.remoteJid
       setRemoteJid(jid)
-      setMessages(parseEvolutionEvents(data.messages ?? []))
+      const history = await loadHistory(jid)
+      setMessages(dedupeConversationMessages([
+        ...parseEvolutionEvents(data.messages ?? []),
+        ...history,
+      ]))
     } catch (e) {
       logger.error('ChatPanel', 'exceção em init_chat', String(e))
       setFetchError('Sem conexão com o servidor')
@@ -559,15 +637,30 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
   }
 
   async function loadHistory(jid: string) {
-    const { data, error } = await supabase
-      .from('communication_events')
-      .select('id, event_type, payload, created_at')
-      .eq('source', 'evolution')
-      .eq('conversation_id', jid)
-      .order('created_at', { ascending: true })
-      .limit(200)
-    if (error || !data) return
-    setMessages(parseEvolutionEvents(data as Record<string, unknown>[]))
+    const [eventsResult, crmResult] = await Promise.all([
+      supabase
+        .from('communication_events')
+        .select('id, event_type, payload, created_at, source')
+        .eq('conversation_id', jid)
+        .order('created_at', { ascending: true })
+        .limit(200),
+      supabase
+        .from('crm_chat_messages')
+        .select('id, conversation_id, document_key, direction, sender_type, sender_name, mensagem, mime_type, file_name, media_url, created_at')
+        .eq('conversation_id', jid)
+        .order('created_at', { ascending: true })
+        .limit(300),
+    ])
+
+    const evolutionEvents = eventsResult.data ?? []
+    const crmMessages = crmResult.data ?? []
+
+    const parsed = [
+      ...parseEvolutionEvents(evolutionEvents as Record<string, unknown>[]),
+      ...parseCrmChatMessages(crmMessages as CrmChatMessageRow[]),
+    ]
+
+    return dedupeConversationMessages(parsed)
   }
 
   async function loadLeadInfo() {

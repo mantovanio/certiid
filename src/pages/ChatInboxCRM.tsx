@@ -69,6 +69,14 @@ interface CrmMessage {
   created_at: string
 }
 
+interface EvolutionEventRow {
+  id: string
+  event_type: string | null
+  payload: Record<string, unknown> | null
+  created_at: string
+  source?: string | null
+}
+
 interface AgentOption {
   id: string
   nome: string
@@ -269,10 +277,78 @@ function safeAttachmentName(name: string) {
   return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w.\- ]+/g, '').trim() || `arquivo-${Date.now()}`
 }
 
+function parseEvolutionEventMessages(events: EvolutionEventRow[]): CrmMessage[] {
+  return events
+    .filter(event => event.source === 'evolution')
+    .map(event => {
+      const payload = event.payload ?? {}
+      const data = (payload.data as Record<string, unknown> | undefined) ?? undefined
+      const fromMe = Boolean(payload.fromMe ?? data?.fromMe)
+      const senderType = (payload.senderType as SenderType | undefined)
+        ?? (fromMe ? 'humano' : 'cliente')
+      const messageType = (payload.messageType as string | undefined)
+        ?? (data?.messageType as string | undefined)
+        ?? 'conversation'
+      const content = (payload.content as string | undefined)
+        ?? (data?.content as string | undefined)
+        ?? null
+      const mimeType = (payload.mimeType as string | undefined)
+        ?? (data?.mimeType as string | undefined)
+        ?? null
+      const fileName = (payload.fileName as string | undefined)
+        ?? (data?.fileName as string | undefined)
+        ?? null
+      const mediaUrl = (payload.mediaUrl as string | undefined)
+        ?? (data?.mediaUrl as string | undefined)
+        ?? null
+
+      return {
+        id: String(event.id),
+        conversation_id: String(payload.conversationId ?? payload.remoteJid ?? payload.chatId ?? ''),
+        document_key: String(payload.documentKey ?? payload.remoteJid ?? payload.contact ?? ''),
+        direction: (fromMe ? 'outgoing' : 'incoming') as DirectionType,
+        sender_type: senderType,
+        sender_name: (payload.pushName as string | undefined) ?? (data?.pushName as string | undefined) ?? null,
+        mensagem: content,
+        mime_type: mimeType,
+        file_name: fileName,
+        media_url: mediaUrl,
+        created_at: event.created_at,
+      }
+    })
+    .filter(message => Boolean(message.conversation_id))
+}
+
+function mergeConversationMessages(messages: CrmMessage[]) {
+  const ordered = [...messages].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+  const seen = new Set<string>()
+  const result: CrmMessage[] = []
+
+  for (const message of ordered) {
+    const content = (message.mensagem ?? '').trim().replace(/\s+/g, ' ')
+    const bucket = Math.floor(new Date(message.created_at).getTime() / 30000)
+    const signature = [
+      message.direction,
+      message.sender_type,
+      message.mime_type ?? '',
+      message.file_name ?? '',
+      content.toLowerCase(),
+      bucket,
+    ].join('|')
+
+    if (seen.has(signature)) continue
+    seen.add(signature)
+    result.push(message)
+  }
+
+  return result
+}
+
 export default function ChatInboxCRM() {
   const { profile } = useAuth()
   const [conversations, setConversations] = useState<ConversationRow[]>([])
   const [messages, setMessages] = useState<CrmMessage[]>([])
+  const [conversationPreviews, setConversationPreviews] = useState<Record<string, CrmMessage[]>>({})
   const [agents, setAgents] = useState<AgentOption[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [deepLinkPhone, setDeepLinkPhone] = useState<string | null>(() => {
@@ -344,6 +420,11 @@ export default function ChatInboxCRM() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lastRenderedMessageCountRef = useRef(0)
+  const lastScrolledConversationRef = useRef<string | null>(null)
+  const lastConversationSnapshotRef = useRef('')
+  const lastMessageSnapshotRef = useRef('')
+  const pendingMessageReloadRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const selectedConversation = useMemo(
     () => conversations.find(item => item.id === selectedId) ?? null,
@@ -435,9 +516,6 @@ export default function ChatInboxCRM() {
   useEffect(() => {
     const interval = setInterval(() => {
       void loadConversations(false)
-      if (selectedConversation) {
-        void loadMessages(selectedConversation.id)
-      }
     }, 3500)
 
     return () => clearInterval(interval)
@@ -489,6 +567,7 @@ export default function ChatInboxCRM() {
   useEffect(() => {
     if (!selectedConversation) {
       setMessages([])
+      lastMessageSnapshotRef.current = ''
       setHumanMessage('')
       setShowEmoji(false)
       setSelectedReplyIntegrationId('')
@@ -522,11 +601,21 @@ export default function ChatInboxCRM() {
 
   useEffect(() => {
     if (!selectedConversation || loadingMessages) return
+    const currentConversationId = selectedConversation.id
+    const currentMessageCount = displayMessages.length
+    const shouldScroll =
+      lastScrolledConversationRef.current !== currentConversationId
+      || currentMessageCount > lastRenderedMessageCountRef.current
 
-    requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-    })
-  }, [selectedConversation?.id, displayMessages, loadingMessages])
+    if (shouldScroll) {
+      requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+      })
+      lastScrolledConversationRef.current = currentConversationId
+    }
+
+    lastRenderedMessageCountRef.current = currentMessageCount
+  }, [selectedConversation?.id, displayMessages.length, loadingMessages])
 
   useEffect(() => {
     const channel = supabase
@@ -539,21 +628,37 @@ export default function ChatInboxCRM() {
           const prevRow = (payload.old ?? {}) as Record<string, unknown>
           const conversationId = String((nextRow['conversation_id'] as string | undefined) ?? (prevRow['conversation_id'] as string | undefined) ?? '')
           const direction = String((nextRow['direction'] as string | undefined) ?? '')
-          if (payload.eventType === 'INSERT' && conversationId && direction === 'incoming' && conversationId !== selectedId) {
-            setUnreadCounts(prev => ({ ...prev, [conversationId]: (prev[conversationId] ?? 0) + 1 }))
+            if (payload.eventType === 'INSERT' && conversationId && direction === 'incoming' && conversationId !== selectedId) {
+              setUnreadCounts(prev => ({ ...prev, [conversationId]: (prev[conversationId] ?? 0) + 1 }))
+            }
+            if (selectedId && conversationId === selectedId) {
+              if (pendingMessageReloadRef.current) clearTimeout(pendingMessageReloadRef.current)
+              pendingMessageReloadRef.current = setTimeout(() => {
+                void loadMessages(selectedId, { background: true })
+              }, 120)
+            }
+          })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'communication_events' }, payload => {
+          const nextRow = (payload.new ?? {}) as Record<string, unknown>
+          const conversationId = String(nextRow.conversation_id ?? '')
+          if (!conversationId) return
+          if (selectedId && conversationId === selectedId) {
+            if (pendingMessageReloadRef.current) clearTimeout(pendingMessageReloadRef.current)
+            pendingMessageReloadRef.current = setTimeout(() => {
+              void loadMessages(selectedId, { background: true })
+            }, 120)
           }
-          void loadConversations(false)
-          if (selectedId && conversationId === selectedId) void loadMessages(selectedId)
         })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_chat_assignments' }, () => {
-        void loadConversations(false)
-      })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_chat_assignments' }, () => {
+          void loadConversations(false)
+        })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_customers' }, () => {
         void loadConversations(false)
       })
       .subscribe()
 
     return () => {
+      if (pendingMessageReloadRef.current) clearTimeout(pendingMessageReloadRef.current)
       void supabase.removeChannel(channel)
     }
   }, [selectedId])
@@ -622,7 +727,22 @@ export default function ChatInboxCRM() {
     }
 
     const rows = (data ?? []) as ConversationRow[]
-    setConversations(rows)
+    const snapshot = rows
+      .map(item => [
+        item.id,
+        item.ultima_interacao_em ?? '',
+        item.kanban_status ?? '',
+        item.atendimento_humano ? '1' : '0',
+        item.agente_atual ?? '',
+        item.ultima_mensagem ?? '',
+      ].join('|'))
+      .join('||')
+
+    if (snapshot !== lastConversationSnapshotRef.current) {
+      lastConversationSnapshotRef.current = snapshot
+      setConversations(rows)
+      void loadConversationPreviews(rows)
+    }
     setSelectedId(current => {
       if (current && rows.some(item => item.id === current)) return current
       return rows[0]?.id ?? null
@@ -630,16 +750,83 @@ export default function ChatInboxCRM() {
     if (showRefreshing) setRefreshing(false)
   }
 
-  async function loadMessages(conversationId: string) {
-    setLoadingMessages(true)
-    const { data, error: queryError } = await supabase
-      .from('crm_chat_messages')
-      .select('*')
-      .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: true })
+  async function loadConversationPreviews(rows: ConversationRow[]) {
+    const ids = rows.slice(0, 30).map(item => item.id)
+    if (ids.length === 0) {
+      setConversationPreviews({})
+      return
+    }
 
-    if (!queryError) setMessages((data ?? []) as CrmMessage[])
-    setLoadingMessages(false)
+    const { data, error } = await supabase
+      .from('crm_chat_messages')
+      .select('id, conversation_id, document_key, direction, sender_type, sender_name, mensagem, mime_type, file_name, media_url, created_at')
+      .in('conversation_id', ids)
+      .order('created_at', { ascending: false })
+      .limit(300)
+
+    if (error || !data) {
+      setConversationPreviews({})
+      return
+    }
+
+    const grouped: Record<string, CrmMessage[]> = {}
+    for (const row of data as CrmMessage[]) {
+      if (!grouped[row.conversation_id]) grouped[row.conversation_id] = []
+      if (grouped[row.conversation_id].length >= 3) continue
+      grouped[row.conversation_id].push(row)
+    }
+
+    setConversationPreviews(grouped)
+  }
+
+  async function loadMessages(conversationId: string, options: { background?: boolean } = {}) {
+    const background = options.background ?? false
+    if (!background) setLoadingMessages(true)
+    const conversation = conversations.find(item => item.id === conversationId) ?? null
+    const documentKey = conversation?.document_key ?? null
+    const remoteJid = conversation?.document_key ? `${conversation.document_key}@s.whatsapp.net` : null
+    const [crmResult, evolutionResult] = await Promise.all([
+      supabase
+        .from('crm_chat_messages')
+        .select('*')
+        .or(documentKey
+          ? `conversation_id.eq.${conversationId},document_key.eq.${documentKey}`
+          : `conversation_id.eq.${conversationId}`)
+        .order('created_at', { ascending: true }),
+      supabase
+        .from('communication_events')
+        .select('id, event_type, payload, created_at, source')
+        .eq('source', 'evolution')
+        .or([
+          `conversation_id.eq.${conversationId}`,
+          documentKey ? `conversation_id.eq.${documentKey}` : null,
+          remoteJid ? `conversation_id.eq.${remoteJid}` : null,
+        ].filter(Boolean).join(','))
+        .order('created_at', { ascending: true }),
+    ])
+
+    const crmMessages = (crmResult.data ?? []) as CrmMessage[]
+    const evolutionMessages = parseEvolutionEventMessages((evolutionResult.data ?? []) as EvolutionEventRow[])
+    const nextMessages = mergeConversationMessages([...crmMessages, ...evolutionMessages])
+    const nextSnapshot = nextMessages
+      .map(message => [
+        message.id,
+        message.direction,
+        message.sender_type,
+        message.sender_name ?? '',
+        message.mensagem ?? '',
+        message.mime_type ?? '',
+        message.file_name ?? '',
+        message.media_url ?? '',
+        message.created_at,
+      ].join('|'))
+      .join('||')
+
+    if (`${conversationId}:${nextSnapshot}` !== lastMessageSnapshotRef.current) {
+      lastMessageSnapshotRef.current = `${conversationId}:${nextSnapshot}`
+      setMessages(nextMessages)
+    }
+    if (!background) setLoadingMessages(false)
   }
 
   async function loadAgents() {
@@ -1053,6 +1240,7 @@ export default function ChatInboxCRM() {
       setMessages(prev => prev.map(item => item.id === tempId ? { ...item, id: payload.messageId ?? tempId } : item))
       markConversationAsHuman(selectedConversation.id)
       await loadConversations(false)
+      await loadMessages(selectedConversation.id, { background: true })
     } catch (err) {
       setActionError(`Falha no envio humano: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
@@ -1134,7 +1322,7 @@ export default function ChatInboxCRM() {
 
     markConversationAsHuman(selectedConversation.id)
     await loadConversations(false)
-    await loadMessages(selectedConversation.id)
+    await loadMessages(selectedConversation.id, { background: true })
     if (tempMediaUrl) URL.revokeObjectURL(tempMediaUrl)
     return { ok: true }
   }
@@ -1454,6 +1642,7 @@ export default function ChatInboxCRM() {
                       onClick={() => setSelectedId(item.id)}
                       human={item.atendimento_humano || humanOverrideIds.includes(item.id)}
                       unreadCount={unreadCounts[item.id] ?? 0}
+                      previewMessages={conversationPreviews[item.id] ?? []}
                     />
                   ))}
                   {filteredConversations.length === 0 && <EmptyState text="Nenhuma conversa encontrada com os filtros atuais." />}
@@ -1476,6 +1665,7 @@ export default function ChatInboxCRM() {
                             human={item.atendimento_humano || humanOverrideIds.includes(item.id)}
                             unreadCount={unreadCounts[item.id] ?? 0}
                             closed
+                            previewMessages={conversationPreviews[item.id] ?? []}
                           />
                         ))}
                         {filteredClosedConversations.length === 0 && <EmptyState text="Nenhuma conversa encerrada com os filtros atuais." compact />}
@@ -1998,6 +2188,7 @@ function ConversationCard({
   human,
   unreadCount = 0,
   closed = false,
+  previewMessages = [],
 }: {
   item: ConversationRow
   selected: boolean
@@ -2005,6 +2196,7 @@ function ConversationCard({
   human: boolean
   unreadCount?: number
   closed?: boolean
+  previewMessages?: CrmMessage[]
 }) {
     const urgency = getUrgencyMeta(item, human)
     const selectedClass = selected
@@ -2033,7 +2225,36 @@ function ConversationCard({
           {!hasRegisteredCustomer(item) && <Badge text="Contato sem cadastro" tone="amber" />}
           {closed && <Badge text="Encerrada" tone="slate" />}
         </div>
-        <p className={`mt-3 line-clamp-2 text-sm ${selected ? 'text-slate-100' : 'text-slate-600'}`}>{item.ultima_mensagem || 'Sem ultima mensagem gravada.'}</p>
+        <div className="mt-3 space-y-1.5">
+          {previewMessages.slice(0, 3).reverse().map(message => {
+            const previewText = (message.mensagem || message.file_name || 'Mensagem sem texto').replace(/\s+/g, ' ').trim()
+            const previewLabel = message.sender_type === 'cliente'
+              ? 'Cliente'
+              : message.sender_type === 'ia'
+                ? 'IA'
+                : 'Humano'
+            return (
+              <div
+                key={message.id}
+                className={`rounded-xl px-3 py-2 text-xs leading-relaxed ${
+                  selected
+                    ? 'bg-white/10 text-slate-100'
+                    : message.direction === 'outgoing'
+                      ? 'bg-emerald-50 text-emerald-800'
+                      : 'bg-slate-50 text-slate-700'
+                }`}
+              >
+                <p className="mb-0.5 font-semibold uppercase tracking-wide opacity-70">{previewLabel}</p>
+                <p className="line-clamp-2 break-words">{previewText}</p>
+              </div>
+            )
+          })}
+          {previewMessages.length === 0 && (
+            <p className={`line-clamp-2 text-sm ${selected ? 'text-slate-100' : 'text-slate-600'}`}>
+              {item.ultima_mensagem || 'Sem ultima mensagem gravada.'}
+            </p>
+          )}
+        </div>
         <div className={`mt-3 flex items-center justify-between text-xs ${selected ? 'text-slate-300' : 'text-slate-500'}`}>
           <span>{statusLabel(item.kanban_status)}</span>
           <span>{formatRelative(item.ultima_interacao_em)}</span>

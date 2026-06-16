@@ -5,6 +5,7 @@ import { supabase, getEdgeFunctionUrl, getSupabaseAccessToken } from '@/lib/supa
 import { createAdminManagedUser, deleteAdminManagedUser, updateAdminManagedPassword } from '@/lib/adminUsers'
 import { DEFAULT_AGENCY_CONFIG, type AgencyConfig, fetchAgencyConfig } from '@/lib/agencyConfig'
 import { DEFAULT_CONTACT_DOCUMENT_STORAGE, loadContactDocumentStorageConfig, type ContactDocumentStorageConfig } from '@/lib/contactDocumentStorage'
+import { DEFAULT_CRM_CHAT_SETTINGS, loadCrmChatSettings } from '@/lib/crmChatSettings'
 import { buildWhatsAppMetadata, getWhatsAppEngine, getWhatsAppEngineLabel, isWhatsAppIntegration, normalizeWhatsAppProvider } from '@/lib/whatsappIntegration'
 import { DEFAULT_PERMISSIONS, PAGE_PERMISSIONS, hasPerfil, isAdminProfile } from '@/lib/security'
 import { buscarCep } from '@/lib/cep'
@@ -186,20 +187,33 @@ function AbaGeral() {
   const [saving, setSaving] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
   const [ok, setOk] = useState(false)
+  const [chatSettingsSignOutgoing, setChatSettingsSignOutgoing] = useState(DEFAULT_CRM_CHAT_SETTINGS.sign_outgoing_messages)
+  const [chatSettingsLoading, setChatSettingsLoading] = useState(true)
+  const [chatSettingsSaving, setChatSettingsSaving] = useState(false)
+  const [chatSettingsOk, setChatSettingsOk] = useState(false)
+  const [chatSettingsError, setChatSettingsError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     setErro(null)
-    const { data, error } = await fetchAgencyConfig()
+    setChatSettingsLoading(true)
+    setChatSettingsError(null)
+    const [{ data, error }, chatSettings] = await Promise.all([
+      fetchAgencyConfig(),
+      loadCrmChatSettings(),
+    ])
 
     if (error) {
       setErro(`Erro ao carregar configurações: ${error.message}. Execute sql/settings_users_permissions_migration.sql no Supabase.`)
       setLoading(false)
+      setChatSettingsLoading(false)
       return
     }
 
     setForm(data)
     setLoading(false)
+    setChatSettingsSignOutgoing(chatSettings.data.sign_outgoing_messages)
+    setChatSettingsLoading(false)
   }, [])
 
   useEffect(() => { void load() }, [load])
@@ -223,6 +237,26 @@ function AbaGeral() {
       return
     }
     setOk(true)
+  }
+
+  async function salvarChatSettings() {
+    if (!isAdmin) return
+    setChatSettingsSaving(true)
+    setChatSettingsError(null)
+    setChatSettingsOk(false)
+    const { error } = await supabase
+      .from('app_settings')
+      .upsert({
+        key: 'crm_chat_settings',
+        value: { sign_outgoing_messages: chatSettingsSignOutgoing },
+        updated_by: profile?.id ?? null,
+      }, { onConflict: 'key' })
+    setChatSettingsSaving(false)
+    if (error) {
+      setChatSettingsError(`Erro ao salvar configuração do chat: ${error.message}`)
+      return
+    }
+    setChatSettingsOk(true)
   }
 
   if (loading) {
@@ -323,6 +357,55 @@ function AbaGeral() {
               </div>
             </div>
           </div>
+        </div>
+
+        <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 p-5 space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Chat e assinaturas</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Decide se as mensagens enviadas pelo CRM saem assinadas com o nome do usuário logado.
+            </p>
+          </div>
+          <div className="flex items-center justify-between gap-4 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Assinar mensagens enviadas</p>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                Quando ativado, o texto sai como “— Nome do usuário”. Quando desativado, a mensagem sai limpa.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={!isAdmin || chatSettingsLoading}
+              onClick={() => {
+                setChatSettingsOk(false)
+                setChatSettingsError(null)
+                setChatSettingsSignOutgoing(prev => !prev)
+              }}
+              className="inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium disabled:opacity-60"
+            >
+              {chatSettingsSignOutgoing ? <ToggleRight size={18} className="text-emerald-600" /> : <ToggleLeft size={18} className="text-slate-400" />}
+              {chatSettingsSignOutgoing ? 'Ligado' : 'Desligado'}
+            </button>
+          </div>
+          {chatSettingsError && (
+            <p className="text-xs text-red-600 dark:text-red-300 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">
+              {chatSettingsError}
+            </p>
+          )}
+          {chatSettingsOk && (
+            <p className="text-xs text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-3 py-2">
+              Preferência de assinatura salva.
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={salvarChatSettings}
+            disabled={!isAdmin || chatSettingsSaving || chatSettingsLoading}
+            className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 disabled:opacity-60 transition-colors inline-flex items-center gap-2"
+          >
+            {chatSettingsSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            {chatSettingsSaving ? 'Salvando...' : 'Salvar preferência do chat'}
+          </button>
         </div>
 
         {erro && (
@@ -1150,7 +1233,7 @@ function AbaUsuarios() {
   )
 }
 
-const EDGE_FN_EVOLUTION = 'https://cvfrhfiaprdtwxxplngk.supabase.co/functions/v1/evolution-webhook'
+const EDGE_FN_EVOLUTION = 'https://api.certiid.mantovan.com.br/functions/v1/evolution-webhook'
 
 function getWhatsAppEngineFromForm(form: Partial<ExternalIntegration> | null | undefined): WhatsAppEngine {
   return getWhatsAppEngine({ provider: form?.provider ?? 'evolution', metadata: form?.metadata ?? {} })
@@ -4527,3 +4610,4 @@ function AbaPrivacidade() {
     </div>
   )
 }
+

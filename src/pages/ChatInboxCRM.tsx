@@ -24,6 +24,7 @@ import {
 import { getEdgeFunctionUrl, supabase } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
 import { useAuth } from '@/contexts/AuthContext'
+import { applyOutgoingSignature, DEFAULT_CRM_CHAT_SETTINGS, loadCrmChatSettings } from '@/lib/crmChatSettings'
 
 type QueueType = 'atendimento' | 'renovacao'
 type DirectionType = 'incoming' | 'outgoing'
@@ -463,6 +464,8 @@ export default function ChatInboxCRM() {
   const [manualConversation, setManualConversation] = useState<ManualConversationForm>(createEmptyManualConversationForm)
   const [selectedReplyIntegrationId, setSelectedReplyIntegrationId] = useState('')
   const [selectedReplyIntegrationConversationId, setSelectedReplyIntegrationConversationId] = useState<string | null>(null)
+  const [signOutgoingMessages, setSignOutgoingMessages] = useState(DEFAULT_CRM_CHAT_SETTINGS.sign_outgoing_messages)
+  const [chatSettingsLoading, setChatSettingsLoading] = useState(true)
   const [leftPanelWidth, setLeftPanelWidth] = useState(420)
   const [rightPanelWidth, setRightPanelWidth] = useState(330)
   const [isResizingLeft, setIsResizingLeft] = useState(false)
@@ -592,6 +595,18 @@ export default function ChatInboxCRM() {
 
   useEffect(() => {
     void bootstrap()
+  }, [])
+
+  useEffect(() => {
+    let mounted = true
+    void (async () => {
+      setChatSettingsLoading(true)
+      const { data } = await loadCrmChatSettings().catch(() => ({ data: DEFAULT_CRM_CHAT_SETTINGS }))
+      if (!mounted) return
+      setSignOutgoingMessages(data.sign_outgoing_messages)
+      setChatSettingsLoading(false)
+    })()
+    return () => { mounted = false }
   }, [])
 
   useEffect(() => {
@@ -1499,6 +1514,7 @@ export default function ChatInboxCRM() {
       const tempId = `temp-human-${Date.now()}`
       const tempCreatedAt = new Date().toISOString()
       const senderName = currentHumanAgentName
+      const displayText = applyOutgoingSignature(text, senderName, signOutgoingMessages)
       setMessages(prev => [...prev, {
         id: tempId,
         conversation_id: selectedConversation.id,
@@ -1506,7 +1522,7 @@ export default function ChatInboxCRM() {
         direction: 'outgoing',
         sender_type: 'humano',
         sender_name: senderName,
-        mensagem: text,
+        mensagem: displayText,
         created_at: tempCreatedAt,
       }])
       setHumanMessage('')
@@ -1563,18 +1579,18 @@ export default function ChatInboxCRM() {
     const backupPath = `crm-chat/${selectedConversation.document_key}/${Date.now()}-${safeAttachmentName(filename)}`
     const tempId = `temp-attachment-${Date.now()}`
     const tempMediaUrl = typeof URL !== 'undefined' && file instanceof Blob ? URL.createObjectURL(file) : null
-    setMessages(prev => [...prev, {
-      id: tempId,
-      conversation_id: selectedConversation.id,
-      document_key: selectedConversation.document_key,
-      direction: 'outgoing',
-      sender_type: 'humano',
-      sender_name: currentHumanAgentName,
-      mensagem: filename,
-      mime_type: finalMimeType,
-      file_name: filename,
-      media_url: tempMediaUrl,
-      created_at: new Date().toISOString(),
+      setMessages(prev => [...prev, {
+        id: tempId,
+        conversation_id: selectedConversation.id,
+        document_key: selectedConversation.document_key,
+        direction: 'outgoing',
+        sender_type: 'humano',
+        sender_name: currentHumanAgentName,
+        mensagem: filename,
+        mime_type: finalMimeType,
+        file_name: filename,
+        media_url: tempMediaUrl,
+        created_at: new Date().toISOString(),
     }])
 
     try {
@@ -2042,6 +2058,9 @@ export default function ChatInboxCRM() {
                           <div className="min-w-0">
                             <p className="text-sm font-semibold text-slate-700">Resposta humana</p>
                             <p className="text-xs text-slate-500">Barra fixa com anexo, colagem de imagem, emoji e audio.</p>
+                            <p className="text-[11px] text-slate-400">
+                              Assinatura: {chatSettingsLoading ? 'carregando...' : (signOutgoingMessages ? 'ativa' : 'desativada')}
+                            </p>
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
                             <Badge text={`Origem: ${selectedConversation.whatsapp_instance || 'Nao definida'}`} tone="blue" />
@@ -2054,9 +2073,6 @@ export default function ChatInboxCRM() {
                             <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Canal de resposta</p>
                             <p className="mt-1 text-sm text-slate-700">
                               {selectedReplyChannelLabel}
-                            </p>
-                            <p className="mt-1 text-[11px] text-slate-500">
-                              Este canal fica preso a conversa aberta para evitar envio no numero errado.
                             </p>
                           </div>
                           <label className="space-y-1">
@@ -2073,39 +2089,8 @@ export default function ChatInboxCRM() {
                               {replyChannelOptions.map(option => (
                                 <option key={option.id} value={option.id}>{option.label}</option>
                               ))}
-                            </select>
+                              </select>
                           </label>
-                        </div>
-
-                        <div className="mb-3 grid gap-2 md:grid-cols-2">
-                          {replyChannelOptions.map(option => {
-                            const active = option.id === selectedReplyIntegrationId
-                            return (
-                              <button
-                                key={option.id}
-                                type="button"
-                                onClick={() => {
-                                  setSelectedReplyIntegrationId(option.id)
-                                  setSelectedReplyIntegrationConversationId(selectedConversation.id)
-                                }}
-                                className={`rounded-2xl border px-3 py-3 text-left transition ${
-                                  active
-                                    ? 'border-sky-300 bg-sky-50 text-sky-800 shadow-sm'
-                                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                                }`}
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="text-sm font-semibold">{option.label}</span>
-                                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${active ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-500'}`}>
-                                    {active ? 'Ativo' : 'Escolher'}
-                                  </span>
-                                </div>
-                                <p className="mt-1 text-[11px] text-slate-500">
-                                  Número de envio atual para esta conversa.
-                                </p>
-                              </button>
-                            )
-                          })}
                         </div>
 
                         {pendingFile && (

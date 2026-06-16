@@ -58,6 +58,14 @@ async function dbSelect(table: string, filter: string, select = '*') {
   return res.json() as Promise<Record<string, unknown>[]>
 }
 
+async function loadCrmChatSettings() {
+  const rows = await dbSelect('app_settings', 'key=eq.crm_chat_settings&limit=1', 'value')
+  const value = rows[0]?.value as Record<string, unknown> | undefined
+  return {
+    sign_outgoing_messages: value?.sign_outgoing_messages !== false,
+  }
+}
+
 async function ensureLeadForConversation(input: {
   remoteJid: string
   instance?: string | null
@@ -868,7 +876,8 @@ async function actionSendMessageByInstance(p: Record<string, unknown>) {
   }
 
   const phone = normalizePhone(number) ?? number
-  const signedContent = signOutgoingContent(content, senderName)
+  const settings = await loadCrmChatSettings()
+  const signedContent = settings.sign_outgoing_messages ? signOutgoingContent(content, senderName) : content
   try {
     const res = await fetch(`${baseUrl}/message/sendText/${instanceName}`, {
       method: 'POST',

@@ -34,6 +34,24 @@ Regra aplicada:
 Arquivo principal:
 - `supabase/functions/evolution-webhook/index.ts`
 
+### 1.2. Opcao de assinatura nas configuracoes
+
+A assinatura das mensagens passou a ser opcional e pode ser controlada nas configuracoes do sistema.
+
+Onde fica:
+- `Configuracoes` > `Geral` > `Chat e assinaturas`
+
+Comportamento:
+- ligado: mensagens humanas saem assinadas;
+- desligado: mensagens saem sem assinatura;
+- a regra vale para o envio do CRM e para o envio intermediado pela Evolution API.
+
+Arquivos principais:
+- `src/lib/crmChatSettings.ts`
+- `src/pages/Configuracoes.tsx`
+- `src/pages/ChatInboxCRM.tsx`
+- `supabase/functions/evolution-webhook/index.ts`
+
 ### 2. Restauracao da view de follow-up
 
 A view que os workflows do n8n esperavam voltou a existir no projeto do CRM.

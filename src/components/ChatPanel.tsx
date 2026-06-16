@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { X, Send, Loader2, Smile, Paperclip, Mic, StopCircle, Trash2, MessageCircle, Phone, CalendarClock, Clock3, Copy, RefreshCw, Pencil, Save, CornerUpLeft } from 'lucide-react'
 import { supabase, getSupabaseAccessToken } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
@@ -29,6 +29,8 @@ interface Message {
   messageId?:   string | null
   pushName?:    string | null
   messageType?: string
+  mimeType?:    string | null
+  fileName?:    string | null
   mediaUrl?:    string | null
   quoted?: {
     messageId: string
@@ -105,7 +107,7 @@ type LeadEditForm = {
 
 // ── Constants ──────────────────────────────────────────────────
 
-const EDGE_FN = 'https://cvfrhfiaprdtwxxplngk.supabase.co/functions/v1/evolution-webhook'
+const EDGE_FN = 'https://api.certiid.mantovan.com.br/functions/v1/evolution-webhook'
 const CHAT_LEAD_DOC_BUCKET = 'chat-lead-documentos'
 
 const EMOJIS = [
@@ -123,6 +125,23 @@ function fmtTime(seconds: number) {
 
 function normalizeMimeType(mime: string | null | undefined) {
   return (mime ?? '').replace(/\s+/g, '')
+}
+
+function isImageMime(mime: string | null | undefined) {
+  return normalizeMimeType(mime).startsWith('image/')
+}
+
+function isAudioMime(mime: string | null | undefined) {
+  return normalizeMimeType(mime).startsWith('audio/')
+}
+
+function isVideoMime(mime: string | null | undefined) {
+  return normalizeMimeType(mime).startsWith('video/')
+}
+
+function isDocumentMime(mime: string | null | undefined) {
+  const normalized = normalizeMimeType(mime)
+  return Boolean(normalized && !isImageMime(normalized) && !isAudioMime(normalized) && !isVideoMime(normalized))
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -146,6 +165,12 @@ function formatStatusLabel(value: string | null | undefined) {
     .join(' ')
 }
 
+const CLOSED_LEAD_STATUSES = new Set(['cliente', 'perdido', 'cancelou_agendamento', 'resolvido', 'arquivado'])
+
+function isClosedLeadStatus(status: string | null | undefined) {
+  return Boolean(status && CLOSED_LEAD_STATUSES.has(status))
+}
+
 function toDateTimeLocal(value: string | null | undefined) {
   if (!value) return ''
   const date = new Date(value)
@@ -167,6 +192,37 @@ function buildLeadEditForm(lead: LeadSidebarInfo | null, fallbackName: string | 
     follow_up_2: lead?.follow_up_2 ?? '',
     follow_up_3: lead?.follow_up_3 ?? '',
   }
+}
+
+function buildAutomaticHistorySummary(messages: Message[], lead: LeadSidebarInfo | null, fallbackName: string | null, fallbackPhone: string | null) {
+  const relevantMessages = messages
+    .filter(message => Boolean((message.content ?? '').trim()))
+    .filter(message => message.messageType !== 'internalNote' && message.eventType !== 'internal_note' && message.source !== 'crm')
+
+  if (relevantMessages.length === 0) {
+    return [
+      `Resumo automático de ${lead?.nome_lead ?? fallbackName ?? 'conversa'}:`,
+      `Contato ${lead?.whatsapp_lead ?? fallbackPhone ?? 'nao informado'}.`,
+      `Nao foram encontradas mensagens textuais para resumir.`,
+    ].join(' ')
+  }
+
+  const first = relevantMessages[0]
+  const last = relevantMessages[relevantMessages.length - 1]
+  const received = relevantMessages.filter(message => !message.fromMe).length
+  const sent = relevantMessages.filter(message => message.fromMe).length
+
+  const firstText = (first.content ?? '').trim().replace(/\s+/g, ' ').slice(0, 180)
+  const lastText = (last.content ?? '').trim().replace(/\s+/g, ' ').slice(0, 180)
+
+  return [
+    `Resumo automático de ${lead?.nome_lead ?? fallbackName ?? 'conversa'}:`,
+    `${relevantMessages.length} mensagens trocadas (${received} recebidas e ${sent} enviadas).`,
+    `Inicio em ${formatDateTime(first.created_at)}; ultimo registro em ${formatDateTime(last.created_at)}.`,
+    firstText ? `Primeira mensagem: "${firstText}".` : null,
+    lastText ? `Ultima mensagem: "${lastText}".` : null,
+    lead?.motivo_contato ? `Motivo/Produto: ${lead.motivo_contato}.` : null,
+  ].filter(Boolean).join(' ')
 }
 
 function buildSafeFileName(name: string) {
@@ -209,6 +265,8 @@ function parseEvolutionEvents(events: Record<string, unknown>[]): Message[] {
         messageId:   (pld.messageId as string | null) ?? null,
         pushName:    (pld.pushName as string | null) ?? null,
         messageType: (pld.messageType as string | null) ?? 'conversation',
+        mimeType:    (pld.mimeType as string | null) ?? null,
+        fileName:    (pld.fileName as string | null) ?? null,
         mediaUrl:    (pld.mediaUrl as string | null) ?? null,
         quoted:      (pld.quoted as { messageId: string; content: string } | null) ?? null,
       } as Message
@@ -288,6 +346,11 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
   const [audioUrl, setAudioUrl]   = useState<string | null>(null)
   const [recSecs, setRecSecs]     = useState(0)
 
+  const automaticHistorySummary = useMemo(
+    () => buildAutomaticHistorySummary(messages, leadInfo, contact.nome, contact.telefone),
+    [contact.nome, contact.telefone, leadInfo, messages],
+  )
+
   const bottomRef         = useRef<HTMLDivElement>(null)
   const inputRef          = useRef<HTMLTextAreaElement>(null)
   const fileInputRef      = useRef<HTMLInputElement>(null)
@@ -329,6 +392,8 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
             messageId:   (pld.messageId as string | null) ?? null,
             pushName:    (pld.pushName as string | null) ?? null,
             messageType: (pld.messageType as string | null) ?? 'conversation',
+            mimeType:    (pld.mimeType as string | null) ?? null,
+            fileName:    (pld.fileName as string | null) ?? null,
             mediaUrl:    (pld.mediaUrl as string | null) ?? null,
             quoted:      (pld.quoted as { messageId: string; content: string } | null) ?? null,
           }
@@ -727,6 +792,8 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
           fromMe:      true,
           created_at:  new Date().toISOString(),
           messageType: finalMimeType.startsWith('audio') ? 'audioMessage' : finalMimeType.startsWith('image') ? 'imageMessage' : 'documentMessage',
+          mimeType:    finalMimeType,
+          fileName:    filename,
         }])
         return { ok: true }
       }
@@ -854,13 +921,14 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
   async function saveLeadInfo() {
     if (contact._table !== 'leads_contabilidade') return
     setSavingLead(true)
+    const generatedSummary = automaticHistorySummary.trim()
     const payload = {
       nome_lead: leadForm.nome_lead.trim() || null,
       whatsapp_lead: leadForm.whatsapp_lead.trim() || null,
       motivo_contato: leadForm.motivo_contato.trim() || null,
       status: leadForm.status || 'iniciou_conversa',
       data_agendamento: leadForm.data_agendamento ? new Date(leadForm.data_agendamento).toISOString() : null,
-      resumo_conversa: leadForm.resumo_conversa.trim() || null,
+      resumo_conversa: leadForm.resumo_conversa.trim() || (isClosedLeadStatus(leadForm.status) ? generatedSummary : null),
       anotacoes: leadForm.anotacoes.trim() || null,
       follow_up_1: leadForm.follow_up_1.trim() || null,
       follow_up_2: leadForm.follow_up_2.trim() || null,
@@ -1149,7 +1217,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
     <div ref={panelRef} className="fixed bottom-4 right-4 w-[min(96vw,1040px)] h-[min(88vh,720px)] bg-white dark:bg-gray-950 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-800 flex flex-col z-50 overflow-hidden">
 
       {/* Hidden inputs */}
-      <input ref={fileInputRef} type="file" accept="image/*,.pdf,.doc,.docx,.txt,.csv,.xls,.xlsx" className="hidden" onChange={handleFileSelect} />
+      <input ref={fileInputRef} type="file" accept="image/*,.bmp,.pdf,.doc,.docx,.txt,.csv,.xls,.xlsx" className="hidden" onChange={handleFileSelect} />
       <input
         ref={leadDocInputRef}
         type="file"
@@ -1671,6 +1739,8 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
                       { value: 'follow_up', label: 'Follow Up' },
                       { value: 'cancelou_agendamento', label: 'Cancelou Agendamento' },
                       { value: 'perdido', label: 'Perdido' },
+                      { value: 'resolvido', label: 'Resolvido' },
+                      { value: 'arquivado', label: 'Arquivado' },
                     ]}
                   />
                   <SidebarDateTimeInput
@@ -1710,11 +1780,22 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
                   onChange={value => setLeadForm(prev => ({ ...prev, follow_up_3: value }))}
                   rows={2}
                 />
+
+                <div className="rounded-2xl border border-gray-200 bg-white p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Resumo automático do histórico</p>
+                  <p className="mt-1 text-sm leading-relaxed text-gray-700 whitespace-pre-wrap break-words">
+                    {automaticHistorySummary}
+                  </p>
+                  <p className="mt-2 text-[11px] text-gray-400">
+                    Quando a conversa é encerrada, esse resumo pode ser salvo automaticamente no campo de histórico.
+                  </p>
+                </div>
               </div>
             ) : (
               <div className="rounded-2xl border border-gray-200 dark:border-gray-800 p-3 space-y-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Resumo comercial</p>
                 <LongTextBlock label="Resumo da conversa" value={leadInfo?.resumo_conversa} />
+                <LongTextBlock label="Resumo automático do histórico" value={automaticHistorySummary} />
                 <LongTextBlock label="Anotacoes" value={leadInfo?.anotacoes} />
                 <LongTextBlock label="Follow up 1" value={leadInfo?.follow_up_1} />
                 <LongTextBlock label="Follow up 2" value={leadInfo?.follow_up_2} />
@@ -1834,14 +1915,15 @@ function MessageBubble({
 }) {
   const isOut     = message.fromMe
   const isInternalNote = message.messageType === 'internalNote' || message.eventType === 'internal_note' || message.source === 'crm'
-  const isImage   = message.messageType === 'imageMessage'
-  const isAudio   = message.messageType === 'audioMessage'
-  const isVideo   = message.messageType === 'videoMessage'
-  const isDoc     = message.messageType === 'documentMessage'
+  const isImage   = message.messageType === 'imageMessage' || isImageMime(message.mimeType)
+  const isAudio   = message.messageType === 'audioMessage' || isAudioMime(message.mimeType)
+  const isVideo   = message.messageType === 'videoMessage' || isVideoMime(message.mimeType)
+  const isDoc     = message.messageType === 'documentMessage' || isDocumentMime(message.mimeType)
   const needsResolvedMedia = isAudio || isImage || isVideo || isDoc
   const time      = new Date(message.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
   const [resolvedMediaUrl, setResolvedMediaUrl] = useState<string | null>(message.mediaUrl ?? null)
   const audioLabel = message.fromMe ? 'Audio enviado' : 'Audio recebido'
+  const mediaLabel = message.fileName || message.content || (isAudio ? 'Audio' : isImage ? 'Imagem' : isVideo ? 'Video' : 'Arquivo')
 
   useEffect(() => {
     let active = true
@@ -1940,11 +2022,11 @@ function MessageBubble({
               resolvedMediaUrl ? (
                 <a href={resolvedMediaUrl} target="_blank" rel="noreferrer"
                   className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400 hover:underline text-xs mb-1">
-                  📎 {message.content ?? 'arquivo'}
+                  📎 {mediaLabel}
                 </a>
               ) : (
                 <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2 text-xs text-gray-500 mb-1">
-                  Carregando arquivo...
+                  Carregando {mediaLabel.toLowerCase()}...
                 </div>
               )
             )}
@@ -1972,3 +2054,4 @@ function MessageBubble({
     </div>
   )
 }
+

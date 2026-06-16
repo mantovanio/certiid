@@ -62,6 +62,9 @@ interface CrmMessage {
   sender_type: SenderType
   sender_name?: string | null
   mensagem: string | null
+  mime_type?: string | null
+  file_name?: string | null
+  media_url?: string | null
   created_at: string
 }
 
@@ -183,6 +186,27 @@ function statusLabel(status: string) {
 
 function isClosedConversationStatus(status: string | null | undefined) {
   return Boolean(status && CLOSED_KANBAN_STATUSES.has(status))
+}
+
+function normalizeMimeType(value: string | null | undefined) {
+  return (value ?? '').replace(/\s+/g, '')
+}
+
+function isImageMime(value: string | null | undefined) {
+  return normalizeMimeType(value).startsWith('image/')
+}
+
+function isAudioMime(value: string | null | undefined) {
+  return normalizeMimeType(value).startsWith('audio/')
+}
+
+function isVideoMime(value: string | null | undefined) {
+  return normalizeMimeType(value).startsWith('video/')
+}
+
+function isDocumentMime(value: string | null | undefined) {
+  const normalized = normalizeMimeType(value)
+  return Boolean(normalized && !isImageMime(normalized) && !isAudioMime(normalized) && !isVideoMime(normalized))
 }
 
 function queueLabel(fila: QueueType) {
@@ -482,7 +506,8 @@ export default function ChatInboxCRM() {
     const currentSelectionStillValid = replyChannelOptions.some(item => item.id === selectedReplyIntegrationId)
     if (currentSelectionStillValid) return
 
-    const exactMatch = replyChannelOptions.find(item => item.integration.instance_name === selectedConversation.whatsapp_instance)
+    const targetInstance = selectedConversation.whatsapp_instance?.trim().toLowerCase()
+    const exactMatch = replyChannelOptions.find(item => item.integration.instance_name?.trim().toLowerCase() === targetInstance)
     const sameQueue = replyChannelOptions.find(item => item.queue === selectedConversation.fila)
     const nextDefault = exactMatch ?? sameQueue ?? replyChannelOptions[0]
 
@@ -646,7 +671,8 @@ export default function ChatInboxCRM() {
   async function resolveEvolutionIntegration(instanceName?: string | null) {
     const rows = await fetchEvolutionIntegrations()
 
-    const integration = rows.find(item => item.instance_name === instanceName) ?? rows[0]
+    const targetInstance = instanceName?.trim().toLowerCase()
+    const integration = rows.find(item => item.instance_name?.trim().toLowerCase() === targetInstance) ?? rows[0]
     if (!integration?.base_url || !integration?.api_token || !integration?.instance_name) {
       throw new Error('Nenhuma integracao Evolution ativa foi encontrada para essa conversa.')
     }
@@ -1044,6 +1070,22 @@ export default function ChatInboxCRM() {
 
     const finalMimeType = mimeType || file.type || 'application/octet-stream'
     const blob = file
+    const tempId = `temp-attachment-${Date.now()}`
+    const tempMediaUrl = typeof URL !== 'undefined' && file instanceof Blob ? URL.createObjectURL(file) : null
+    setMessages(prev => [...prev, {
+      id: tempId,
+      conversation_id: selectedConversation.id,
+      document_key: selectedConversation.document_key,
+      direction: 'outgoing',
+      sender_type: 'humano',
+      sender_name: currentHumanAgentName,
+      mensagem: filename,
+      mime_type: finalMimeType,
+      file_name: filename,
+      media_url: tempMediaUrl,
+      created_at: new Date().toISOString(),
+    }])
+
     const form = new FormData()
     form.append('_action', 'send_attachment')
     form.append('base_url', integration.base_url ?? '')
@@ -1062,11 +1104,16 @@ export default function ChatInboxCRM() {
     })
 
     const payload = await response.json() as { ok?: boolean; error?: string }
-    if (!response.ok || !payload.ok) return { ok: false, error: payload.error ?? 'Nao foi possivel enviar o anexo.' }
+    if (!response.ok || !payload.ok) {
+      setMessages(prev => prev.filter(item => item.id !== tempId))
+      if (tempMediaUrl) URL.revokeObjectURL(tempMediaUrl)
+      return { ok: false, error: payload.error ?? 'Nao foi possivel enviar o anexo.' }
+    }
 
     markConversationAsHuman(selectedConversation.id)
     await loadConversations(false)
     await loadMessages(selectedConversation.id)
+    if (tempMediaUrl) URL.revokeObjectURL(tempMediaUrl)
     return { ok: true }
   }
 
@@ -1559,7 +1606,7 @@ export default function ChatInboxCRM() {
                       )}
 
                       <div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                        <input ref={fileInputRef} type="file" accept="image/*,.pdf,.doc,.docx,.txt,.csv,.xls,.xlsx" className="hidden" onChange={handleFileSelect} />
+                        <input ref={fileInputRef} type="file" accept="image/*,.bmp,.pdf,.doc,.docx,.txt,.csv,.xls,.xlsx" className="hidden" onChange={handleFileSelect} />
                         <button type="button" onClick={() => setShowEmoji(current => !current)} className={`inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 ${showEmoji ? 'bg-amber-100 text-amber-700' : 'bg-white text-slate-500'}`}>
                           <Smile size={18} />
                         </button>
@@ -2025,7 +2072,7 @@ function MessageRow({
   fallbackHumanName?: string | null
   conversation?: ConversationRow | null
 }) {
-      const isOutgoing = message.direction === 'outgoing'
+  const isOutgoing = message.direction === 'outgoing'
     const senderLabel = message.sender_type === 'cliente'
       ? 'Cliente'
       : message.sender_type === 'ia'
@@ -2036,6 +2083,11 @@ function MessageRow({
       : message.sender_type === 'ia'
         ? conversation?.whatsapp_instance || 'Automacao'
         : message.sender_name || fallbackHumanName || conversation?.agente_atual || 'Humano'
+    const isImage = isImageMime(message.mime_type)
+    const isAudio = isAudioMime(message.mime_type)
+    const isVideo = isVideoMime(message.mime_type)
+    const isDocument = isDocumentMime(message.mime_type)
+    const mediaLabel = message.file_name || message.mensagem || (isAudio ? 'Audio' : isImage ? 'Imagem' : isVideo ? 'Video' : 'Arquivo')
   
     return (
       <div className={`flex ${isOutgoing ? 'justify-end' : 'justify-start'}`}>
@@ -2047,7 +2099,29 @@ function MessageRow({
             <span>•</span>
             <span>{formatDateTime(message.created_at)}</span>
           </div>
-          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{message.mensagem || 'Mensagem sem texto'}</p>
+          {isImage && message.media_url ? (
+            <a href={message.media_url} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl">
+              <img src={message.media_url} alt={mediaLabel} className="max-w-full rounded-xl" />
+            </a>
+          ) : isAudio && message.media_url ? (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-violet-700">Audio anexado</p>
+              <audio src={message.media_url} controls className="w-full min-w-0" preload="metadata" />
+            </div>
+          ) : isVideo && message.media_url ? (
+            <div className="space-y-2">
+              <video src={message.media_url} controls className="max-w-full rounded-xl" preload="metadata" />
+              <a href={message.media_url} target="_blank" rel="noreferrer" className="text-xs text-sky-600 hover:underline">
+                Abrir video em nova aba
+              </a>
+            </div>
+          ) : isDocument && message.media_url ? (
+            <a href={message.media_url} target="_blank" rel="noreferrer" className="block rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-sky-700 hover:underline">
+              📎 {mediaLabel}
+            </a>
+          ) : (
+            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{message.mensagem || mediaLabel || 'Mensagem sem texto'}</p>
+          )}
         </div>
     </div>
   )

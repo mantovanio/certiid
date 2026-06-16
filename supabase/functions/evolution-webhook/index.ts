@@ -199,8 +199,11 @@ async function syncCrmInbox(input: {
   senderType: 'cliente' | 'ia' | 'humano'
   senderName?: string | null
   queueOverride?: string | null
+  mediaUrl?: string | null
+  mimeType?: string | null
+  fileName?: string | null
 }) {
-  const { remoteJid, instance, pushName, content, direction, senderType, senderName, queueOverride } = input
+  const { remoteJid, instance, pushName, content, direction, senderType, senderName, queueOverride, mediaUrl, mimeType, fileName } = input
   const phone = jidToPhone(remoteJid)
   const documentKey = normalizePhone(phone) ?? phone
   if (!documentKey) return null
@@ -245,6 +248,9 @@ async function syncCrmInbox(input: {
         sender_type: senderType,
         sender_name: senderType === 'humano' ? senderName ?? null : senderType === 'ia' ? 'IA Clara' : pushName ?? 'Cliente',
         mensagem: normalizedContent,
+        mime_type: mimeType ?? null,
+        file_name: fileName ?? null,
+        media_url: mediaUrl ?? null,
         created_at: new Date().toISOString(),
       }])
     }
@@ -300,26 +306,84 @@ function extractQuoted(message: Record<string, unknown>) {
   }
 }
 
-function extractContent(message: Record<string, unknown>): { content: string | null; messageType: string; mediaUrl: string | null; quoted: { messageId: string; content: string } | null } {
-  const quoted = extractQuoted(message)
-  if (message.conversation) return { content: message.conversation as string, messageType: 'conversation', mediaUrl: null, quoted }
+function unwrapMessage(message: Record<string, unknown>): Record<string, unknown> {
+  const wrapperKeys = [
+    'ephemeralMessage',
+    'viewOnceMessage',
+    'viewOnceMessageV2',
+    'viewOnceMessageV2Extension',
+    'documentWithCaptionMessage',
+  ]
 
-  const img = message.imageMessage as Record<string, unknown> | undefined
-  if (img) return { content: (img.caption as string | null) ?? null, messageType: 'imageMessage', mediaUrl: (img.url as string | null) ?? null, quoted }
+  for (const key of wrapperKeys) {
+    const wrapper = message[key] as Record<string, unknown> | undefined
+    if (!wrapper) continue
+    const nested =
+      (wrapper.message as Record<string, unknown> | undefined)
+      ?? (wrapper.messageV2 as Record<string, unknown> | undefined)
+      ?? (wrapper.viewOnceMessage as Record<string, unknown> | undefined)
+    if (nested) return unwrapMessage(nested)
+  }
 
-  const vid = message.videoMessage as Record<string, unknown> | undefined
-  if (vid) return { content: (vid.caption as string | null) ?? null, messageType: 'videoMessage', mediaUrl: (vid.url as string | null) ?? null, quoted }
+  return message
+}
 
-  const doc = message.documentMessage as Record<string, unknown> | undefined
-  if (doc) return { content: (doc.fileName as string | null) ?? null, messageType: 'documentMessage', mediaUrl: (doc.url as string | null) ?? null, quoted }
+function extractContent(message: Record<string, unknown>): {
+  content: string | null
+  messageType: string
+  mediaUrl: string | null
+  mimeType: string | null
+  fileName: string | null
+  quoted: { messageId: string; content: string } | null
+} {
+  const normalized = unwrapMessage(message)
+  const quoted = extractQuoted(normalized)
+  if (normalized.conversation) return { content: normalized.conversation as string, messageType: 'conversation', mediaUrl: null, mimeType: null, fileName: null, quoted }
 
-  const aud = message.audioMessage as Record<string, unknown> | undefined
-  if (aud) return { content: '🎵 Áudio', messageType: 'audioMessage', mediaUrl: (aud.url as string | null) ?? null, quoted }
+  const img = normalized.imageMessage as Record<string, unknown> | undefined
+  if (img) return {
+    content: (img.caption as string | null) ?? 'Imagem',
+    messageType: 'imageMessage',
+    mediaUrl: (img.url as string | null) ?? null,
+    mimeType: (img.mimetype as string | null) ?? null,
+    fileName: (img.fileName as string | null) ?? null,
+    quoted,
+  }
 
-  const ext = message.extendedTextMessage as Record<string, unknown> | undefined
-  if (ext) return { content: ext.text as string | null, messageType: 'extendedTextMessage', mediaUrl: null, quoted }
+  const vid = normalized.videoMessage as Record<string, unknown> | undefined
+  if (vid) return {
+    content: (vid.caption as string | null) ?? 'Video',
+    messageType: 'videoMessage',
+    mediaUrl: (vid.url as string | null) ?? null,
+    mimeType: (vid.mimetype as string | null) ?? null,
+    fileName: (vid.fileName as string | null) ?? null,
+    quoted,
+  }
 
-  return { content: null, messageType: 'unknown', mediaUrl: null, quoted }
+  const doc = normalized.documentMessage as Record<string, unknown> | undefined
+  if (doc) return {
+    content: (doc.fileName as string | null) ?? (doc.caption as string | null) ?? 'Arquivo',
+    messageType: 'documentMessage',
+    mediaUrl: (doc.url as string | null) ?? null,
+    mimeType: (doc.mimetype as string | null) ?? null,
+    fileName: (doc.fileName as string | null) ?? null,
+    quoted,
+  }
+
+  const aud = normalized.audioMessage as Record<string, unknown> | undefined
+  if (aud) return {
+    content: 'Áudio',
+    messageType: 'audioMessage',
+    mediaUrl: (aud.url as string | null) ?? null,
+    mimeType: (aud.mimetype as string | null) ?? null,
+    fileName: (aud.fileName as string | null) ?? null,
+    quoted,
+  }
+
+  const ext = normalized.extendedTextMessage as Record<string, unknown> | undefined
+  if (ext) return { content: ext.text as string | null, messageType: 'extendedTextMessage', mediaUrl: null, mimeType: null, fileName: null, quoted }
+
+  return { content: null, messageType: 'unknown', mediaUrl: null, mimeType: null, fileName: null, quoted }
 }
 
 function evolutionHeaders(apiKey: string) {
@@ -440,6 +504,9 @@ async function actionSendMessage(p: Record<string, unknown>) {
         messageId: msgId,
         content: text,
         messageType: 'conversation',
+        mimeType: null,
+        fileName: null,
+        mediaUrl: null,
         quoted: quotedId ? { messageId: quotedId, content: quotedContent ?? 'Mensagem respondida' } : null,
         instance,
       },
@@ -454,6 +521,9 @@ async function actionSendMessage(p: Record<string, unknown>) {
       senderType: 'humano',
       senderName,
       queueOverride,
+      mediaUrl: null,
+      mimeType: null,
+      fileName: null,
     })
 
     return { ok: true, messageId: msgId, remoteJid }
@@ -547,6 +617,9 @@ async function actionSendAttachment(form: FormData) {
           messageId: msgId,
           content: caption || file.name,
           messageType: 'audioMessage',
+          mimeType: mime,
+          fileName: file.name,
+          mediaUrl: null,
           instance,
         },
       }])
@@ -558,6 +631,9 @@ async function actionSendAttachment(form: FormData) {
         direction: 'outgoing',
         senderType: 'humano',
         senderName,
+        mediaUrl: null,
+        mimeType: mime,
+        fileName: file.name,
       })
 
       return { ok: true, messageId: msgId, remoteJid }
@@ -621,6 +697,9 @@ async function actionSendAttachment(form: FormData) {
         messageId: msgId,
         content: caption || file.name,
         messageType: isImage ? 'imageMessage' : isVideo ? 'videoMessage' : 'documentMessage',
+        mimeType: mime,
+        fileName: file.name,
+        mediaUrl: null,
         instance,
       },
     }])
@@ -632,6 +711,9 @@ async function actionSendAttachment(form: FormData) {
       direction: 'outgoing',
       senderType: 'humano',
       senderName,
+      mediaUrl: null,
+      mimeType: mime,
+      fileName: file.name,
     })
 
     return { ok: true, messageId: msgId, remoteJid }
@@ -900,7 +982,7 @@ async function processWebhook(payload: Record<string, unknown>) {
 
     if (remoteJid.endsWith('@g.us')) return { ok: true, skipped: true, reason: 'group' }
 
-    const { content, messageType, mediaUrl, quoted } = extractContent(message)
+    const { content, messageType, mediaUrl, mimeType, fileName, quoted } = extractContent(message)
     const eventType = fromMe ? 'message_sent' : 'message_received'
 
     const leadId = await ensureLeadForConversation({
@@ -924,6 +1006,8 @@ async function processWebhook(payload: Record<string, unknown>) {
         content,
         messageType,
         mediaUrl,
+        mimeType,
+        fileName,
         quoted,
         instance,
       },
@@ -937,6 +1021,9 @@ async function processWebhook(payload: Record<string, unknown>) {
         content,
         direction: 'incoming',
         senderType: 'cliente',
+        mediaUrl,
+        mimeType,
+        fileName,
       })
 
       // Encaminha para N8N apenas instâncias com automação Clara (renovacao/certiid)
@@ -975,6 +1062,9 @@ async function processWebhook(payload: Record<string, unknown>) {
         direction: 'outgoing',
         senderType: inferOutgoingSenderType(instance),
         senderName: inferOutgoingSenderType(instance) === 'humano' ? (instance ?? 'Humano') : null,
+        mediaUrl,
+        mimeType,
+        fileName,
       })
     }
 

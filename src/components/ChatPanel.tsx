@@ -590,7 +590,8 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
     if (jid) {
       // Lead já tem JID salvo — carrega histórico direto do Supabase
       setRemoteJid(jid)
-      await loadHistory(jid)
+      const history = await loadHistory(jid)
+      setMessages(history)
       setLoading(false)
       return
     }
@@ -638,11 +639,35 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
     }
   }
 
+  async function fetchEvolutionHistory(jid: string): Promise<Message[]> {
+    if (!evolution) return []
+    try {
+      const accessToken = await getSupabaseAccessToken()
+      const res = await fetch(EDGE_FN, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+        body:    JSON.stringify({
+          _action:       'get_evolution_history',
+          base_url:      evolution.base_url,
+          api_token:     evolution.api_token,
+          instance_name: evolution.instance_name,
+          remote_jid:    jid,
+          count:         300,
+        }),
+      })
+      const data = await res.json() as { ok: boolean; messages?: Record<string, unknown>[]; error?: string }
+      if (!data.ok || !data.messages) return []
+      return parseEvolutionEvents(data.messages)
+    } catch {
+      return []
+    }
+  }
+
   async function loadHistory(jid: string) {
     // document_key is the normalized phone: strip the @s.whatsapp.net suffix
     const documentKey = jid.replace(/@s\.whatsapp\.net$/, '').replace(/@g\.us$/, '')
 
-    const [eventsResult, crmResult] = await Promise.all([
+    const [eventsResult, crmResult, evolutionHistory] = await Promise.all([
       supabase
         .from('communication_events')
         .select('id, event_type, payload, created_at, source')
@@ -655,14 +680,13 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
         .eq('document_key', documentKey)
         .order('created_at', { ascending: true })
         .limit(500),
+      fetchEvolutionHistory(jid),
     ])
 
-    const evolutionEvents = eventsResult.data ?? []
-    const crmMessages = crmResult.data ?? []
-
     const parsed = [
-      ...parseEvolutionEvents(evolutionEvents as Record<string, unknown>[]),
-      ...parseCrmChatMessages(crmMessages as CrmChatMessageRow[]),
+      ...parseEvolutionEvents((eventsResult.data ?? []) as Record<string, unknown>[]),
+      ...parseCrmChatMessages((crmResult.data ?? []) as CrmChatMessageRow[]),
+      ...evolutionHistory,
     ]
 
     return dedupeConversationMessages(parsed)

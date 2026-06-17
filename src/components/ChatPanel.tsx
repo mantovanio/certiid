@@ -590,7 +590,8 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
     if (jid) {
       // Lead já tem JID salvo — carrega histórico direto do Supabase
       setRemoteJid(jid)
-      await loadHistory(jid)
+      const history = await loadHistory(jid)
+      setMessages(history)
       setLoading(false)
       return
     }

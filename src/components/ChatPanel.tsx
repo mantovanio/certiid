@@ -387,6 +387,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
   const [messages, setMessages]             = useState<Message[]>([])
   const [loading, setLoading]               = useState(true)
   const [loadingLabel, setLoadingLabel]     = useState('Carregando...')
+  const [evolutionHistoryLoading, setEvolutionHistoryLoading] = useState(false)
   const [input, setInput]                   = useState('')
   const [sending, setSending]               = useState(false)
   const [fetchError, setFetchError]         = useState<string | null>(null)
@@ -663,11 +664,24 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
     }
   }
 
+  async function handleLoadEvolutionHistory() {
+    if (!remoteJid || evolutionHistoryLoading) return
+    setEvolutionHistoryLoading(true)
+    try {
+      const evolutionMessages = await fetchEvolutionHistory(remoteJid)
+      if (evolutionMessages.length > 0) {
+        setMessages(prev => dedupeConversationMessages([...prev, ...evolutionMessages]))
+      }
+    } finally {
+      setEvolutionHistoryLoading(false)
+    }
+  }
+
   async function loadHistory(jid: string) {
     // document_key is the normalized phone: strip the @s.whatsapp.net suffix
     const documentKey = jid.replace(/@s\.whatsapp\.net$/, '').replace(/@g\.us$/, '')
 
-    const [eventsResult, crmResult, evolutionHistory] = await Promise.all([
+    const [eventsResult, crmResult] = await Promise.all([
       supabase
         .from('communication_events')
         .select('id, event_type, payload, created_at, source')
@@ -680,13 +694,11 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
         .eq('document_key', documentKey)
         .order('created_at', { ascending: true })
         .limit(500),
-      fetchEvolutionHistory(jid),
     ])
 
     const parsed = [
       ...parseEvolutionEvents((eventsResult.data ?? []) as Record<string, unknown>[]),
       ...parseCrmChatMessages((crmResult.data ?? []) as CrmChatMessageRow[]),
-      ...evolutionHistory,
     ]
 
     return dedupeConversationMessages(parsed)
@@ -1415,8 +1427,33 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
             )}
 
             {!loading && !fetchError && messages.length === 0 && (
-              <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-                Nenhuma mensagem ainda. Diga ola.
+              <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-500 text-sm">
+                <span>Nenhuma mensagem no banco. Diga ola ou busque o histórico.</span>
+                {evolution && remoteJid && (
+                  <button
+                    type="button"
+                    onClick={() => void handleLoadEvolutionHistory()}
+                    disabled={evolutionHistoryLoading}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white border border-gray-200 text-xs text-gray-700 hover:bg-gray-50 shadow-sm disabled:opacity-50"
+                  >
+                    {evolutionHistoryLoading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                    Buscar histórico da Evolution
+                  </button>
+                )}
+              </div>
+            )}
+
+            {!loading && !fetchError && messages.length > 0 && evolution && remoteJid && (
+              <div className="flex justify-center py-1">
+                <button
+                  type="button"
+                  onClick={() => void handleLoadEvolutionHistory()}
+                  disabled={evolutionHistoryLoading}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/80 border border-gray-200 text-[11px] text-gray-500 hover:text-gray-700 hover:bg-white shadow-sm disabled:opacity-50"
+                >
+                  {evolutionHistoryLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                  {evolutionHistoryLoading ? 'Buscando...' : 'Buscar histórico da Evolution'}
+                </button>
               </div>
             )}
 

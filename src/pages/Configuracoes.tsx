@@ -1463,13 +1463,6 @@ function AbaIntegracoes() {
           if (!resultado) continue
 
           const webhookUrl = resultado.webhookUrl ?? integracao.webhook_url
-          const needsUpdate =
-            resultado.status !== integracao.status
-            || resultado.lastError !== integracao.last_error
-            || (resultado.webhookUrl !== undefined && webhookUrl !== integracao.webhook_url)
-
-          if (!needsUpdate) continue
-
           const patch: Partial<ExternalIntegration> = {
             status: resultado.status,
             last_test_at: new Date().toISOString(),
@@ -1567,7 +1560,7 @@ function AbaIntegracoes() {
     if (!editing) return
     setSaving(true)
 
-    let statusFinal: IntegrationStatus = form.status ?? 'pendente'
+    let statusFinal: IntegrationStatus = editing.status ?? 'pendente'
     let lastError: string | null = editing.last_error ?? null
     let lastTestAt: string | null = editing.last_test_at ?? null
 
@@ -1749,7 +1742,7 @@ function AbaIntegracoes() {
       provider: providerFinal,
       name: novaForm.name || (providerFinal === 'evolution' || providerFinal === 'n8n' ? 'WhatsApp API' : PROVIDER_LABEL[providerFinal]),
       description: novaForm.description ?? null,
-      status: novaForm.status ?? 'pendente',
+      status: 'pendente',
       base_url: novaForm.base_url || null,
       webhook_url: novaForm.webhook_url || null,
       api_token: novaForm.api_token || null,
@@ -1822,16 +1815,12 @@ function AbaIntegracoes() {
                   : 'Legado de atendimento WhatsApp.'}
               </p>
             ) : (
-              <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500 dark:text-gray-400">Status</span>
-                <select value={form.status ?? 'pendente'} onChange={e => setForm(p => ({ ...p, status: e.target.value as IntegrationStatus }))}
-                  className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  <option value="ativo">Conectado</option>
-                  <option value="pendente">Configurar</option>
-                  <option value="erro">Erro</option>
-                  <option value="inativo">Inativo</option>
-                </select>
-              </label>
+              <div className="rounded-lg border border-blue-100 dark:border-blue-900/40 bg-blue-50/70 dark:bg-blue-950/20 px-3 py-2">
+                <p className="text-xs font-medium text-blue-700 dark:text-blue-300">Status automático</p>
+                <p className="text-[11px] text-blue-600/80 dark:text-blue-300/80 mt-1">
+                  O sistema valida a integração sozinho e atualiza o status sem clique manual.
+                </p>
+              </div>
             )}
 
             <ConfigInput
@@ -1927,15 +1916,12 @@ function AbaIntegracoes() {
                 ))}
               </select>
             </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-gray-500 dark:text-gray-400">Status</span>
-              <select value={novaForm.status ?? 'pendente'} onChange={e => setNovaForm(f => ({ ...f, status: e.target.value as IntegrationStatus }))}
-                className="border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="ativo">Conectado</option>
-                <option value="pendente">Configurar</option>
-                <option value="inativo">Inativo</option>
-              </select>
-            </label>
+            <div className="rounded-lg border border-blue-100 dark:border-blue-900/40 bg-blue-50/70 dark:bg-blue-950/20 px-3 py-2">
+              <p className="text-xs font-medium text-blue-700 dark:text-blue-300">Status automático</p>
+              <p className="text-[11px] text-blue-600/80 dark:text-blue-300/80 mt-1">
+                Ao salvar, o sistema testa a integração e ajusta o status automaticamente.
+              </p>
+            </div>
             {novaProvider === 'evolution' && (
               <label className="flex flex-col gap-1">
                 <span className="text-xs text-gray-500 dark:text-gray-400">Motor WhatsApp</span>

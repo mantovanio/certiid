@@ -1329,6 +1329,20 @@ async function configurarWebhookEvolution(baseUrl: string, token: string, instan
   }
 }
 
+function isHttpUrl(value: string | null | undefined) {
+  if (!value) return false
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function getMissingFields(fields: Array<[string, string | number | null | undefined]>) {
+  return fields.filter(([, value]) => value === null || value === undefined || String(value).trim() === '').map(([label]) => label)
+}
+
 function AbaIntegracoes() {
   const { profile } = useAuth()
   const isAdmin = isAdminProfile(profile)
@@ -1351,16 +1365,135 @@ function AbaIntegracoes() {
   const [toastI, setToastI] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null)
   const [whatsAppHubOpen, setWhatsAppHubOpen] = useState(false)
   const [documentStorage, setDocumentStorage] = useState<ContactDocumentStorageConfig>(DEFAULT_CONTACT_DOCUMENT_STORAGE)
-  const [savingDocumentStorage, setSavingDocumentStorage] = useState(false)
+    const [savingDocumentStorage, setSavingDocumentStorage] = useState(false)
 
-  function showMsgI(msg: string, type: 'ok' | 'err' = 'err') {
-    setToastI({ msg, type })
-    setTimeout(() => setToastI(null), 4000)
-  }
+    function showMsgI(msg: string, type: 'ok' | 'err' = 'err') {
+      setToastI({ msg, type })
+      setTimeout(() => setToastI(null), 4000)
+    }
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setErro(null)
+    async function validarIntegracaoAutomatica(integracao: ExternalIntegration): Promise<{ status: IntegrationStatus; lastError: string | null; webhookUrl?: string | null }> {
+      if (integracao.provider === 'evolution') {
+        const missing = getMissingFields([
+          ['URL base', integracao.base_url],
+          ['Token / API Key', integracao.api_token],
+          ['Instância', integracao.instance_name],
+        ])
+        if (missing.length) {
+          return { status: 'erro', lastError: `Campos obrigatórios ausentes: ${missing.join(', ')}` }
+        }
+
+        const resultado = await testarEvolution(integracao.base_url!, integracao.api_token!, integracao.instance_name!)
+        if (!resultado.ok) {
+          return { status: 'erro', lastError: resultado.erro }
+        }
+
+        const webhookUrl = integracao.webhook_url || EDGE_FN_EVOLUTION
+        const webhookResultado = await configurarWebhookEvolution(
+          integracao.base_url!,
+          integracao.api_token!,
+          integracao.instance_name!,
+          webhookUrl,
+        )
+        if (!webhookResultado.ok) {
+          return { status: 'erro', lastError: webhookResultado.erro, webhookUrl }
+        }
+
+        return { status: 'ativo', lastError: null, webhookUrl }
+      }
+
+      if (integracao.provider === 'email_smtp') {
+        const missing = getMissingFields([
+          ['Servidor SMTP', integracao.host],
+          ['Porta', integracao.port],
+          ['Usuário SMTP', integracao.username],
+          ['Senha / App Password', integracao.api_token],
+          ['Email do remetente', integracao.sender_email],
+        ])
+        return missing.length
+          ? { status: 'erro', lastError: `Campos obrigatórios ausentes: ${missing.join(', ')}` }
+          : { status: 'ativo', lastError: null }
+      }
+
+      if (integracao.provider === 'n8n') {
+        const missing = getMissingFields([
+          ['Webhook', integracao.webhook_url],
+        ])
+        if (missing.length) {
+          return { status: 'erro', lastError: `Campos obrigatórios ausentes: ${missing.join(', ')}` }
+        }
+        return isHttpUrl(integracao.webhook_url)
+          ? { status: 'ativo', lastError: null }
+          : { status: 'erro', lastError: 'Webhook N8N inválido' }
+      }
+
+      if (integracao.provider === 'safe2pay' || integracao.provider === 'safeweb' || integracao.provider === 'supabase' || integracao.provider === 'gestao_ar') {
+        const urlBaseOk = !integracao.base_url || isHttpUrl(integracao.base_url)
+        const webhookOk = !integracao.webhook_url || isHttpUrl(integracao.webhook_url)
+        const hasSomething = Boolean(integracao.base_url || integracao.webhook_url || integracao.api_token || integracao.sender_email)
+        if (!hasSomething) {
+          return { status: 'erro', lastError: 'Integração sem dados mínimos para validação' }
+        }
+        if (!urlBaseOk) {
+          return { status: 'erro', lastError: 'URL base inválida' }
+        }
+        if (!webhookOk) {
+          return { status: 'erro', lastError: 'Webhook inválido' }
+        }
+        return { status: 'ativo', lastError: null }
+      }
+
+      return { status: integracao.status, lastError: integracao.last_error }
+    }
+
+    async function validarIntegracoesAutomaticamente(lista: ExternalIntegration[]) {
+      const candidatas = lista.filter(integracao =>
+        integracao.provider === 'evolution'
+        || integracao.provider === 'email_smtp'
+        || integracao.provider === 'n8n'
+        || integracao.provider === 'safe2pay'
+        || integracao.provider === 'safeweb'
+        || integracao.provider === 'supabase'
+        || integracao.provider === 'gestao_ar'
+      )
+
+      for (const integracao of candidatas) {
+        try {
+          const resultado = await validarIntegracaoAutomatica(integracao)
+          if (!resultado) continue
+
+          const webhookUrl = resultado.webhookUrl ?? integracao.webhook_url
+          const needsUpdate =
+            resultado.status !== integracao.status
+            || resultado.lastError !== integracao.last_error
+            || (resultado.webhookUrl !== undefined && webhookUrl !== integracao.webhook_url)
+
+          if (!needsUpdate) continue
+
+          const patch: Partial<ExternalIntegration> = {
+            status: resultado.status,
+            last_test_at: new Date().toISOString(),
+            last_error: resultado.lastError,
+          }
+          if (resultado.webhookUrl !== undefined) {
+            patch.webhook_url = webhookUrl ?? null
+          }
+
+          await supabase.from('external_integrations').update(patch).eq('id', integracao.id)
+          setIntegracoes(prev => prev.map(item => (
+            item.id === integracao.id
+              ? { ...item, ...patch } as ExternalIntegration
+              : item
+          )))
+        } catch (error) {
+          console.error('[auto-validate integration error]', integracao.provider, integracao.id, error)
+        }
+      }
+    }
+
+    const load = useCallback(async () => {
+      setLoading(true)
+      setErro(null)
     const [integracoesRes, outboxRes] = await Promise.all([
       supabase.from('external_integrations').select('*').order('name', { ascending: true }),
       supabase.from('communication_outbox').select('*').order('created_at', { ascending: false }).limit(8),
@@ -1383,28 +1516,7 @@ function AbaIntegracoes() {
     }
     setLoading(false)
 
-    // Verifica o canal WhatsApp híbrido silenciosamente após carregar
-    const evo = lista.find(i => isWhatsAppIntegration(i) && getWhatsAppEngine(i) === 'evolution' && i.base_url && i.api_token && i.instance_name)
-    if (evo) {
-      const resultado = await testarEvolution(evo.base_url!, evo.api_token!, evo.instance_name!)
-      const webhookUrl = evo.webhook_url || EDGE_FN_EVOLUTION
-      const webhookResultado = resultado.ok
-        ? await configurarWebhookEvolution(evo.base_url!, evo.api_token!, evo.instance_name!, webhookUrl)
-        : { ok: false, erro: resultado.erro }
-      const novoStatus: IntegrationStatus = resultado.ok && webhookResultado.ok ? 'ativo' : 'erro'
-      const lastError = resultado.ok ? webhookResultado.erro : resultado.erro
-      if (novoStatus !== evo.status || evo.webhook_url !== webhookUrl || evo.last_error !== lastError) {
-        await supabase.from('external_integrations').update({
-          status: novoStatus,
-          last_test_at: new Date().toISOString(),
-          last_error: lastError,
-          webhook_url: webhookUrl,
-        }).eq('id', evo.id)
-        setIntegracoes(prev => prev.map(i =>
-          i.id === evo.id ? { ...i, status: novoStatus, last_error: lastError, webhook_url: webhookUrl } : i
-        ))
-      }
-    }
+    void validarIntegracoesAutomaticamente(lista)
   }, [])
 
   useEffect(() => { void load() }, [load])

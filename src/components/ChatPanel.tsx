@@ -387,7 +387,6 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
   const [messages, setMessages]             = useState<Message[]>([])
   const [loading, setLoading]               = useState(true)
   const [loadingLabel, setLoadingLabel]     = useState('Carregando...')
-  const [evolutionHistoryLoading, setEvolutionHistoryLoading] = useState(false)
   const [input, setInput]                   = useState('')
   const [sending, setSending]               = useState(false)
   const [fetchError, setFetchError]         = useState<string | null>(null)
@@ -591,8 +590,7 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
     if (jid) {
       // Lead já tem JID salvo — carrega histórico direto do Supabase
       setRemoteJid(jid)
-      const history = await loadHistory(jid)
-      setMessages(history)
+      await loadHistory(jid)
       setLoading(false)
       return
     }
@@ -640,43 +638,6 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
     }
   }
 
-  async function fetchEvolutionHistory(jid: string): Promise<Message[]> {
-    if (!evolution) return []
-    try {
-      const accessToken = await getSupabaseAccessToken()
-      const res = await fetch(EDGE_FN, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body:    JSON.stringify({
-          _action:       'get_evolution_history',
-          base_url:      evolution.base_url,
-          api_token:     evolution.api_token,
-          instance_name: evolution.instance_name,
-          remote_jid:    jid,
-          count:         300,
-        }),
-      })
-      const data = await res.json() as { ok: boolean; messages?: Record<string, unknown>[]; error?: string }
-      if (!data.ok || !data.messages) return []
-      return parseEvolutionEvents(data.messages)
-    } catch {
-      return []
-    }
-  }
-
-  async function handleLoadEvolutionHistory() {
-    if (!remoteJid || evolutionHistoryLoading) return
-    setEvolutionHistoryLoading(true)
-    try {
-      const evolutionMessages = await fetchEvolutionHistory(remoteJid)
-      if (evolutionMessages.length > 0) {
-        setMessages(prev => dedupeConversationMessages([...prev, ...evolutionMessages]))
-      }
-    } finally {
-      setEvolutionHistoryLoading(false)
-    }
-  }
-
   async function loadHistory(jid: string) {
     // document_key is the normalized phone: strip the @s.whatsapp.net suffix
     const documentKey = jid.replace(/@s\.whatsapp\.net$/, '').replace(/@g\.us$/, '')
@@ -696,9 +657,12 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
         .limit(500),
     ])
 
+    const evolutionEvents = eventsResult.data ?? []
+    const crmMessages = crmResult.data ?? []
+
     const parsed = [
-      ...parseEvolutionEvents((eventsResult.data ?? []) as Record<string, unknown>[]),
-      ...parseCrmChatMessages((crmResult.data ?? []) as CrmChatMessageRow[]),
+      ...parseEvolutionEvents(evolutionEvents as Record<string, unknown>[]),
+      ...parseCrmChatMessages(crmMessages as CrmChatMessageRow[]),
     ]
 
     return dedupeConversationMessages(parsed)
@@ -1427,33 +1391,8 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
             )}
 
             {!loading && !fetchError && messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-500 text-sm">
-                <span>Nenhuma mensagem no banco. Diga ola ou busque o histórico.</span>
-                {evolution && remoteJid && (
-                  <button
-                    type="button"
-                    onClick={() => void handleLoadEvolutionHistory()}
-                    disabled={evolutionHistoryLoading}
-                    className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white border border-gray-200 text-xs text-gray-700 hover:bg-gray-50 shadow-sm disabled:opacity-50"
-                  >
-                    {evolutionHistoryLoading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-                    Buscar histórico da Evolution
-                  </button>
-                )}
-              </div>
-            )}
-
-            {!loading && !fetchError && messages.length > 0 && evolution && remoteJid && (
-              <div className="flex justify-center py-1">
-                <button
-                  type="button"
-                  onClick={() => void handleLoadEvolutionHistory()}
-                  disabled={evolutionHistoryLoading}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/80 border border-gray-200 text-[11px] text-gray-500 hover:text-gray-700 hover:bg-white shadow-sm disabled:opacity-50"
-                >
-                  {evolutionHistoryLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-                  {evolutionHistoryLoading ? 'Buscando...' : 'Buscar histórico da Evolution'}
-                </button>
+              <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+                Nenhuma mensagem ainda. Diga ola.
               </div>
             )}
 

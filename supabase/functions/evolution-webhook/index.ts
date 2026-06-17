@@ -1077,65 +1077,6 @@ async function actionProcessOutbox(p: Record<string, unknown>) {
   return { ok: true, sent, failed, errors: errors.slice(0, 10), remaining: rows.length - sent - failed }
 }
 
-// ── Proxy: buscar histórico direto da Evolution API ──────────────────────────
-
-async function actionGetEvolutionHistory(p: Record<string, unknown>) {
-  const baseUrl    = (p.base_url      as string | undefined)?.replace(/\/$/, '')
-  const apiKey     = p.api_token      as string | undefined
-  const instance   = p.instance_name  as string | undefined
-  const remoteJid  = p.remote_jid     as string | undefined
-  const limit      = Math.min((p.count as number | undefined) ?? 200, 500)
-
-  if (!baseUrl || !apiKey || !instance || !remoteJid) {
-    return { ok: false, error: 'base_url, api_token, instance_name e remote_jid são obrigatórios' }
-  }
-
-  try {
-    const res = await fetch(`${baseUrl}/chat/findMessages/${encodeURIComponent(instance)}`, {
-      method: 'POST',
-      headers: evolutionHeaders(apiKey),
-      body: JSON.stringify({ where: { key: { remoteJid } }, limit }),
-      signal: AbortSignal.timeout(15000),
-    })
-
-    if (!res.ok) {
-      const errorText = await readResponseText(res)
-      return { ok: false, error: errorText || `Evolution HTTP ${res.status}` }
-    }
-
-    const raw = await res.json()
-    const items = (Array.isArray(raw) ? raw : (raw.messages ?? [])) as Record<string, unknown>[]
-
-    // Normaliza para o formato de communication_events para reutilizar parseEvolutionEvents() no frontend
-    const messages = items.map(item => {
-      const key     = item.key     as Record<string, unknown> | undefined
-      const message = item.message as Record<string, unknown> | undefined
-      if (!key || !message) return null
-
-      const msgId    = key.id        as string | undefined
-      const fromMe   = Boolean(key.fromMe)
-      const pushName = item.pushName as string | undefined
-      const ts       = item.messageTimestamp as number | undefined
-      const { content, messageType, mediaUrl, mimeType, fileName } = extractContent(message)
-
-      return {
-        id:         msgId ?? `evo-hist-${Math.random().toString(36).slice(2)}`,
-        event_type: fromMe ? 'message_sent' : 'message_received',
-        source:     'evolution',
-        created_at: ts ? new Date(ts * 1000).toISOString() : new Date().toISOString(),
-        payload: {
-          remoteJid, fromMe, messageId: msgId ?? null, pushName: pushName ?? null,
-          content, messageType, mediaUrl, mimeType, fileName, quoted: null, instance,
-        },
-      }
-    }).filter(Boolean)
-
-    return { ok: true, messages }
-  } catch (e) {
-    return { ok: false, error: String(e) }
-  }
-}
-
 // ── Proxy: list Evolution instances ──────────────────────────────────────────
 
 async function actionListInstances() {
@@ -1352,9 +1293,8 @@ Deno.serve(async (req) => {
       case 'configure_webhook': return json(await actionConfigureWebhook(payload))
       case 'send_message':     return json(await actionSendMessage(payload))
       case 'init_chat':        return json(await actionInitChat(payload))
-      case 'get_messages':          return json(await actionGetMessages(payload))
-      case 'get_evolution_history': return json(await actionGetEvolutionHistory(payload))
-      case 'get_media_base64':      return json(await actionGetMediaBase64(payload))
+      case 'get_messages':     return json(await actionGetMessages(payload))
+      case 'get_media_base64': return json(await actionGetMediaBase64(payload))
       case 'list_instances':   return json(await actionListInstances())
       default:                 return json({ ok: false, error: 'Ação desconhecida' })
     }

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   certiid:
-    image: certiid:latest
+    image: ghcr.io/mantovanio/certiid:latest
     deploy:
       replicas: 1
       restart_policy:

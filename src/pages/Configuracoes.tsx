@@ -1306,6 +1306,29 @@ async function testarEvolution(baseUrl: string, token: string, instanceName: str
   }
 }
 
+async function configurarWebhookEvolution(baseUrl: string, token: string, instanceName: string, webhookUrl: string): Promise<{ ok: boolean; erro: string | null }> {
+  try {
+    const accessToken = await getSupabaseAccessToken()
+    const res = await fetch(EDGE_FN_EVOLUTION, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+      body: JSON.stringify({
+        _action: 'configure_webhook',
+        base_url: baseUrl,
+        api_token: token,
+        instance_name: instanceName,
+        webhook_url: webhookUrl || EDGE_FN_EVOLUTION,
+      }),
+      signal: AbortSignal.timeout(12000),
+    })
+    const data = await res.json() as { ok: boolean; error?: string }
+    if (data.ok) return { ok: true, erro: null }
+    return { ok: false, erro: data.error ?? 'Falha ao configurar webhook' }
+  } catch {
+    return { ok: false, erro: 'Sem conexão com o servidor' }
+  }
+}
+
 function AbaIntegracoes() {
   const { profile } = useAuth()
   const isAdmin = isAdminProfile(profile)
@@ -1432,21 +1455,29 @@ function AbaIntegracoes() {
 
     const editingIsWhatsApp = isWhatsAppIntegration(editing) || editing.provider === 'evolution'
 
-    if (editingIsWhatsApp) {
-      const baseUrl  = form.base_url      ?? ''
-      const token    = form.api_token     ?? ''
-      const instance = form.instance_name ?? ''
-      const engine = getWhatsAppEngineFromForm({ ...editing, ...form })
-      if (engine === 'evolution' && baseUrl && token && instance) {
-        const resultado = await testarEvolution(baseUrl, token, instance)
-        statusFinal = resultado.ok ? 'ativo' : 'erro'
-        lastError = resultado.erro
-        lastTestAt = new Date().toISOString()
-      } else {
-        statusFinal = 'pendente'
-        lastError = null
+      if (editingIsWhatsApp) {
+        const baseUrl  = form.base_url      ?? ''
+        const token    = form.api_token     ?? ''
+        const instance = form.instance_name ?? ''
+        const webhook  = form.webhook_url   ?? EDGE_FN_EVOLUTION
+        const engine = getWhatsAppEngineFromForm({ ...editing, ...form })
+        if (engine === 'evolution' && baseUrl && token && instance) {
+          const resultado = await testarEvolution(baseUrl, token, instance)
+          statusFinal = resultado.ok ? 'ativo' : 'erro'
+          lastError = resultado.erro
+          lastTestAt = new Date().toISOString()
+          if (resultado.ok) {
+            const webhookResultado = await configurarWebhookEvolution(baseUrl, token, instance, webhook)
+            if (!webhookResultado.ok) {
+              lastError = webhookResultado.erro
+              statusFinal = 'erro'
+            }
+          }
+        } else {
+          statusFinal = 'pendente'
+          lastError = null
+        }
       }
-    }
 
     const engineAtual = getWhatsAppEngineFromForm({ ...editing, ...form })
     const providerFinal = editingIsWhatsApp ? normalizeWhatsAppProvider(editing.provider, engineAtual) : editing.provider
@@ -1488,11 +1519,11 @@ function AbaIntegracoes() {
   async function registrarTeste(integracao: ExternalIntegration) {
     setTestando(integracao.provider)
 
-    if (isWhatsAppIntegration(integracao) || integracao.provider === 'evolution') {
-      const engine = getWhatsAppEngine(integracao)
-      if (engine !== 'evolution') {
-        showMsgI(`Teste automático indisponível para ${getWhatsAppEngineLabel(engine)}. Use o webhook/orquestrador configurado.`, 'ok')
-        setTestando(null)
+      if (isWhatsAppIntegration(integracao) || integracao.provider === 'evolution') {
+        const engine = getWhatsAppEngine(integracao)
+        if (engine !== 'evolution') {
+          showMsgI(`Teste automático indisponível para ${getWhatsAppEngineLabel(engine)}. Use o webhook/orquestrador configurado.`, 'ok')
+          setTestando(null)
         return
       }
       if (!integracao.base_url || !integracao.api_token || !integracao.instance_name) {
@@ -1500,22 +1531,36 @@ function AbaIntegracoes() {
         setTestando(null)
         return
       }
-      try {
-        const resultado = await testarEvolution(integracao.base_url, integracao.api_token, integracao.instance_name)
-        const novoStatus: IntegrationStatus = resultado.ok ? 'ativo' : 'erro'
-        await supabase.from('external_integrations').update({
-          status: novoStatus,
-          last_test_at: new Date().toISOString(),
-          last_error: resultado.erro,
-        }).eq('id', integracao.id)
-        if (resultado.ok) {
-          showMsgI('Canal WhatsApp conectado com sucesso!', 'ok')
-        } else {
-          showMsgI('Falha na conexão: ' + (resultado.erro ?? 'erro desconhecido'))
+        try {
+          const resultado = await testarEvolution(integracao.base_url, integracao.api_token, integracao.instance_name)
+          const novoStatus: IntegrationStatus = resultado.ok ? 'ativo' : 'erro'
+          let lastError = resultado.erro
+          if (resultado.ok) {
+            const webhookResultado = await configurarWebhookEvolution(
+              integracao.base_url,
+              integracao.api_token,
+              integracao.instance_name,
+              integracao.webhook_url || EDGE_FN_EVOLUTION,
+            )
+            if (!webhookResultado.ok) {
+              lastError = webhookResultado.erro
+            }
+          }
+          await supabase.from('external_integrations').update({
+            status: resultado.ok && !lastError ? novoStatus : 'erro',
+            last_test_at: new Date().toISOString(),
+            last_error: lastError,
+          }).eq('id', integracao.id)
+          if (resultado.ok && !lastError) {
+            showMsgI('Canal WhatsApp conectado com sucesso!', 'ok')
+          } else if (resultado.ok && lastError) {
+            showMsgI('Conexão ok, mas falha ao registrar webhook: ' + lastError)
+          } else {
+            showMsgI('Falha na conexão: ' + (lastError ?? 'erro desconhecido'))
+          }
+        } catch (e) {
+          showMsgI('Erro ao testar: ' + String(e))
         }
-      } catch (e) {
-        showMsgI('Erro ao testar: ' + String(e))
-      }
       setTestando(null)
       void load()
       return

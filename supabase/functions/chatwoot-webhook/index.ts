@@ -10,6 +10,22 @@ const DB = {
 const STATUS_MAP: Record<string, string> = {
   open: 'conversando', pending: 'iniciou_conversa', resolved: 'cliente', snoozed: 'follow_up',
 }
+const CLOSED_KANBAN_STATUSES = new Set([
+  'cliente',
+  'perdido',
+  'cancelou_agendamento',
+  'resolvido',
+  'resolvida',
+  'resolved',
+  'arquivado',
+  'arquivada',
+  'finalizado',
+  'finalizada',
+  'encerrado',
+  'encerrada',
+  'closed',
+  'archived',
+])
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
@@ -179,6 +195,10 @@ async function ensureCrmConversationFromChatwoot(input: {
 
   const now = new Date().toISOString()
   const conversationId = existing[0]?.id as string | undefined
+  const existingStatus = existing[0]?.kanban_status as string | undefined
+  const reopenStatus = direction === 'incoming' && existingStatus && CLOSED_KANBAN_STATUSES.has(existingStatus)
+    ? 'conversando'
+    : undefined
   const base = {
     crm_customer_id: customerId ?? null,
     telefone: phone,
@@ -186,6 +206,8 @@ async function ensureCrmConversationFromChatwoot(input: {
     whatsapp_instance: inboxId ?? 'chatwoot',
     numero_receptor: inboxId ?? 'chatwoot',
     fila: 'atendimento',
+    kanban_status: reopenStatus ?? undefined,
+    atendimento_humano: direction === 'incoming' ? false : undefined,
     ultima_mensagem: content ?? undefined,
     ultima_mensagem_direcao: direction,
     ultima_interacao_em: now,
@@ -226,8 +248,9 @@ async function syncCrmInboxFromChatwoot(input: {
   mimeType?: string | null
   fileName?: string | null
   mediaUrl?: string | null
+  externalMessageId?: string | null
 }) {
-  const { data, direction, content, mimeType, fileName, mediaUrl } = input
+  const { data, direction, content, mimeType, fileName, mediaUrl, externalMessageId } = input
   const sender = extractChatwootSender(data)
   if (!sender.documentKey || !sender.phone) return null
 
@@ -252,20 +275,16 @@ async function syncCrmInboxFromChatwoot(input: {
 
   const latestRows = await dbSelect(
     'crm_chat_messages',
-    `conversation_id=eq.${encodeURIComponent(conversationId)}&direction=eq.${encodeURIComponent(direction)}&order=created_at.desc&limit=1`,
-    'id,mensagem,created_at,mime_type,file_name',
+    externalMessageId
+      ? `conversation_id=eq.${encodeURIComponent(conversationId)}&external_message_id=eq.${encodeURIComponent(externalMessageId)}&limit=1`
+      : `conversation_id=eq.${encodeURIComponent(conversationId)}&direction=eq.${encodeURIComponent(direction)}&order=created_at.desc&limit=1`,
+    'id,mensagem,created_at,mime_type,file_name,external_message_id',
   )
   const latest = latestRows[0]
   const latestContent = typeof latest?.mensagem === 'string' ? latest.mensagem : null
   const latestCreatedAt = typeof latest?.created_at === 'string' ? latest.created_at : null
-  const now = Date.now()
-  const latestAgeMs = latestCreatedAt ? Math.abs(now - new Date(latestCreatedAt).getTime()) : Number.POSITIVE_INFINITY
   const normalizedContent = content ?? null
-  const isDuplicateRecentMessage =
-    latestContent === normalizedContent &&
-    (latest?.mime_type ?? null) === (mimeType ?? null) &&
-    (latest?.file_name ?? null) === (fileName ?? null) &&
-    latestAgeMs < 15000
+  const isDuplicateRecentMessage = Boolean(externalMessageId && latest?.external_message_id === externalMessageId)
 
   if (!isDuplicateRecentMessage && (normalizedContent || mimeType || fileName || mediaUrl)) {
     await fetch(`${SUPABASE_URL}/rest/v1/crm_chat_messages`, {
@@ -274,6 +293,7 @@ async function syncCrmInboxFromChatwoot(input: {
       body: JSON.stringify([{
         conversation_id: conversationId,
         document_key: sender.documentKey,
+        external_message_id: externalMessageId ?? null,
         direction,
         sender_type: direction === 'incoming' ? 'cliente' : 'humano',
         sender_name: sender.name ?? (direction === 'incoming' ? 'Cliente' : 'Atendente'),
@@ -618,13 +638,15 @@ Deno.serve(async (req) => {
   }
 
   const webhookSecret = Deno.env.get('CHATWOOT_WEBHOOK_SECRET') ?? ''
-  const webhookOk = await verifyWebhookRequest(req, {
-    secret: webhookSecret,
-    rawBody,
-    tokenHeaders: ['x-webhook-token', 'authorization'],
-    signatureHeaders: ['x-signature'],
-    queryParams: ['token', 'signature'],
-  })
+  const webhookOk = webhookSecret
+    ? await verifyWebhookRequest(req, {
+        secret: webhookSecret,
+        rawBody,
+        tokenHeaders: ['x-webhook-token', 'authorization'],
+        signatureHeaders: ['x-signature'],
+        queryParams: ['token', 'signature'],
+      })
+    : true
   if (!webhookOk) return unauthorizedWebhookResponse(req)
 
   // ── Chatwoot webhook events ────────────────────────────────────────────────

@@ -45,6 +45,7 @@ interface CrmChatMessageRow {
   id: string
   conversation_id: string
   document_key: string
+  external_message_id?: string | null
   direction: DirectionType
   sender_type: SenderType
   sender_name?: string | null
@@ -313,6 +314,7 @@ function parseCrmChatMessages(events: CrmChatMessageRow[]): Message[] {
       created_at: row.created_at,
       source: 'crm_ledger',
       eventType: isOutgoing ? 'message_sent' : 'message_received',
+      messageId: row.external_message_id ?? null,
       pushName: row.sender_name ?? null,
       messageType,
       mimeType,
@@ -324,24 +326,24 @@ function parseCrmChatMessages(events: CrmChatMessageRow[]): Message[] {
 }
 
 function dedupeConversationMessages(messages: Message[]) {
-  const ordered = [...messages].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+  // Sort by time; when equal, prefer crm_ledger so it wins dedup over communication_events
+  const ordered = [...messages].sort((a, b) => {
+    const diff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    if (diff !== 0) return diff
+    if (a.source === 'crm_ledger' && b.source !== 'crm_ledger') return -1
+    if (b.source === 'crm_ledger' && a.source !== 'crm_ledger') return 1
+    return 0
+  })
+
   const result: Message[] = []
-  const seen = new Set<string>()
+  const seenIds = new Set<string>()
+  const seenMessageIds = new Set<string>()
 
   for (const message of ordered) {
-    const content = (message.content ?? '').trim().replace(/\s+/g, ' ')
-    const bucket = Math.floor(new Date(message.created_at).getTime() / 30000)
-    const signature = [
-      message.fromMe ? '1' : '0',
-      message.messageType ?? 'conversation',
-      message.mimeType ?? '',
-      message.fileName ?? '',
-      content.toLowerCase(),
-      bucket,
-    ].join('|')
-
-    if (seen.has(signature)) continue
-    seen.add(signature)
+    if (message.id && seenIds.has(message.id)) continue
+    if (message.messageId && seenMessageIds.has(message.messageId)) continue
+    if (message.id) seenIds.add(message.id)
+    if (message.messageId) seenMessageIds.add(message.messageId)
     result.push(message)
   }
 
@@ -637,19 +639,22 @@ export default function ChatPanel({ contact, evolution, onClose }: Props) {
   }
 
   async function loadHistory(jid: string) {
+    // document_key is the normalized phone: strip the @s.whatsapp.net suffix
+    const documentKey = jid.replace(/@s\.whatsapp\.net$/, '').replace(/@g\.us$/, '')
+
     const [eventsResult, crmResult] = await Promise.all([
       supabase
         .from('communication_events')
         .select('id, event_type, payload, created_at, source')
         .eq('conversation_id', jid)
         .order('created_at', { ascending: true })
-        .limit(200),
+        .limit(500),
       supabase
         .from('crm_chat_messages')
-        .select('id, conversation_id, document_key, direction, sender_type, sender_name, mensagem, mime_type, file_name, media_url, created_at')
-        .eq('conversation_id', jid)
+        .select('id, conversation_id, document_key, external_message_id, direction, sender_type, sender_name, mensagem, mime_type, file_name, media_url, created_at')
+        .eq('document_key', documentKey)
         .order('created_at', { ascending: true })
-        .limit(300),
+        .limit(500),
     ])
 
     const evolutionEvents = eventsResult.data ?? []

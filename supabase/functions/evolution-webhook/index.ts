@@ -24,6 +24,14 @@ const CLOSED_KANBAN_STATUSES = new Set([
   'archived',
 ])
 
+const EVOLUTION_WEBHOOK_EVENTS = [
+  'MESSAGES_UPSERT',
+  'MESSAGES_UPDATE',
+  'MESSAGES_DELETE',
+  'SEND_MESSAGE',
+  'CONNECTION_UPDATE',
+]
+
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
 async function dbInsert(table: string, rows: unknown[]) {
@@ -81,6 +89,52 @@ async function loadCrmChatSettings() {
   return {
     sign_outgoing_messages: value?.sign_outgoing_messages !== false,
   }
+}
+
+function resolveEvolutionWebhookSecret() {
+  return getEnv('EVOLUTION_WEBHOOK_SECRET')
+    || getEnv('WEBHOOK_SECRET_ATENDIMENTO')
+    || getEnv('WEBHOOK_SECRET_RENOVACAO')
+    || getEnv('WEBHOOK_SECRET_CERTIID')
+}
+
+async function configureEvolutionWebhook(input: {
+  baseUrl: string
+  apiKey: string
+  instanceName: string
+  webhookUrl: string
+}) {
+  const { baseUrl, apiKey, instanceName, webhookUrl } = input
+  const webhookSecret = resolveEvolutionWebhookSecret()
+
+  const res = await fetch(`${baseUrl}/webhook/set/${encodeURIComponent(instanceName)}`, {
+    method: 'POST',
+    headers: evolutionHeaders(apiKey),
+    body: JSON.stringify({
+      enabled: true,
+      url: webhookUrl,
+      events: EVOLUTION_WEBHOOK_EVENTS,
+      headers: webhookSecret ? { 'x-webhook-token': webhookSecret } : {},
+      base64: false,
+    }),
+    signal: AbortSignal.timeout(15000),
+  })
+
+  const text = await readResponseText(res)
+  if (!res.ok) {
+    return { ok: false, error: text || `Evolution HTTP ${res.status}` }
+  }
+
+  try {
+    const data = text ? JSON.parse(text) as Record<string, unknown> : {}
+    if (data.success === false) {
+      return { ok: false, error: String(data.message ?? 'Falha ao configurar webhook') }
+    }
+  } catch {
+    // resposta pode ser texto simples, tudo certo
+  }
+
+  return { ok: true, error: null as string | null }
 }
 
 async function ensureLeadForConversation(input: {
@@ -439,7 +493,21 @@ function extractContent(message: Record<string, unknown>): {
   const ext = normalized.extendedTextMessage as Record<string, unknown> | undefined
   if (ext) return { content: ext.text as string | null, messageType: 'extendedTextMessage', mediaUrl: null, mimeType: null, fileName: null, quoted }
 
-  return { content: null, messageType: 'unknown', mediaUrl: null, mimeType: null, fileName: null, quoted }
+  const sticker = normalized.stickerMessage as Record<string, unknown> | undefined
+  if (sticker) return { content: '[Figurinha]', messageType: 'stickerMessage', mediaUrl: (sticker.url as string | null) ?? null, mimeType: (sticker.mimetype as string | null) ?? null, fileName: null, quoted }
+
+  const reaction = normalized.reactionMessage as Record<string, unknown> | undefined
+  if (reaction) return { content: `[Reação: ${(reaction.text as string | null) ?? ''}]`, messageType: 'reactionMessage', mediaUrl: null, mimeType: null, fileName: null, quoted }
+
+  const poll = normalized.pollCreationMessage as Record<string, unknown> | undefined
+  if (poll) return { content: `[Enquete: ${(poll.name as string | null) ?? 'enquete'}]`, messageType: 'pollCreationMessage', mediaUrl: null, mimeType: null, fileName: null, quoted }
+
+  const location = normalized.liveLocationMessage as Record<string, unknown> ?? normalized.locationMessage as Record<string, unknown> | undefined
+  if (location) return { content: '[Localização]', messageType: 'locationMessage', mediaUrl: null, mimeType: null, fileName: null, quoted }
+
+  // Fallback genérico para tipos não mapeados
+  const knownType = Object.keys(normalized).find(k => k.endsWith('Message'))
+  return { content: knownType ? `[${knownType.replace('Message', '')}]` : null, messageType: knownType ?? 'unknown', mediaUrl: null, mimeType: null, fileName: null, quoted }
 }
 
 function evolutionHeaders(apiKey: string) {
@@ -492,6 +560,28 @@ async function actionTestConnection(p: Record<string, unknown>) {
     const state = (data.instance as Record<string, unknown>)?.state ?? data.state ?? 'unknown'
     const connected = state === 'open'
     return { ok: connected, state, error: connected ? null : `Instância ${state} (esperado: open)` }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+async function actionConfigureWebhook(p: Record<string, unknown>) {
+  const baseUrl = (p.base_url as string | undefined)?.replace(/\/$/, '')
+  const apiKey = p.api_token as string | undefined
+  const instance = p.instance_name as string | undefined
+  const webhookUrl = (p.webhook_url as string | undefined)?.trim()
+
+  if (!baseUrl || !apiKey || !instance || !webhookUrl) {
+    return { ok: false, error: 'base_url, api_token, instance_name e webhook_url são obrigatórios' }
+  }
+
+  try {
+    return await configureEvolutionWebhook({
+      baseUrl,
+      apiKey,
+      instanceName: instance,
+      webhookUrl,
+    })
   } catch (e) {
     return { ok: false, error: String(e) }
   }
@@ -1113,7 +1203,9 @@ async function processWebhook(payload: Record<string, unknown>) {
             automationMode: crmState?.atendimentoHumano ? 'humano' : 'clara',
           }),
           signal: AbortSignal.timeout(10000),
-        }).catch(() => { /* ignora erro — não bloqueia resposta ao Evolution */ })
+        }).catch((err: unknown) => {
+          console.error('[N8N forward error]', err instanceof Error ? err.message : String(err), { instance, remoteJid })
+        })
       }
     } else {
       await syncCrmInbox({
@@ -1198,6 +1290,7 @@ Deno.serve(async (req) => {
 
     switch (payload._action) {
       case 'test_connection':  return json(await actionTestConnection(payload))
+      case 'configure_webhook': return json(await actionConfigureWebhook(payload))
       case 'send_message':     return json(await actionSendMessage(payload))
       case 'init_chat':        return json(await actionInitChat(payload))
       case 'get_messages':     return json(await actionGetMessages(payload))

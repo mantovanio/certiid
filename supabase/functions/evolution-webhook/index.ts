@@ -58,6 +58,23 @@ async function dbSelect(table: string, filter: string, select = '*') {
   return res.json() as Promise<Record<string, unknown>[]>
 }
 
+async function getCrmConversationState(documentKey: string) {
+  const rows = await dbSelect(
+    'crm_chat_conversations',
+    `document_key=eq.${encodeURIComponent(documentKey)}&order=ultima_interacao_em.desc&limit=1`,
+    'id,atendimento_humano,kanban_status,fila,whatsapp_instance,numero_receptor',
+  )
+  const row = rows[0] ?? null
+  return {
+    id: row?.id ? String(row.id) : null,
+    atendimentoHumano: Boolean(row?.atendimento_humano),
+    kanbanStatus: typeof row?.kanban_status === 'string' ? row.kanban_status : null,
+    fila: typeof row?.fila === 'string' ? row.fila : null,
+    whatsappInstance: typeof row?.whatsapp_instance === 'string' ? row.whatsapp_instance : null,
+    numeroReceptor: typeof row?.numero_receptor === 'string' ? row.numero_receptor : null,
+  }
+}
+
 async function loadCrmChatSettings() {
   const rows = await dbSelect('app_settings', 'key=eq.crm_chat_settings&limit=1', 'value')
   const value = rows[0]?.value as Record<string, unknown> | undefined
@@ -196,7 +213,6 @@ async function ensureCrmConversation(input: {
       numero_receptor: instance ?? undefined,
       fila: queue,
       kanban_status: reopenStatus ?? undefined,
-      atendimento_humano: direction === 'incoming' ? false : undefined,
       ultima_mensagem: content ?? undefined,
       ultima_mensagem_direcao: direction,
       ultima_interacao_em: now,
@@ -1057,7 +1073,7 @@ async function processWebhook(payload: Record<string, unknown>) {
     }])
 
     if (!fromMe) {
-      await syncCrmInbox({
+      const crmSync = await syncCrmInbox({
         remoteJid,
         instance,
         pushName: pushName ?? null,
@@ -1070,10 +1086,9 @@ async function processWebhook(payload: Record<string, unknown>) {
         fileName,
       })
 
-      // Encaminha para N8N apenas instâncias com automação Clara (renovacao/certiid)
-      // A instância atendimento é atendimento humano — não deve acionar a IA
-      const normalizedInstance = (instance ?? '').toLowerCase()
-      const shouldForwardToN8N = normalizedInstance === 'renovacao' || normalizedInstance === 'certiid'
+      const documentKey = crmSync?.documentKey ?? jidToPhone(remoteJid).replace(/\D/g, '')
+      const crmState = documentKey ? await getCrmConversationState(documentKey) : null
+      const shouldForwardToN8N = Boolean(crmState && !crmState.atendimentoHumano)
 
       if (shouldForwardToN8N) {
         const n8nUrl = Deno.env.get('N8N_INBOUND_WEBHOOK_URL')
@@ -1093,6 +1108,9 @@ async function processWebhook(payload: Record<string, unknown>) {
             instance:      instance ?? null,
             leadId:        leadId ?? null,
             messageId:     msgId ?? null,
+            conversationId: crmState?.id ?? null,
+            atendimentoHumano: crmState?.atendimentoHumano ?? false,
+            automationMode: crmState?.atendimentoHumano ? 'humano' : 'clara',
           }),
           signal: AbortSignal.timeout(10000),
         }).catch(() => { /* ignora erro — não bloqueia resposta ao Evolution */ })

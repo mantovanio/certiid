@@ -2,6 +2,9 @@
  COMO FAZER DEPLOY DO CERTIID
 =====================================
 
+Documento mestre e atualizado de acessos/deploy:
+  .claude/ACESSOS-E-DEPLOY-CERTIID.md
+
 SITE: https://certiid.mantovan.com.br
 VPS:  root@147.79.111.76
 

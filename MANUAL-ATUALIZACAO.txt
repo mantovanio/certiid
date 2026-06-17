@@ -2,6 +2,9 @@
  MANUAL DE ATUALIZACAO DO CERTIID
 ========================================
 
+Documento mestre e atualizado de acessos/deploy:
+  .claude/ACESSOS-E-DEPLOY-CERTIID.md
+
 Objetivo:
 Atualizar o CertiID sem se perder nas etapas.
 

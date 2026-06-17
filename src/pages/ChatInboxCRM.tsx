@@ -762,9 +762,11 @@ export default function ChatInboxCRM() {
               }, 120)
             }
           })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'communication_events' }, payload => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'communication_events' }, payload => {
           const nextRow = (payload.new ?? {}) as Record<string, unknown>
           const conversationId = String(nextRow.conversation_id ?? '')
+          const source = String(nextRow.source ?? '')
+          if (source === 'evolution') return
           if (!conversationId) return
           if (selectedId && conversationId === selectedId) {
             if (pendingMessageReloadRef.current) clearTimeout(pendingMessageReloadRef.current)
@@ -1493,11 +1495,28 @@ export default function ChatInboxCRM() {
 
   async function sendHumanReply() {
     if (!selectedConversation) return
+    if (sendingHumanMessage) return
     const text = humanMessage.trim()
     if (!text) return
 
     setSendingHumanMessage(true)
     setActionError(null)
+    const tempId = `temp-human-${Date.now()}`
+    const tempCreatedAt = new Date().toISOString()
+    const senderName = currentHumanAgentName
+    const displayText = applyOutgoingSignature(text, senderName, signOutgoingMessages)
+    setMessages(prev => [...prev, {
+      id: tempId,
+      conversation_id: selectedConversation.id,
+      document_key: selectedConversation.document_key,
+      direction: 'outgoing',
+      sender_type: 'humano',
+      sender_name: senderName,
+      mensagem: displayText,
+      created_at: tempCreatedAt,
+    }])
+    setHumanMessage('')
+    focusComposer()
 
     try {
       const { data: sessionData } = await supabase.auth.getSession()
@@ -1510,22 +1529,6 @@ export default function ChatInboxCRM() {
       }
       const destinationNumber = selectedConversation.telefone || selectedConversation.document_key
       if (!destinationNumber) throw new Error('Nao foi possivel identificar o numero do contato para envio.')
-
-      const tempId = `temp-human-${Date.now()}`
-      const tempCreatedAt = new Date().toISOString()
-      const senderName = currentHumanAgentName
-      const displayText = applyOutgoingSignature(text, senderName, signOutgoingMessages)
-      setMessages(prev => [...prev, {
-        id: tempId,
-        conversation_id: selectedConversation.id,
-        document_key: selectedConversation.document_key,
-        direction: 'outgoing',
-        sender_type: 'humano',
-        sender_name: senderName,
-        mensagem: displayText,
-        created_at: tempCreatedAt,
-      }])
-      setHumanMessage('')
 
       const response = await fetch(EDGE_FN, {
         method: 'POST',
@@ -1553,6 +1556,8 @@ export default function ChatInboxCRM() {
       await loadConversations(false)
       await loadMessages(selectedConversation.id, { background: true })
     } catch (err) {
+      setMessages(prev => prev.filter(item => item.id !== tempId))
+      setHumanMessage(current => (current.trim().length > 0 ? current : text))
       setActionError(`Falha no envio humano: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setSendingHumanMessage(false)
@@ -1763,6 +1768,7 @@ export default function ChatInboxCRM() {
 
   function handleHumanComposerKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && !event.shiftKey) {
+      if (sendingHumanMessage) return
       event.preventDefault()
       void sendHumanReply()
     }
@@ -2163,7 +2169,7 @@ export default function ChatInboxCRM() {
                           onPaste={handleComposerPaste}
                           rows={2}
                           placeholder="Digite a resposta do atendimento humano. Enter envia e Shift+Enter quebra linha."
-                          disabled={sendingHumanMessage || recState === 'recording'}
+                          disabled={recState === 'recording'}
                           className="min-h-[52px] max-h-28 flex-1 resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-sky-400 disabled:opacity-60"
                           onInput={event => {
                             const element = event.currentTarget

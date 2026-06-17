@@ -1387,15 +1387,21 @@ function AbaIntegracoes() {
     const evo = lista.find(i => isWhatsAppIntegration(i) && getWhatsAppEngine(i) === 'evolution' && i.base_url && i.api_token && i.instance_name)
     if (evo) {
       const resultado = await testarEvolution(evo.base_url!, evo.api_token!, evo.instance_name!)
-      const novoStatus: IntegrationStatus = resultado.ok ? 'ativo' : 'erro'
-      if (novoStatus !== evo.status) {
+      const webhookUrl = evo.webhook_url || EDGE_FN_EVOLUTION
+      const webhookResultado = resultado.ok
+        ? await configurarWebhookEvolution(evo.base_url!, evo.api_token!, evo.instance_name!, webhookUrl)
+        : { ok: false, erro: resultado.erro }
+      const novoStatus: IntegrationStatus = resultado.ok && webhookResultado.ok ? 'ativo' : 'erro'
+      const lastError = resultado.ok ? webhookResultado.erro : resultado.erro
+      if (novoStatus !== evo.status || evo.webhook_url !== webhookUrl || evo.last_error !== lastError) {
         await supabase.from('external_integrations').update({
           status: novoStatus,
           last_test_at: new Date().toISOString(),
-          last_error: resultado.erro,
+          last_error: lastError,
+          webhook_url: webhookUrl,
         }).eq('id', evo.id)
         setIntegracoes(prev => prev.map(i =>
-          i.id === evo.id ? { ...i, status: novoStatus, last_error: resultado.erro } : i
+          i.id === evo.id ? { ...i, status: novoStatus, last_error: lastError, webhook_url: webhookUrl } : i
         ))
       }
     }
